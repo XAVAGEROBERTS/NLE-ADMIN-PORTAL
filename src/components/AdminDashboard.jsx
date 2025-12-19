@@ -24,6 +24,30 @@ const AdminDashboard = () => {
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [loading, setLoading] = useState({ dashboard: true });
   const [searchTerm, setSearchTerm] = useState('');
+    // === TIMETABLE MANAGEMENT STATES ===
+  const [timetables, setTimetables] = useState([]);
+  const [selectedTimetable, setSelectedTimetable] = useState(null);
+  const [showTimetableModal, setShowTimetableModal] = useState(false);
+  const [showSlotModal, setShowSlotModal] = useState(false);
+  const [editingSlot, setEditingSlot] = useState(null);
+  const [newTimetable, setNewTimetable] = useState({
+    program_id: '',
+    academic_year: '2024/2025',
+    semester: 1,
+    year_of_study: 1,
+    is_active: true
+  });
+  const [newSlot, setNewSlot] = useState({
+    course_code: '',
+    course_name: '',
+    lecturer_id: '',
+    day_of_week: 1,
+    start_time: '08:00',
+    end_time: '10:00',
+    room_number: '',
+    building: 'CS Building',
+    slot_type: 'lecture'
+  });
  
   // Statistics state
   const [stats, setStats] = useState({
@@ -88,23 +112,39 @@ const AdminDashboard = () => {
   const [showFinanceModal, setShowFinanceModal] = useState(false);
   const [showAttendanceModal, setShowAttendanceModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
+    // Student Edit States
+  const [editingStudent, setEditingStudent] = useState(null);
+ const [editStudentForm, setEditStudentForm] = useState({
+  full_name: '',
+  email: '',
+  phone: '',
+  program_id: '',
+  program: '',
+  year_of_study: 1,
+  semester: 1,
+  department: '',
+  department_code: '',
+  status: 'active'
+});
   const [selectedCourse, setSelectedCourse] = useState(null);
   const [selectedLecture, setSelectedLecture] = useState(null);
   const [selectedExam, setSelectedExam] = useState(null);
   const [selectedFinanceRecord, setSelectedFinanceRecord] = useState(null);
 
-  // Form states
-  const [newUser, setNewUser] = useState({
-    full_name: '',
-    email: '',
-    phone: '',
-    role: 'student',
-    program: '',
-    year_of_study: 1,
-    department: '',
-    specialization: '',
-    google_meet_link: ''
-  });
+const [newUser, setNewUser] = useState({
+  full_name: '',
+  email: '',
+  phone: '',
+  role: 'student',
+  program_id: '',           // We'll store the selected program ID
+  program: '',
+  year_of_study: 1,
+  semester: 1,              // New field
+  department: '',
+  department_code: '',
+  specialization: '',
+  google_meet_link: ''
+});
 
   const [newCourse, setNewCourse] = useState({
     course_code: '',
@@ -209,6 +249,8 @@ const AdminDashboard = () => {
   const fileDownloadRef = useRef(null);
 
   // =================== INITIALIZATION ===================
+
+
   useEffect(() => {
     if (!authLoading && !profile) {
       navigate('/login');
@@ -225,8 +267,16 @@ const AdminDashboard = () => {
       }
     };
   }, [profile, authLoading, navigate]);
-
+  useEffect(() => {
+    if (activeTab === 'timetables' && isAdmin) {
+      fetchProgramTimetables();
+      fetchPrograms();
+      fetchLecturersList();
+    } 
+      
+  }, [activeTab, isAdmin]);
   const initializeDashboard = async () => {
+    
     try {
       setLoading(prev => ({ ...prev, dashboard: true }));
      
@@ -255,6 +305,7 @@ const AdminDashboard = () => {
     } finally {
       setLoading(prev => ({ ...prev, dashboard: false }));
     }
+
   };
 
   const setupRealtimeSubscription = () => {
@@ -296,6 +347,40 @@ const AdminDashboard = () => {
     }
   };
   
+    // Load programs from database (only for admin)
+  useEffect(() => {
+    const loadPrograms = async () => {
+      if (!isAdmin) {
+        setPrograms([]);
+        setProgramsLoading(false);
+        return;
+      }
+
+      try {
+        setProgramsLoading(true);
+        const { data, error } = await supabase
+          .from('programs')
+          .select('id, name, code')
+          .order('name', { ascending: true });
+
+        if (error) {
+          console.error('Error loading programs:', error);
+          alert('Failed to load programs');
+          setPrograms([]);
+        } else {
+          setPrograms(data || []);
+          console.log('✅ Programs loaded:', data);
+        }
+      } catch (err) {
+        console.error('Unexpected error:', err);
+        setPrograms([]);
+      } finally {
+        setProgramsLoading(false);
+      }
+    };
+
+    loadPrograms();
+  }, [isAdmin]);
 
   // =================== FILE DOWNLOAD FUNCTIONS ===================
 const downloadFile = async (fileUrl, fileName, submissionId = null) => {
@@ -1774,7 +1859,302 @@ const handleCreateAssignment = async () => {
       setLectures([]);
     }
   };
+    const fetchProgramTimetables = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('program_timetables')
+        .select(`
+          id,
+          program_id,
+          academic_year,
+          semester,
+          year_of_study,
+          is_active,
+          programs (name, code),
+          program_timetable_slots (
+            id,
+            course_code,
+            course_name,
+            lecturer_id,
+            day_of_week,
+            start_time,
+            end_time,
+            room_number,
+            building,
+            slot_type,
+            lecturers (full_name)
+          )
+        `)
+        .order('academic_year', { ascending: false })
+        .order('year_of_study');
 
+      if (error) throw error;
+      setTimetables(data || []);
+    } catch (err) {
+      console.error('Error loading timetables:', err);
+      alert('Failed to load timetables');
+    }
+  };
+
+    const refreshCurrentTimetableSlots = async () => {
+    if (!selectedTimetable) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('program_timetable_slots')
+        .select(`
+          id,
+          course_code,
+          course_name,
+          lecturer_id,
+          day_of_week,
+          start_time,
+          end_time,
+          room_number,
+          building,
+          slot_type,
+          lecturers (full_name)
+        `)
+        .eq('program_timetable_id', selectedTimetable.id)
+        .order('day_of_week')
+        .order('start_time');
+
+      if (error) throw error;
+
+      // Update only the slots in the selected timetable
+      setTimetables(prev => prev.map(tt => 
+        tt.id === selectedTimetable.id 
+          ? { ...tt, program_timetable_slots: data || [] }
+          : tt
+      ));
+
+      // Also update selectedTimetable directly for instant refresh
+      setSelectedTimetable(prev => ({ ...prev, program_timetable_slots: data || [] }));
+
+    } catch (err) {
+      console.error('Error refreshing slots:', err);
+      alert('Failed to refresh slots');
+    }
+  };
+
+  const [programs, setPrograms] = useState([]);
+  const [programsLoading, setProgramsLoading] = useState(true);
+  const [lecturersList, setLecturersList] = useState([]);
+
+  const fetchPrograms = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('programs')
+        .select('id, name, code')
+        .order('name');
+      if (error) throw error;
+      setPrograms(data || []);
+    } catch (err) {
+      console.error('Error loading programs:', err);
+    }
+  };
+
+  const fetchLecturersList = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('lecturers')
+        .select('id, full_name')
+        .order('full_name');
+      if (error) throw error;
+      setLecturersList(data || []);
+    } catch (err) {
+      console.error('Error loading lecturers:', err);
+    }
+  };
+
+const handleSaveTimetable = async () => {
+  if (!newTimetable.program_id) {
+    alert('Please select a program');
+    return;
+  }
+
+  try {
+    if (selectedTimetable) {
+      // Editing existing — safe to update
+      const { error } = await supabase
+        .from('program_timetables')
+        .update({
+          academic_year: newTimetable.academic_year,
+          semester: newTimetable.semester,
+          year_of_study: newTimetable.year_of_study,
+          is_active: newTimetable.is_active
+        })
+        .eq('id', selectedTimetable.id);
+
+      if (error) throw error;
+      alert('Timetable updated successfully!');
+    } else {
+      // Creating new — FIRST check if one already exists
+      const { data: existing, error: checkError } = await supabase
+        .from('program_timetables')
+        .select('id')
+        .eq('program_id', newTimetable.program_id)
+        .eq('academic_year', newTimetable.academic_year)
+        .eq('semester', newTimetable.semester)
+        .eq('year_of_study', newTimetable.year_of_study)
+        .limit(1);
+
+      if (checkError) throw checkError;
+
+      if (existing && existing.length > 0) {
+        // Duplicate found!
+        const confirmOverwrite = window.confirm(
+          `A timetable already exists for this program, year, semester, and academic year.\n\n` +
+          `Do you want to activate the existing one instead? (Recommended)\n\n` +
+          `Click Cancel to choose different values.`
+        );
+
+        if (confirmOverwrite) {
+          // Activate the existing one
+          const { error: activateError } = await supabase
+            .from('program_timetables')
+            .update({ is_active: true })
+            .eq('id', existing[0].id);
+
+          if (activateError) throw activateError;
+
+          alert('Existing timetable reactivated!');
+        } else {
+          // User cancelled — don't create
+          return;
+        }
+      } else {
+        // No duplicate — safe to insert
+        const { error } = await supabase
+          .from('program_timetables')
+          .insert([{
+            program_id: newTimetable.program_id,
+            academic_year: newTimetable.academic_year,
+            semester: newTimetable.semester,
+            year_of_study: newTimetable.year_of_study,
+            is_active: true
+          }]);
+
+        if (error) throw error;
+        alert('New timetable created successfully!');
+      }
+    }
+
+    setShowTimetableModal(false);
+    setSelectedTimetable(null);
+    await fetchProgramTimetables();  // Refresh list
+
+  } catch (err) {
+    console.error('Error saving timetable:', err);
+    alert('Error saving timetable: ' + err.message);
+  }
+};
+    const handleDeleteSlot = async (slotId) => {
+    // Safety check
+    if (!slotId) {
+      alert('Error: No slot selected for deletion');
+      return;
+    }
+
+    if (!window.confirm('Are you sure you want to delete this time slot?\nThis cannot be undone.')) {
+      return;
+    }
+
+    try {
+      console.log('Deleting slot with ID:', slotId); // Debug line
+
+      const { error } = await supabase
+        .from('program_timetable_slots')
+        .delete()
+        .eq('id', slotId);
+
+      if (error) {
+        console.error('Supabase delete error:', error);
+        throw error;
+      }
+
+      alert('Time slot deleted successfully!');
+
+      // Refresh only current timetable — stays in view
+      await refreshCurrentTimetableSlots();
+
+    } catch (err) {
+      console.error('Delete failed:', err);
+      alert('Failed to delete slot: ' + err.message);
+    }
+  };
+
+    const handleSaveSlot = async () => {
+    if (!newSlot.course_code.trim() || !newSlot.course_name.trim()) {
+      alert('Please enter both Course Code and Course Name');
+      return;
+      }
+
+    try {
+      if (editingSlot) {
+        // Edit existing slot
+        const { error } = await supabase
+          .from('program_timetable_slots')
+          .update({
+            course_code: newSlot.course_code.trim(),
+            course_name: newSlot.course_name.trim(),
+            lecturer_id: newSlot.lecturer_id || null,
+            day_of_week: parseInt(newSlot.day_of_week),
+            start_time: newSlot.start_time,
+            end_time: newSlot.end_time,
+            room_number: newSlot.room_number.trim(),
+            building: newSlot.building.trim(),
+            slot_type: newSlot.slot_type
+          })
+          .eq('id', editingSlot.id);
+
+        if (error) throw error;
+        alert('Slot updated successfully!');
+      } else {
+        // Add new slot
+        const { error } = await supabase
+          .from('program_timetable_slots')
+          .insert([{
+            program_timetable_id: selectedTimetable.id,
+            course_code: newSlot.course_code.trim(),
+            course_name: newSlot.course_name.trim(),
+            lecturer_id: newSlot.lecturer_id || null,
+            day_of_week: parseInt(newSlot.day_of_week),
+            start_time: newSlot.start_time,
+            end_time: newSlot.end_time,
+            room_number: newSlot.room_number.trim(),
+            building: newSlot.building.trim(),
+            slot_type: newSlot.slot_type,
+            is_active: true
+          }]);
+
+        if (error) throw error;
+        alert('New slot added successfully!');
+      }
+
+      // Close modal and reset form
+      setShowSlotModal(false);
+      setEditingSlot(null);
+      setNewSlot({
+        course_code: '',
+        course_name: '',
+        lecturer_id: '',
+        day_of_week: 1,
+        start_time: '08:00',
+        end_time: '10:00',
+        room_number: '',
+        building: 'CS Building',
+        slot_type: 'lecture'
+      });
+
+      // Refresh only current view — user stays in detailed view!
+      await refreshCurrentTimetableSlots();
+
+    } catch (err) {
+      console.error('Error saving slot:', err);
+      alert('Failed to save slot: ' + err.message);
+    }
+  };
   const fetchAttendanceData = async () => {
     try {
       let query = supabase
@@ -1803,74 +2183,266 @@ const handleCreateAssignment = async () => {
   };
 
   // Form handlers
-  const handleAddUser = async () => {
-    try {
-      let tableName, data;
-      const password = 'Default123!';
-     
-      if (newUser.role === 'student') {
-        const studentId = `STU-${Date.now().toString().slice(-6)}`;
-        data = {
-          student_id: studentId,
-          full_name: newUser.full_name,
-          email: newUser.email,
-          password_hash: password,
-          phone: newUser.phone,
-          program: newUser.program,
-          department: newUser.program,
-          department_code: newUser.program?.split(' ').map(word => word[0]).join('').toUpperCase(),
-          year_of_study: newUser.year_of_study,
-          status: 'active'
-        };
-        tableName = 'students';
-      } else {
-        const lecturerId = `LEC-${Date.now().toString().slice(-6)}`;
-        data = {
-          lecturer_id: lecturerId,
-          full_name: newUser.full_name,
-          email: newUser.email,
-          password_hash: password,
-          phone: newUser.phone,
-          department: newUser.department,
-          specialization: newUser.specialization,
-          google_meet_link: newUser.google_meet_link,
-          status: 'active'
-        };
-        tableName = 'lecturers';
-      }
-     
-      const { error } = await supabase
-        .from(tableName)
-        .insert([data]);
-     
-      if (error) throw error;
-     
-      setShowUserModal(false);
-      setNewUser({
-        full_name: '',
-        email: '',
-        phone: '',
-        role: 'student',
-        program: '',
-        year_of_study: 1,
-        department: '',
-        specialization: '',
-        google_meet_link: ''
-      });
-     
-      if (tableName === 'students') {
-        fetchStudents();
-      } else {
-        fetchLecturers();
-      }
-      fetchDashboardStats();
-     
-    } catch (error) {
-      console.error('Error adding user:', error);
-      alert('Error adding user: ' + error.message);
+const handleAddUser = async () => {
+  try {
+    // Required fields validation
+    if (!newUser.full_name?.trim() || !newUser.email?.trim() || !newUser.role) {
+      alert('Please fill in all required fields: Full Name, Email, and Role');
+      return;
     }
-  };
 
+    // Email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(newUser.email.trim())) {
+      alert('Please enter a valid email address');
+      return;
+    }
+
+    const password = 'Default123!';
+    let tableName, profileData;
+
+    const CURRENT_ACADEMIC_YEAR = '2025';
+
+    if (newUser.role === 'student') {
+      if (!newUser.program?.trim()) {
+        alert('Please enter the Program name.');
+        return;
+      }
+
+      if (!newUser.department_code?.trim()) {
+        alert('Please enter the Department Code (e.g., ENG, BSCS, BIT)');
+        return;
+      }
+
+      const programName = newUser.program.trim();
+      const departmentCode = newUser.department_code.trim().toUpperCase();
+      const academicYear = CURRENT_ACADEMIC_YEAR;
+
+      // Generate the next sequence number for this department and year
+      // Fetch existing IDs for this department and year to determine the next number
+      const { data: existingStudents, error: fetchError } = await supabase
+        .from('students')
+        .select('student_id')
+        .like('student_id', `${departmentCode}-${academicYear}-%`)
+        .order('student_id', { ascending: false })
+        .limit(1);
+
+      if (fetchError) {
+        throw new Error('Failed to check existing student IDs');
+      }
+
+      let sequenceNumber = 1; // Start from 1 for new department-year combinations
+      
+      if (existingStudents && existingStudents.length > 0) {
+        // Extract the sequence number from the latest ID
+        const latestId = existingStudents[0].student_id;
+        const idParts = latestId.split('-');
+        if (idParts.length === 3) {
+          const existingSequence = idParts[2];
+          // Convert hex to decimal, increment, then back to hex
+          sequenceNumber = parseInt(existingSequence, 16) + 1;
+        }
+      }
+
+      // Convert sequence number to 6-character hex string
+      const sequenceHex = sequenceNumber.toString(16).padStart(6, '0').toLowerCase();
+      
+      // Construct the student ID: DEP-YYYY-XXXXXX (where XXXXXX is hex sequence)
+      const studentId = `${departmentCode}-${academicYear}-${sequenceHex}`;
+
+      tableName = 'students';
+      profileData = {
+        student_id: studentId,
+        full_name: newUser.full_name.trim(),
+        email: newUser.email.toLowerCase().trim(),
+        password_hash: password,
+        phone: newUser.phone?.trim() || null,
+        date_of_birth: newUser.date_of_birth || null,
+        program: programName,
+        year_of_study: parseInt(newUser.year_of_study) || 1,
+        semester: newUser.semester || 1,
+        intake: newUser.intake || 'January',
+        academic_year: `${CURRENT_ACADEMIC_YEAR}/${parseInt(CURRENT_ACADEMIC_YEAR) + 1}`,
+        status: 'active',
+        program_duration_years: ['BSCS', 'BIT', 'CSC'].includes(departmentCode) ? 3 : 4,
+        program_total_semesters: ['BSCS', 'BIT', 'CSC'].includes(departmentCode) ? 6 : 8,
+        department_code: departmentCode,
+        department: newUser.department?.trim() || 
+          (departmentCode === 'BSCS' || departmentCode === 'CSC' ? 'Computer Science' :
+           departmentCode === 'BSSE' ? 'Software Engineering' :
+           departmentCode === 'BSCE' || departmentCode === 'ENG' ? 'Engineering' :
+           departmentCode === 'BIT' ? 'Information Technology' :
+           'General Studies'),
+        created_at: new Date().toISOString(),
+      };
+
+      // === Duplicate checks ===
+      const { data: existingProfile, error: checkError } = await supabase
+        .from(tableName)
+        .select('id, email, student_id')
+        .or(`email.eq.${profileData.email},student_id.eq.${studentId}`)
+        .maybeSingle();
+
+      if (checkError && checkError.code !== 'PGRST116') { // PGRST116 means no rows found
+        throw new Error('Error checking for existing records');
+      }
+
+      if (existingProfile) {
+        if (existingProfile.email === profileData.email) {
+          throw new Error('This email already exists as a student');
+        }
+        if (existingProfile.student_id === studentId) {
+          throw new Error('This Student ID already exists');
+        }
+      }
+
+    } else {
+      // ========== LECTURER LOGIC ==========
+      // Generate the next lecturer sequence number
+      const { data: existingLecturers, error: fetchLecturersError } = await supabase
+        .from('lecturers')
+        .select('lecturer_id')
+        .like('lecturer_id', 'LEC-%')
+        .order('lecturer_id', { ascending: false })
+        .limit(1);
+
+      if (fetchLecturersError) {
+        throw new Error('Failed to check existing lecturer IDs');
+      }
+
+      let lecturerSequence = 1;
+      
+      if (existingLecturers && existingLecturers.length > 0) {
+        const latestId = existingLecturers[0].lecturer_id;
+        const idParts = latestId.split('-');
+        if (idParts.length === 2) {
+          const existingSequence = idParts[1];
+          lecturerSequence = parseInt(existingSequence, 16) + 1;
+        }
+      }
+
+      const lecturerSequenceHex = lecturerSequence.toString(16).padStart(6, '0').toUpperCase();
+      const lecturerId = `LEC-${lecturerSequenceHex}`;
+
+      tableName = 'lecturers';
+      profileData = {
+        lecturer_id: lecturerId,
+        full_name: newUser.full_name.trim(),
+        email: newUser.email.toLowerCase().trim(),
+        password_hash: password,
+        phone: newUser.phone?.trim() || null,
+        department: newUser.department?.trim() || null,
+        specialization: newUser.specialization?.trim() || null,
+        google_meet_link: newUser.google_meet_link?.trim() || null,
+        status: 'active',
+        created_at: new Date().toISOString(),
+      };
+
+      // === Duplicate checks for lecturers ===
+      const { data: existingLecturer, error: checkLecturerError } = await supabase
+        .from(tableName)
+        .select('id, email, lecturer_id')
+        .or(`email.eq.${profileData.email},lecturer_id.eq.${lecturerId}`)
+        .maybeSingle();
+
+      if (checkLecturerError && checkLecturerError.code !== 'PGRST116') {
+        throw new Error('Error checking for existing lecturer records');
+      }
+
+      if (existingLecturer) {
+        if (existingLecturer.email === profileData.email) {
+          throw new Error('This email already exists as a lecturer');
+        }
+        if (existingLecturer.lecturer_id === lecturerId) {
+          throw new Error('This Lecturer ID already exists');
+        }
+      }
+    }
+
+    // Cross-check email in the other table (student vs lecturer)
+    const otherTableName = newUser.role === 'student' ? 'lecturers' : 'students';
+    const { data: crossCheck } = await supabase
+      .from(otherTableName)
+      .select('email')
+      .eq('email', profileData.email)
+      .maybeSingle();
+
+    if (crossCheck) {
+      throw new Error(`This email already exists as a ${newUser.role === 'student' ? 'lecturer' : 'student'}`);
+    }
+
+    // === Insert ===
+    const { data: tableData, error: tableError } = await supabase
+      .from(tableName)
+      .insert([profileData])
+      .select()
+      .single();
+
+    if (tableError) {
+      if (tableError.code === '23505') {
+        throw new Error('Email or ID already exists!');
+      }
+      throw new Error(tableError.message);
+    }
+
+    // Optional user_roles
+    try {
+      await supabase.from('user_roles').insert([{
+        email: profileData.email,
+        role: newUser.role,
+        profile_id: tableData.id,
+        profile_table: tableName,
+        created_at: new Date().toISOString()
+      }]);
+    } catch (e) {
+      // Silently fail - user_roles is optional
+      console.log('Note: Could not add to user_roles table:', e.message);
+    }
+
+    // Reset form
+    setShowUserModal(false);
+    setNewUser({
+      full_name: '', email: '', phone: '', role: 'student',
+      program: '', department_code: '', department: '',
+      year_of_study: 1, semester: 1, intake: 'January',
+      specialization: '', google_meet_link: ''
+    });
+
+    // Success message
+    const successMessage = newUser.role === 'student' ? `
+✅ Student Successfully Added!
+
+Student ID: ${profileData.student_id}
+
+Format: ${newUser.department_code.trim().toUpperCase()}-${CURRENT_ACADEMIC_YEAR}-[SEQUENCE]
+
+Full Name: ${profileData.full_name}
+Email: ${profileData.email}
+Program: ${profileData.program}
+Academic Year: ${profileData.academic_year}
+
+Share this Student ID with the student!
+    ` : `
+✅ Lecturer Successfully Added!
+
+Lecturer ID: ${profileData.lecturer_id}
+Full Name: ${profileData.full_name}
+Email: ${profileData.email}
+Department: ${profileData.department || 'Not specified'}
+    `;
+
+    alert(successMessage);
+
+    // Refresh data
+    if (newUser.role === 'student') await fetchStudents();
+    else await fetchLecturers();
+    await fetchDashboardStats();
+
+  } catch (error) {
+    alert(`Error: ${error.message || 'Something went wrong'}`);
+    console.error('Add user error:', error);
+  }
+};
   const handleAddCourse = async () => {
     try {
       const { error } = await supabase
@@ -2578,6 +3150,12 @@ const handleCreateAssignment = async () => {
             >
               💰 Finance
             </button>
+                        <button
+              className={`nav-item ${activeTab === 'timetables' ? 'active' : ''}`}
+              onClick={() => setActiveTab('timetables')}
+            >
+              ⏰ Timetables
+            </button>
             <button
               className={`nav-item ${activeTab === 'attendance' ? 'active' : ''}`}
               onClick={() => setActiveTab('attendance')}
@@ -2681,7 +3259,8 @@ const handleCreateAssignment = async () => {
                       <h3>{stats.totalFinancialRecords}</h3>
                       <p>Financial Records</p>
                     </div>
-                  )}
+                    )}
+                    
 
                   {/* Lecturer Specific Stats */}
                   {isLecturer && (
@@ -2931,7 +3510,8 @@ const handleCreateAssignment = async () => {
                     )}
                   </div>
                 </div>
-              </div>
+                </div>
+                
             )}
 
             {/* My Assignments Tab - Lecturer Only */}
@@ -3818,6 +4398,7 @@ const handleCreateAssignment = async () => {
   </div>
 )}
             {/* Students Tab */}
+                       {/* Students Tab - IMPROVED WITH EDIT */}
             {activeTab === 'students' && (
               <div className="tab-content">
                 <div className="tab-header">
@@ -3846,7 +4427,7 @@ const handleCreateAssignment = async () => {
                     )}
                   </div>
                 </div>
-               
+              
                 <div className="table-container">
                   <table className="data-table">
                     <thead>
@@ -3862,46 +4443,72 @@ const handleCreateAssignment = async () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {students.map(student => (
-                        <tr key={student.id}>
-                          <td>{student.student_id}</td>
-                          <td>{student.full_name}</td>
-                          <td>{student.email}</td>
-                          <td>{student.program}</td>
-                          <td>
-                            <span className="dept-badge">
-                              {student.department_code || 'N/A'}
-                            </span>
+                      {students.length === 0 ? (
+                        <tr>
+                          <td colSpan="8" style={{ textAlign: 'center', padding: '20px' }}>
+                            No students found
                           </td>
-                          <td>Year {student.year_of_study}</td>
-                          <td>
-                            <span className={`status-badge ${student.status || 'active'}`}>
-                              {student.status || 'active'}
-                            </span>
-                          </td>
-                          {isAdmin && (
-                            <td>
-                              <div className="action-buttons">
-                                <button
-                                  className="action-btn view"
-                                  onClick={() => setSelectedUser(student)}
-                                >
-                                  View
-                                </button>
-                                <button
-                                  className="action-btn edit"
-                                  onClick={() => {
-                                    const newStatus = student.status === 'active' ? 'inactive' : 'active';
-                                    handleUpdateStudentStatus(student.id, newStatus);
-                                  }}
-                                >
-                                  {student.status === 'active' ? 'Deactivate' : 'Activate'}
-                                </button>
-                              </div>
-                            </td>
-                          )}
                         </tr>
-                      ))}
+                      ) : (
+                        students.map(student => (
+                          <tr key={student.id}>
+                            <td><strong>{student.student_id}</strong></td>
+                            <td>{student.full_name}</td>
+                            <td>{student.email}</td>
+                            <td>{student.program || 'N/A'}</td>
+                            <td>
+                              <span className="dept-badge">
+                                {student.department_code || 'N/A'}
+                              </span>
+                            </td>
+                            <td>Year {student.year_of_study || 1}</td>
+                            <td>
+                              <span className={`status-badge ${student.status || 'active'}`}>
+                                {student.status?.charAt(0).toUpperCase() + student.status?.slice(1) || 'Active'}
+                              </span>
+                            </td>
+                            {isAdmin && (
+                              <td>
+                                <div className="action-buttons">
+                                  <button
+                                    className="action-btn edit"
+                                   onClick={() => {
+  setEditingStudent(student);
+  // Find the matching program by code or name
+  const matchingProgram = programs.find(p => 
+    p.code === student.department_code || 
+    p.name === student.program
+  );
+  setEditStudentForm({
+    full_name: student.full_name || '',
+    email: student.email || '',
+    phone: student.phone || '',
+    program_id: matchingProgram?.id || '',
+    program: student.program || '',
+    year_of_study: student.year_of_study || 1,
+    semester: student.semester || 1,
+    department: student.department || '',
+    department_code: student.department_code || '',
+    status: student.status || 'active'
+  });
+}}
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    className="action-btn delete"
+                                    onClick={() => handleUpdateStudentStatus(student.id, 
+                                      student.status === 'active' ? 'inactive' : 'active'
+                                    )}
+                                  >
+                                    {student.status === 'active' ? 'Deactivate' : 'Activate'}
+                                  </button>
+                                </div>
+                              </td>
+                            )}
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -4583,9 +5190,371 @@ const handleCreateAssignment = async () => {
             )}
           </>
         )}
+                    {/* Timetable Management Tab - Admin Only */}
+            {activeTab === 'timetables' && isAdmin && (
+              <div className="tab-content">
+                <div className="tab-header">
+                  <h2>⏰ Timetable Management</h2>
+                  <button
+                    className="add-button"
+                    onClick={() => {
+                      setNewTimetable({
+                        program_id: '',
+                        academic_year: '2024/2025',
+                        semester: 1,
+                        year_of_study: 1,
+                        is_active: true
+                      });
+                      setShowTimetableModal(true);
+                    }}
+                  >
+                    + Create New Timetable
+                  </button>
+                </div>
+
+                <div className="timetables-grid">
+                  {timetables.length === 0 ? (
+                    <div className="empty-state">
+                      <p>No timetables created yet</p>
+                      <button
+                        onClick={() => setShowTimetableModal(true)}
+                        className="add-button"
+                      >
+                        Create First Timetable
+                      </button>
+                    </div>
+                  ) : (
+                    timetables.map(tt => (
+                      <div key={tt.id} className="timetable-card">
+                        <div className="timetable-header">
+                          <h3>
+                            {tt.programs?.name || 'Unknown Program'} - Year {tt.year_of_study}
+                          </h3>
+                          <div>
+                            <span className="semester-badge">
+                              Semester {tt.semester}
+                            </span>
+                            <span className={`status-badge ${tt.is_active ? 'active' : 'inactive'}`}>
+                              {tt.is_active ? 'Active' : 'Inactive'}
+                            </span>
+                          </div>
+                        </div>
+                        <p>{tt.academic_year}</p>
+                        <p className="small-text">
+                          {tt.program_timetable_slots?.length || 0} slots
+                        </p>
+                        <div className="timetable-actions">
+                          <button
+                            className="action-btn view"
+                            onClick={() => setSelectedTimetable(tt)}
+                          >
+                            View & Edit Slots
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* Detailed View of Selected Timetable */}
+                {selectedTimetable && (
+                  <div className="timetable-detail" style={{ marginTop: '30px' }}>
+                    <div className="section-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <h3>
+                        {selectedTimetable.programs?.name} - Year {selectedTimetable.year_of_study} Sem {selectedTimetable.semester}
+                      </h3>
+                      <div>
+                        <button
+                          className="add-button small"
+                          onClick={() => {
+                            setEditingSlot(null);
+                            setNewSlot({
+                              course_code: '',
+                              course_name: '',
+                              lecturer_id: '',
+                              day_of_week: 1,
+                              start_time: '08:00',
+                              end_time: '10:00',
+                              room_number: '',
+                              building: 'CS Building',
+                              slot_type: 'lecture'
+                            });
+                            setShowSlotModal(true);
+                          }}
+                        >
+                          + Add Slot
+                        </button>
+                        <button
+                          className="back-button"
+                          onClick={() => setSelectedTimetable(null)}
+                          style={{ marginLeft: '10px' }}
+                        >
+                          ← Back
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="table-container">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Day</th>
+                            <th>Time</th>
+                            <th>Course</th>
+                            <th>Lecturer</th>
+                            <th>Location</th>
+                            <th>Type</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {selectedTimetable.program_timetable_slots?.length > 0 ? (
+                            selectedTimetable.program_timetable_slots.map(slot => (
+                              <tr key={slot.id}>
+                                <td>
+                                  {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][slot.day_of_week]}
+                                </td>
+                                <td>{slot.start_time} – {slot.end_time}</td>
+                                <td>
+                                  <strong>{slot.course_code}</strong><br/>
+                                  <small>{slot.course_name}</small>
+                                </td>
+                                <td>{slot.lecturers?.full_name || 'Not Assigned'}</td>
+                                <td>{slot.room_number} {slot.building}</td>
+                                <td>
+                                  <span className="status-badge">{slot.slot_type}</span>
+                                </td>
+                                  <td>
+    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+      <button
+        className="action-btn edit small"
+        onClick={() => {
+          setEditingSlot(slot);
+          setNewSlot({
+            course_code: slot.course_code,
+            course_name: slot.course_name,
+            lecturer_id: slot.lecturer_id || '',
+            day_of_week: slot.day_of_week,
+            start_time: slot.start_time,
+            end_time: slot.end_time,
+            room_number: slot.room_number,
+            building: slot.building,
+            slot_type: slot.slot_type
+          });
+          setShowSlotModal(true);
+        }}
+      >
+        Edit
+      </button>
+      <button
+        className="action-btn delete small"
+        onClick={() => handleDeleteSlot(slot.id)}
+      >
+        Delete
+      </button>
+    </div>
+  </td>
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td colSpan="7" style={{ textAlign: 'center', padding: '20px' }}>
+                                No slots added yet
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
       </main>
 
       {/* =================== MODALS =================== */}
+
+            {/* Edit Student Modal */}
+      {editingStudent && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h3>Edit Student: {editingStudent.student_id}</h3>
+            <div className="modal-form">
+              <div className="form-group">
+                <label className="form-label">Full Name</label>
+                <input
+                  type="text"
+                  value={editStudentForm.full_name}
+                  onChange={(e) => setEditStudentForm({ ...editStudentForm, full_name: e.target.value })}
+                  className="form-input"
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Email</label>
+                <input
+                  type="email"
+                  value={editStudentForm.email}
+                  onChange={(e) => setEditStudentForm({ ...editStudentForm, email: e.target.value })}
+                  className="form-input"
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Phone</label>
+                <input
+                  type="tel"
+                  value={editStudentForm.phone}
+                  onChange={(e) => setEditStudentForm({ ...editStudentForm, phone: e.target.value })}
+                  className="form-input"
+                />
+              </div>
+<div className="form-group">
+  <label className="form-label">Program</label>
+  {programsLoading ? (
+    <p>Loading programs...</p>
+  ) : programs.length === 0 ? (
+    <p>No programs available</p>
+  ) : (
+    <select
+      value={editStudentForm.program_id || ''}
+      onChange={(e) => {
+        const selectedProg = programs.find(p => p.id === e.target.value);
+        if (selectedProg) {
+          setEditStudentForm({
+            ...editStudentForm,
+            program_id: selectedProg.id,
+            program: selectedProg.name,
+            department_code: selectedProg.code
+            // department left for manual edit below
+          });
+        } else {
+          setEditStudentForm({
+            ...editStudentForm,
+            program_id: '',
+            program: '',
+            department_code: ''
+          });
+        }
+      }}
+      className="form-select"
+    >
+      <option value="">Select Program</option>
+      {programs.map(prog => (
+        <option key={prog.id} value={prog.id}>
+          {prog.name} ({prog.code})
+        </option>
+      ))}
+    </select>
+  )}
+  <small>Current: {editStudentForm.program || 'None'} • Code: {editStudentForm.department_code || 'N/A'}</small>
+</div>
+
+<div className="form-group">
+  <label className="form-label">Department Name</label>
+  <input
+    type="text"
+    value={editStudentForm.department}
+    onChange={(e) => setEditStudentForm({ ...editStudentForm, department: e.target.value.trim() })}
+    placeholder="e.g. Computer Science"
+    className="form-input"
+    required
+  />
+  <small>Edit the short department name if needed</small>
+</div>
+
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">Year of Study</label>
+                  <select
+                    value={editStudentForm.year_of_study}
+                    onChange={(e) => setEditStudentForm({ ...editStudentForm, year_of_study: parseInt(e.target.value) })}
+                    className="form-select"
+                  >
+                    {[1,2,3,4,5].map(y => (
+                      <option key={y} value={y}>Year {y}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Status</label>
+                  <select
+                    value={editStudentForm.status}
+                    onChange={(e) => setEditStudentForm({ ...editStudentForm, status: e.target.value })}
+                    className="form-select"
+                  >
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                    <option value="graduated">Graduated</option>
+                    <option value="suspended">Suspended</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Department Code </label>
+                <input
+                  type="text"
+                  value={editStudentForm.department_code}
+                  className="form-input"
+                  disabled
+                />
+               
+              </div>
+
+              <div className="modal-actions">
+                <button
+                  className="cancel-button"
+                  onClick={() => {
+                    setEditingStudent(null);
+                    setEditStudentForm({});
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="confirm-button"
+                  onClick={async () => {
+                    try {
+                      const { error } = await supabase
+                        .from('students')
+                       .update({
+  full_name: editStudentForm.full_name.trim(),
+  email: editStudentForm.email.trim(),
+  phone: editStudentForm.phone || null,
+  program: editStudentForm.program.trim(),
+  department: editStudentForm.department.trim(),
+  department_code: editStudentForm.department_code,
+  year_of_study: editStudentForm.year_of_study,
+  semester: editStudentForm.semester,
+  status: editStudentForm.status,
+  updated_at: new Date().toISOString()
+})
+                        .eq('id', editingStudent.id);
+
+                      if (error) throw error;
+
+                      alert('Student updated successfully!');
+                      setEditingStudent(null);
+                      fetchStudents();
+                      fetchDashboardStats();
+                    } catch (err) {
+                      console.error('Update error:', err);
+                      alert('Error updating student: ' + err.message);
+                    }
+                  }}
+                >
+                  Save Changes
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Assignment Upload Modal */}
       {showAssignmentUploadModal && (
         <div className="modal-overlay">
@@ -4898,33 +5867,102 @@ const handleCreateAssignment = async () => {
                   className="form-input"
                 />
               </div>
-             
-              {newUser.role === 'student' ? (
-                <>
-                  <div className="form-group">
-                    <label className="form-label">Program</label>
-                    <input
-                      type="text"
-                      value={newUser.program}
-                      onChange={(e) => setNewUser({ ...newUser, program: e.target.value })}
-                      placeholder="e.g., Computer Engineering"
-                      className="form-input"
-                      required
-                    />
-                  </div>
-                 
-                  <div className="form-group">
-                    <label className="form-label">Year of Study</label>
-                    <select
-                      value={newUser.year_of_study}
-                      onChange={(e) => setNewUser({ ...newUser, year_of_study: parseInt(e.target.value) })}
-                      className="form-select"
-                    >
-                      {[1, 2, 3, 4, 5].map(year => (
-                        <option key={year} value={year}>Year {year}</option>
-                      ))}
-                    </select>
-                  </div>
+{newUser.role === 'student' ? (
+  <>
+    <div className="form-group">
+      <label className="form-label">Program *</label>
+      {programsLoading ? (
+        <p>Loading programs...</p>
+      ) : programs.length === 0 ? (
+        <p>No programs found. Please add programs first.</p>
+      ) : (
+        <select
+          value={newUser.program_id || ''}
+      onChange={(e) => {
+  const selectedProg = programs.find(p => p.id === e.target.value);
+  if (selectedProg) {
+    setNewUser({
+      ...newUser,
+      program_id: selectedProg.id,
+      program: selectedProg.name
+      // department_code is NOT auto-filled here - user will type it manually
+    });
+  } else {
+    setNewUser({
+      ...newUser,
+      program_id: '',
+      program: '',
+      department_code: ''
+    });
+  }
+}}
+          className="form-select"
+          required
+        >
+          <option value="">Select Program</option>
+          {programs.map(prog => (
+            <option key={prog.id} value={prog.id}>
+              {prog.name} ({prog.code})
+            </option>
+          ))}
+        </select>
+      )}
+      <small>Selected: {newUser.program || 'None'} • Code: {newUser.department_code || 'N/A'}</small>
+    </div>
+    
+    <div className="form-group">
+  <label className="form-label">Department Name *</label>
+  <input
+    type="text"
+    value={newUser.department}
+    onChange={(e) => setNewUser({ ...newUser, department: e.target.value.trim() })}
+    placeholder="e.g. Computer Science, Engineering, Software Engineering"
+    className="form-input"
+    required
+  />
+  <small>Type the short department name exactly as it should appear</small>
+</div>
+
+{/* ADD THIS NEW FIELD HERE */}
+<div className="form-group">
+  <label className="form-label">Department Code *</label>
+  <input
+    type="text"
+    value={newUser.department_code}
+    onChange={(e) => setNewUser({ ...newUser, department_code: e.target.value.trim() })}
+    placeholder="e.g. CS, ENG, BUS"
+    className="form-input"
+    required
+  />
+  <small>Type the department code (usually 2-4 letters)</small>
+</div>
+
+    <div className="form-row">
+      <div className="form-group">
+        <label className="form-label">Year of Study</label>
+        <select
+          value={newUser.year_of_study}
+          onChange={(e) => setNewUser({ ...newUser, year_of_study: parseInt(e.target.value) })}
+          className="form-select"
+        >
+          {[1, 2, 3, 4].map(year => (
+            <option key={year} value={year}>Year {year}</option>
+          ))}
+        </select>
+      </div>
+      <div className="form-group">
+        <label className="form-label">Semester</label>
+        <select
+          value={newUser.semester}
+          onChange={(e) => setNewUser({ ...newUser, semester: parseInt(e.target.value) })}
+          className="form-select"
+        >
+          <option value={1}>Semester 1</option>
+          <option value={2}>Semester 2</option>
+        </select>
+      </div>
+    </div>
+
                 </>
               ) : (
                 <>
@@ -5634,6 +6672,212 @@ const handleCreateAssignment = async () => {
                   onClick={handleAddAttendanceRecord}
                 >
                   Add Record
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+            {/* Create/Edit Program Timetable Modal */}
+      {showTimetableModal && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h3>{selectedTimetable ? 'Edit' : 'Create New'} Timetable</h3>
+            <div className="modal-form">
+              <div className="form-group">
+                <label>Program</label>
+                <select
+                  value={newTimetable.program_id}
+                  onChange={(e) => setNewTimetable({ ...newTimetable, program_id: e.target.value })}
+                  className="form-select"
+                  disabled={selectedTimetable} // Can't change program after creation
+                >
+                  <option value="">Select Program</option>
+                  {programs.map(prog => (
+                    <option key={prog.id} value={prog.id}>
+                      {prog.name} ({prog.code})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Academic Year</label>
+                  <input
+                    type="text"
+                    value={newTimetable.academic_year}
+                    onChange={(e) => setNewTimetable({ ...newTimetable, academic_year: e.target.value })}
+                    placeholder="e.g. 2024/2025"
+                    className="form-input"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Semester</label>
+                  <select
+                    value={newTimetable.semester}
+                    onChange={(e) => setNewTimetable({ ...newTimetable, semester: parseInt(e.target.value) })}
+                    className="form-select"
+                  >
+                    <option value={1}>Semester 1</option>
+                    <option value={2}>Semester 2</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Year of Study</label>
+                  <select
+                    value={newTimetable.year_of_study}
+                    onChange={(e) => setNewTimetable({ ...newTimetable, year_of_study: parseInt(e.target.value) })}
+                    className="form-select"
+                  >
+                    {[1,2,3,4].map(y => <option key={y} value={y}>Year {y}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <div className="modal-actions">
+                <button className="cancel-button" onClick={() => {
+                  setShowTimetableModal(false);
+                  setSelectedTimetable(null);
+                }}>
+                  Cancel
+                </button>
+                <button className="confirm-button" onClick={handleSaveTimetable}>
+                  Save Timetable
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add/Edit Slot Modal */}
+      {showSlotModal && selectedTimetable && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h3>{editingSlot ? 'Edit' : 'Add New'} Time Slot</h3>
+            <div className="modal-form">
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Course Code</label>
+                  <input
+                    type="text"
+                    value={newSlot.course_code}
+                    onChange={(e) => setNewSlot({ ...newSlot, course_code: e.target.value })}
+                    placeholder="e.g. CSC301"
+                    className="form-input"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Course Name</label>
+                  <input
+                    type="text"
+                    value={newSlot.course_name}
+                    onChange={(e) => setNewSlot({ ...newSlot, course_name: e.target.value })}
+                    placeholder="e.g. Database Systems"
+                    className="form-input"
+                  />
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label>Lecturer</label>
+                <select
+                  value={newSlot.lecturer_id}
+                  onChange={(e) => setNewSlot({ ...newSlot, lecturer_id: e.target.value })}
+                  className="form-select"
+                >
+                  <option value="">Not Assigned</option>
+                  {lecturersList.map(lec => (
+                    <option key={lec.id} value={lec.id}>
+                      {lec.full_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Day</label>
+                  <select
+                    value={newSlot.day_of_week}
+                    onChange={(e) => setNewSlot({ ...newSlot, day_of_week: parseInt(e.target.value) })}
+                    className="form-select"
+                  >
+                    <option value={1}>Monday</option>
+                    <option value={2}>Tuesday</option>
+                    <option value={3}>Wednesday</option>
+                    <option value={4}>Thursday</option>
+                    <option value={5}>Friday</option>
+                    <option value={6}>Saturday</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Start Time</label>
+                  <input
+                    type="time"
+                    value={newSlot.start_time}
+                    onChange={(e) => setNewSlot({ ...newSlot, start_time: e.target.value })}
+                    className="form-input"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>End Time</label>
+                  <input
+                    type="time"
+                    value={newSlot.end_time}
+                    onChange={(e) => setNewSlot({ ...newSlot, end_time: e.target.value })}
+                    className="form-input"
+                  />
+                </div>
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Room</label>
+                  <input
+                    type="text"
+                    value={newSlot.room_number}
+                    onChange={(e) => setNewSlot({ ...newSlot, room_number: e.target.value })}
+                    placeholder="e.g. 101"
+                    className="form-input"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Building</label>
+                  <input
+                    type="text"
+                    value={newSlot.building}
+                    onChange={(e) => setNewSlot({ ...newSlot, building: e.target.value })}
+                    placeholder="e.g. CS Building"
+                    className="form-input"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Type</label>
+                  <select
+                    value={newSlot.slot_type}
+                    onChange={(e) => setNewSlot({ ...newSlot, slot_type: e.target.value })}
+                    className="form-select"
+                  >
+                    <option value="lecture">Lecture</option>
+                    <option value="lab">Lab</option>
+                    <option value="tutorial">Tutorial</option>
+                    <option value="practical">Practical</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="modal-actions">
+                <button className="cancel-button" onClick={() => {
+                  setShowSlotModal(false);
+                  setEditingSlot(null);
+                }}>
+                  Cancel
+                </button>
+                <button className="confirm-button" onClick={handleSaveSlot}>
+                  {editingSlot ? 'Update' : 'Add'} Slot
                 </button>
               </div>
             </div>
