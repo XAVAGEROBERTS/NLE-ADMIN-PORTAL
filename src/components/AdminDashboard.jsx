@@ -1,4 +1,4 @@
-// AdminDashboard.jsx - COMPLETE VERSION WITH ALL MODALS
+// AdminDashboard.jsx - COMPLETE WORKING VERSION WITH FILE DOWNLOAD
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext';
@@ -10,10 +10,10 @@ import './AdminDashboardStyles.css';
 const AdminDashboard = () => {
   const navigate = useNavigate();
   const { profile, signOut, isAdmin, isLecturer, loading: authLoading } = useAdminAuth();
-  
+ 
   // Department hook
-  const { 
-    departments: allowedDepartments, 
+  const {
+    departments: allowedDepartments,
     departmentCodes,
     loading: deptLoading,
     hasAccess
@@ -24,7 +24,7 @@ const AdminDashboard = () => {
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [loading, setLoading] = useState({ dashboard: true });
   const [searchTerm, setSearchTerm] = useState('');
-  
+ 
   // Statistics state
   const [stats, setStats] = useState({
     totalStudents: 0,
@@ -66,6 +66,12 @@ const AdminDashboard = () => {
   const [gradeForm, setGradeForm] = useState({});
   const [bulkGrading, setBulkGrading] = useState(false);
   const [selectedSubmissions, setSelectedSubmissions] = useState([]);
+  
+  // File download states
+  const [downloadingFile, setDownloadingFile] = useState(null);
+  const [downloadProgress, setDownloadProgress] = useState({});
+  const [batchDownloading, setBatchDownloading] = useState(false);
+  const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
 
   // Modals and forms
   const [showDepartmentModal, setShowDepartmentModal] = useState(false);
@@ -200,19 +206,19 @@ const AdminDashboard = () => {
   // Refs
   const subscriptionRef = useRef(null);
   const fileInputRef = useRef(null);
+  const fileDownloadRef = useRef(null);
 
-  // Initialize dashboard
+  // =================== INITIALIZATION ===================
   useEffect(() => {
     if (!authLoading && !profile) {
       navigate('/login');
       return;
     }
-    
+   
     if (profile) {
       initializeDashboard();
       setupRealtimeSubscription();
     }
-
     return () => {
       if (subscriptionRef.current) {
         subscriptionRef.current.unsubscribe();
@@ -223,7 +229,7 @@ const AdminDashboard = () => {
   const initializeDashboard = async () => {
     try {
       setLoading(prev => ({ ...prev, dashboard: true }));
-      
+     
       await Promise.all([
         fetchDashboardStats(),
         fetchStudents(),
@@ -235,7 +241,7 @@ const AdminDashboard = () => {
         fetchLectures(),
         fetchAttendanceData(),
       ]);
-      
+     
       // Fetch lecturer-specific data if lecturer
       if (isLecturer) {
         await Promise.all([
@@ -243,7 +249,7 @@ const AdminDashboard = () => {
           fetchLecturerStatistics()
         ]);
       }
-      
+     
     } catch (error) {
       console.error('Initialization error:', error);
     } finally {
@@ -256,11 +262,10 @@ const AdminDashboard = () => {
       if (subscriptionRef.current) {
         subscriptionRef.current.unsubscribe();
       }
-
       const subscription = supabase
         .channel('dashboard-changes')
-        .on('postgres_changes', 
-          { event: '*', schema: 'public', table: 'assignment_submissions' }, 
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'assignment_submissions' },
           () => {
             if (isLecturer && selectedAssignment) {
               fetchAssignmentSubmissions(selectedAssignment.id);
@@ -283,59 +288,807 @@ const AdminDashboard = () => {
         .subscribe((status) => {
           setRealtimeConnected(status === 'SUBSCRIBED');
         });
-      
+     
       subscriptionRef.current = subscription;
-      
+     
     } catch (error) {
       console.error('Realtime subscription error:', error);
     }
   };
+  
 
-  // =================== ASSIGNMENT MANAGEMENT FUNCTIONS ===================
+  // =================== FILE DOWNLOAD FUNCTIONS ===================
+const downloadFile = async (fileUrl, fileName, submissionId = null) => {
+  try {
+    const downloadKey = submissionId ? `${submissionId}_${fileName}` : fileName;
+    setDownloadingFile(downloadKey);
+    
+    console.log('📥 Download attempt:', { fileUrl, fileName, submissionId });
+    
+    // Extract the full path after "assignments/"
+    let filePath = '';
+    
+    if (fileUrl.includes('assignments/')) {
+      // Extract everything after "assignments/"
+      const match = fileUrl.match(/assignments\/(.*)/);
+      if (match && match[1]) {
+        filePath = match[1];
+        console.log('📂 Extracted file path:', filePath);
+      }
+    }
+    
+    if (!filePath) {
+      console.error('❌ Could not extract file path from URL:', fileUrl);
+      alert('Invalid file URL format');
+      return;
+    }
+    
+    // Construct proper Supabase URL
+    const projectRef = supabase.supabaseUrl.split('//')[1].split('.')[0];
+    const fullUrl = `https://${projectRef}.supabase.co/storage/v1/object/public/assignments/${filePath}`;
+    console.log('🔗 Full download URL:', fullUrl);
+    
+    // Get public URL
+    const { data: publicUrlData } = supabase.storage
+      .from('assignments')
+      .getPublicUrl(filePath);
+    
+    console.log('🌐 Generated public URL:', publicUrlData.publicUrl);
+    
+    // First try: direct fetch with the full URL
+    try {
+      console.log('🔧 Method 1: Trying direct download with full path...');
+      const response = await fetch(fullUrl);
+      
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName || filePath.split('/').pop() || 'assignment_submission';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        console.log('✅ Direct download successful');
+      } else {
+        console.warn('⚠️ Direct download failed, trying storage API...');
+        throw new Error(`HTTP ${response.status}`);
+      }
+    } catch (directError) {
+      console.warn('⚠️ Direct download error:', directError.message);
+      
+      // Second try: Supabase storage API with full path
+      try {
+        console.log('🔧 Method 2: Trying storage API with path:', filePath);
+        const { data, error: downloadError } = await supabase.storage
+          .from('assignments')
+          .download(filePath);
+        
+        if (downloadError) {
+          console.error('❌ Storage API error:', downloadError);
+          // Last resort: open in new tab
+          console.log('🔄 Opening public URL in new tab...');
+          window.open(publicUrlData.publicUrl, '_blank');
+        } else {
+          const url = window.URL.createObjectURL(data);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = fileName || filePath.split('/').pop() || 'assignment_submission';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          window.URL.revokeObjectURL(url);
+          console.log('✅ Storage API download successful');
+        }
+      } catch (storageError) {
+        console.error('❌ Storage error:', storageError);
+        // Final fallback
+        window.open(publicUrlData.publicUrl, '_blank');
+      }
+    }
+    
+    // Update download count
+    if (submissionId) {
+      try {
+        await supabase
+          .from('assignment_submissions')
+          .update({ 
+            download_count: (assignmentSubmissions.find(s => s.submission_id === submissionId)?.download_count || 0) + 1 
+          })
+          .eq('id', submissionId);
+      } catch (countError) {
+        console.warn('⚠️ Could not update download count:', countError);
+      }
+    }
+    
+  } catch (error) {
+    console.error('❌ Download error:', error);
+    alert('Error downloading file: ' + error.message);
+  } finally {
+    setDownloadingFile(null);
+  }
+  };
+  // =================== DEBUG FUNCTIONS ===================
+const debugStudentRelationship = async () => {
+  console.log('🔍 Debugging student-submission relationship...');
+  
+  try {
+    // 1. Check the schema of assignment_submissions
+    const { data: submissionSchema } = await supabase
+      .from('assignment_submissions')
+      .select('*')
+      .limit(1);
+    
+    console.log('📋 assignment_submissions schema sample:', submissionSchema);
+    
+    // 2. Check the schema of students
+    const { data: studentSchema } = await supabase
+      .from('students')
+      .select('*')
+      .limit(1);
+    
+    console.log('📋 students schema sample:', studentSchema);
+    
+    // 3. Try to find a matching student
+    if (submissionSchema && submissionSchema.length > 0) {
+      const submission = submissionSchema[0];
+      console.log('📝 Sample submission student_id:', submission.student_id);
+      
+      // Try to find this student
+      const { data: matchingStudent } = await supabase
+        .from('students')
+        .select('*')
+        .eq('id', submission.student_id)
+        .single();
+      
+      console.log('👤 Student found by UUID:', matchingStudent);
+      
+      // If not found by UUID, try by student_id field
+      if (!matchingStudent) {
+        // Check if student_id might be stored as a string ID
+        const { data: studentByStringId } = await supabase
+          .from('students')
+          .select('*')
+          .ilike('student_id', `%${submission.student_id}%`)
+          .limit(5);
+        
+        console.log('🔤 Students found by string ID search:', studentByStringId);
+      }
+    }
+    
+    // 4. Check if there are any students at all
+    const { data: allStudents, count: studentCount } = await supabase
+      .from('students')
+      .select('*', { count: 'exact', head: false });
+    
+    console.log(`👥 Total students in database: ${studentCount}`);
+    console.log('📊 First 3 students:', allStudents?.slice(0, 3));
+    
+    alert(`Debug complete. Check console for details.\nTotal students: ${studentCount}`);
+    
+  } catch (error) {
+    console.error('❌ Debug error:', error);
+    alert('Debug failed: ' + error.message);
+  }
+};
 
-  // Fetch lecturer's assignments
-  const fetchMyAssignments = async () => {
-    if (!isLecturer) return;
+const testBucketAccess = async () => {
+  console.log('🧪 Testing bucket access...');
+  
+  try {
+    // Test 1: List files in assignments bucket
+    const { data: files, error: listError } = await supabase.storage
+      .from('assignments')
+      .list();
+    
+    console.log('📁 Bucket files:', files);
+    console.log('📊 Total files:', files?.length || 0);
+    
+    if (listError) {
+      console.error('❌ Bucket listing error:', listError);
+      alert(`Cannot access bucket: ${listError.message}`);
+      return;
+    }
+    
+    // Test 2: Try to download a sample file if exists
+    if (files && files.length > 0) {
+      const testFile = files[0].name;
+      console.log('📄 Testing with file:', testFile);
+      
+      // Test public URL
+      const { data: publicUrlData } = supabase.storage
+        .from('assignments')
+        .getPublicUrl(testFile);
+      
+      console.log('🔗 Public URL:', publicUrlData.publicUrl);
+      
+      // Test download
+      const { data: fileData, error: downloadError } = await supabase.storage
+        .from('assignments')
+        .download(testFile);
+      
+      if (downloadError) {
+        console.warn('⚠️ Test download failed:', downloadError);
+        alert(`Bucket exists but download failed: ${downloadError.message}\n\nTry making the bucket public in Supabase Dashboard.`);
+      } else {
+        console.log('✅ Test download successful!');
+        alert(`Bucket access successful! Found ${files.length} files.\n\nPublic URL for "${testFile}":\n${publicUrlData.publicUrl}`);
+      }
+    } else {
+      console.log('📭 Bucket is empty');
+      alert('Bucket exists but is empty.');
+    }
+    
+  } catch (error) {
+    console.error('❌ Bucket test error:', error);
+    alert('Bucket test failed: ' + error.message);
+  }
+};
+
+const testSpecificFile = async () => {
+  const testFilePath = 'e26efb58-2093-4619-9cc9-4f0de6f8648c/b190625d-9fca-401a-8102-9ce82d3266a2/1766055967374_0_https.docx';
+  
+  console.log('🧪 Testing specific file path:', testFilePath);
+  
+  try {
+    // Test 1: List to see if the file exists in that path
+    const { data: listData, error: listError } = await supabase.storage
+      .from('assignments')
+      .list('e26efb58-2093-4619-9cc9-4f0de6f8648c/b190625d-9fca-401a-8102-9ce82d3266a2');
+    
+    console.log('📁 Files in subfolder:', listData);
+    
+    // Test 2: Get public URL
+    const { data: publicUrlData } = supabase.storage
+      .from('assignments')
+      .getPublicUrl(testFilePath);
+    
+    console.log('🔗 Public URL:', publicUrlData.publicUrl);
+    
+    // Test 3: Try to download
+    const { data: fileData, error: downloadError } = await supabase.storage
+      .from('assignments')
+      .download(testFilePath);
+    
+    if (downloadError) {
+      console.error('❌ Download test failed:', downloadError);
+      alert(`Cannot download: ${downloadError.message}\n\nTry checking bucket policies for nested folders.`);
+    } else {
+      console.log('✅ Download test successful!');
+      alert(`File exists at path: ${testFilePath}\n\nPublic URL:\n${publicUrlData.publicUrl}`);
+    }
+    
+  } catch (error) {
+    console.error('❌ Test error:', error);
+    alert('Test failed: ' + error.message);
+  }
+};
+
+const testStudentDataRetrieval = async () => {
+  console.log('🔍 Testing student data retrieval...');
+  
+  try {
+    // Get all submissions to see what student IDs we have
+    const { data: submissions } = await supabase
+      .from('assignment_submissions')
+      .select('student_id')
+      .limit(5);
+    
+    console.log('📋 Sample submissions with student IDs:', submissions);
+    
+    if (submissions && submissions.length > 0) {
+      // Try to get these students
+      const studentIds = submissions.map(s => s.student_id).filter(id => id);
+      console.log('👥 Student IDs to look up:', studentIds);
+      
+      // Try by UUID first
+      const { data: studentsByUuid, error: uuidError } = await supabase
+        .from('students')
+        .select('*')
+        .in('id', studentIds);
+      
+      console.log('👤 Students found by UUID:', studentsByUuid);
+      console.log('❌ UUID error:', uuidError);
+      
+      // Try by student_id string
+      const studentIdStrings = studentIds.filter(id => typeof id === 'string' && id.includes('-'));
+      if (studentIdStrings.length > 0) {
+        const { data: studentsByStringId, error: stringError } = await supabase
+          .from('students')
+          .select('*')
+          .in('student_id', studentIdStrings);
+        
+        console.log('🔤 Students found by string ID:', studentsByStringId);
+        console.log('❌ String ID error:', stringError);
+      }
+    }
+    
+    // Count total students
+    const { data: allStudents, count: totalStudents } = await supabase
+      .from('students')
+      .select('*', { count: 'exact', head: false });
+    
+    console.log(`👥 Total students in database: ${totalStudents}`);
+    console.log('📊 Sample students:', allStudents?.slice(0, 3));
+    
+    alert(`Student data test complete.\nTotal students: ${totalStudents}\nCheck console for details.`);
+    
+  } catch (error) {
+    console.error('❌ Student test error:', error);
+    alert('Student test failed: ' + error.message);
+  }
+};
+  
+  const downloadAllFilesForSubmission = async (submission) => {
+    if (!submission.file_download_urls || submission.file_download_urls.length === 0) {
+      alert('No files to download');
+      return;
+    }
+    
+    setBatchDownloading(true);
+    setBatchProgress({ current: 0, total: submission.file_download_urls.length });
     
     try {
-      const { data, error } = await supabase.rpc('get_lecturer_assignments', {
+      for (let i = 0; i < submission.file_download_urls.length; i++) {
+        const url = submission.file_download_urls[i];
+        const originalUrl = submission.file_urls[i];
+        const fileExt = getFileExtension(originalUrl || url);
+        const fileName = `${submission.student_name}_${submission.assignment_title}_file${i + 1}.${fileExt}`
+          .replace(/[^a-zA-Z0-9._-]/g, '_');
+        
+        setBatchProgress({ current: i + 1, total: submission.file_download_urls.length });
+        
+        await downloadFile(url, fileName, submission.submission_id);
+        
+        // Add delay between downloads
+        if (i < submission.file_download_urls.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+      
+      alert(`All ${submission.file_download_urls.length} files downloaded successfully!`);
+    } catch (error) {
+      console.error('Batch download error:', error);
+      alert('Error downloading files: ' + error.message);
+    } finally {
+      setBatchDownloading(false);
+      setBatchProgress({ current: 0, total: 0 });
+    }
+  };
+
+  const downloadAllSubmissions = async () => {
+    if (assignmentSubmissions.length === 0) {
+      alert('No submissions to download');
+      return;
+    }
+    
+    const submissionsWithFiles = assignmentSubmissions.filter(
+      sub => sub.file_download_urls && sub.file_download_urls.length > 0
+    );
+    
+    if (submissionsWithFiles.length === 0) {
+      alert('No files found in submissions');
+      return;
+    }
+    
+    setBatchDownloading(true);
+    setBatchProgress({ current: 0, total: submissionsWithFiles.length });
+    
+    try {
+      for (let i = 0; i < submissionsWithFiles.length; i++) {
+        const submission = submissionsWithFiles[i];
+        setBatchProgress({ current: i + 1, total: submissionsWithFiles.length });
+        
+        for (let j = 0; j < submission.file_download_urls.length; j++) {
+          const url = submission.file_download_urls[j];
+          const originalUrl = submission.file_urls[j];
+          const fileExt = getFileExtension(originalUrl || url);
+          const fileName = `${submission.student_name}_${submission.assignment_title}_${i + 1}_${j + 1}.${fileExt}`
+            .replace(/[^a-zA-Z0-9._-]/g, '_');
+          
+          await downloadFile(url, fileName, submission.submission_id);
+          
+          // Small delay between files
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+        
+        // Delay between students
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      alert(`All files from ${submissionsWithFiles.length} submissions downloaded!`);
+    } catch (error) {
+      console.error('All submissions download error:', error);
+      alert('Error downloading submissions: ' + error.message);
+    } finally {
+      setBatchDownloading(false);
+      setBatchProgress({ current: 0, total: 0 });
+    }
+  };
+
+  const getFileExtension = (url) => {
+    if (!url) return 'txt';
+    const urlWithoutParams = url.split('?')[0];
+    const parts = urlWithoutParams.split('.');
+    return parts.length > 1 ? parts.pop().toLowerCase() : 'txt';
+  };
+
+  const getFileNameFromUrl = (url) => {
+    if (!url) return 'file';
+    const urlWithoutParams = url.split('?')[0];
+    return urlWithoutParams.split('/').pop() || 'file';
+  };
+
+  // =================== ASSIGNMENT MANAGEMENT FUNCTIONS ===================
+ const fetchMyAssignments = async () => {
+  if (!isLecturer) return;
+ 
+  console.log('DEBUG: Fetching assignments for lecturer:', profile.id);
+  
+  try {
+    // First try the complex function
+    const { data, error } = await supabase.rpc('get_lecturer_assignments', {
+      p_lecturer_id: profile.id
+    });
+    
+    console.log('DEBUG: RPC function result:', { data, error });
+    
+    if (error) {
+      console.error('RPC function error, trying simple version:', error);
+      
+      // Try simple function
+      const { data: simpleData, error: simpleError } = await supabase.rpc('get_lecturer_assignments_simple', {
         p_lecturer_id: profile.id
       });
       
-      if (error) throw error;
-      setMyAssignments(data || []);
+      if (simpleError) {
+        console.error('Simple RPC also failed, using direct query:', simpleError);
+        
+        // Fallback to direct query
+        const { data: directData, error: directError } = await supabase
+          .from('assignments')
+          .select(`
+            id,
+            title,
+            description,
+            due_date,
+            total_marks,
+            status,
+            course_id,
+            courses!inner (
+              course_code,
+              course_name,
+              department_code
+            )
+          `)
+          .eq('lecturer_id', profile.id)
+          .order('due_date', { ascending: true });
+        
+        if (directError) {
+          console.error('Direct query error:', directError);
+          throw directError;
+        }
+        
+        console.log('DEBUG: Direct query result:', directData);
+        
+        // Process each assignment to get submission counts
+        const processedAssignments = await Promise.all(
+          (directData || []).map(async (assignment) => {
+            // Get submission counts
+            const { data: submissionsData, error: submissionsError } = await supabase
+              .from('assignment_submissions')
+              .select('id, status')
+              .eq('assignment_id', assignment.id);
+            
+            console.log(`DEBUG: Submissions for assignment ${assignment.id}:`, submissionsData);
+            
+            const submittedCount = submissionsData?.filter(s => s.status === 'submitted' || s.status === 'graded').length || 0;
+            const gradedCount = submissionsData?.filter(s => s.status === 'graded').length || 0;
+            
+            // Get total students in course
+            const { data: courseStudents } = await supabase
+              .from('student_courses')
+              .select('student_id')
+              .eq('course_id', assignment.course_id);
+            
+            const totalStudents = courseStudents?.length || 0;
+            
+            return {
+              assignment_id: assignment.id,
+              title: assignment.title,
+              description: assignment.description,
+              due_date: assignment.due_date,
+              total_marks: assignment.total_marks,
+              status: assignment.status,
+              course_code: assignment.courses?.course_code,
+              course_name: assignment.courses?.course_name,
+              department_code: assignment.courses?.department_code,
+              submitted_count: submittedCount,
+              not_submitted_count: totalStudents - submittedCount,
+              graded_count: gradedCount,
+              total_students: totalStudents,
+              submission_rate: totalStudents > 0 ? Math.round((submittedCount / totalStudents) * 100) : 0
+            };
+          })
+        );
+        
+        console.log('DEBUG: Processed assignments:', processedAssignments);
+        setMyAssignments(processedAssignments);
+        return;
+      }
       
-    } catch (error) {
-      console.error('Error fetching my assignments:', error);
+      console.log('DEBUG: Simple RPC result:', simpleData);
+      
+      // Process simple data
+      const processedSimpleData = await Promise.all(
+        (simpleData || []).map(async (assignment) => {
+          // Get submission counts
+          const { data: submissionsData } = await supabase
+            .from('assignment_submissions')
+            .select('id, status')
+            .eq('assignment_id', assignment.assignment_id);
+          
+          const submittedCount = submissionsData?.filter(s => s.status === 'submitted' || s.status === 'graded').length || 0;
+          const gradedCount = submissionsData?.filter(s => s.status === 'graded').length || 0;
+          
+          // Get total students in course (we need course_id - but we don't have it in simple data)
+          // We'll need to get the assignment to find course_id
+          const { data: fullAssignment } = await supabase
+            .from('assignments')
+            .select('course_id')
+            .eq('id', assignment.assignment_id)
+            .single();
+          
+          let totalStudents = 0;
+          if (fullAssignment?.course_id) {
+            const { data: courseStudents } = await supabase
+              .from('student_courses')
+              .select('student_id')
+              .eq('course_id', fullAssignment.course_id);
+            
+            totalStudents = courseStudents?.length || 0;
+          }
+          
+          return {
+            ...assignment,
+            submitted_count: submittedCount,
+            not_submitted_count: totalStudents - submittedCount,
+            graded_count: gradedCount,
+            total_students: totalStudents,
+            submission_rate: totalStudents > 0 ? Math.round((submittedCount / totalStudents) * 100) : 0
+          };
+        })
+      );
+      
+      console.log('DEBUG: Processed simple data:', processedSimpleData);
+      setMyAssignments(processedSimpleData);
+      return;
     }
-  };
-
-  // Fetch assignment submissions
-  const fetchAssignmentSubmissions = async (assignmentId) => {
+    
+    console.log('DEBUG: RPC function successful:', data);
+    setMyAssignments(data || []);
+    
+  } catch (error) {
+    console.error('Error fetching my assignments:', error);
+    
+    // Last resort: get basic assignments only
     try {
-      const { data, error } = await supabase.rpc('get_assignment_submissions_detail', {
-        p_assignment_id: assignmentId
+      const { data: basicAssignments } = await supabase
+        .from('assignments')
+        .select('id, title, due_date, total_marks, status')
+        .eq('lecturer_id', profile.id);
+      
+      console.log('DEBUG: Basic assignments fallback:', basicAssignments);
+      
+      const formattedAssignments = (basicAssignments || []).map(a => ({
+        assignment_id: a.id,
+        title: a.title,
+        due_date: a.due_date,
+        total_marks: a.total_marks,
+        status: a.status,
+        course_code: 'N/A',
+        course_name: 'N/A',
+        department_code: 'N/A',
+        submitted_count: 0,
+        not_submitted_count: 0,
+        graded_count: 0,
+        total_students: 0,
+        submission_rate: 0
+      }));
+      
+      setMyAssignments(formattedAssignments);
+    } catch (fallbackError) {
+      console.error('Complete failure:', fallbackError);
+      setMyAssignments([]);
+    }
+  }
+};
+
+const fetchAssignmentSubmissions = async (assignmentId) => {
+  console.log('🚀 DEBUG: Starting to fetch submissions for assignment:', assignmentId);
+  
+  if (!assignmentId) {
+    console.error('ERROR: No assignment ID provided');
+    setAssignmentSubmissions([]);
+    return;
+  }
+  
+  try {
+    console.log('🔍 Step 1: Fetching submissions...');
+    
+    const { data: submissions, error: submissionsError } = await supabase
+      .from('assignment_submissions')
+      .select('*')
+      .eq('assignment_id', assignmentId)
+      .order('submission_date', { ascending: false });
+    
+    if (submissionsError) throw submissionsError;
+    
+    console.log('📊 Found submissions:', submissions?.length || 0);
+    
+    if (!submissions || submissions.length === 0) {
+      setAssignmentSubmissions([]);
+      return;
+    }
+    
+    // Get ALL students to debug the relationship
+    const { data: allStudents } = await supabase
+      .from('students')
+      .select('id, student_id, full_name, email, program, department_code')
+      .limit(100);
+    
+    console.log('👥 All students in system:', allStudents?.length || 0);
+    console.log('📋 Sample student:', allStudents?.[0]);
+    
+    // Create multiple maps for different lookup methods
+    const studentMapById = {}; // Map by UUID
+    const studentMapByStudentId = {}; // Map by string ID (STU-...)
+    
+    allStudents?.forEach(student => {
+      studentMapById[student.id] = student;
+      if (student.student_id) {
+        studentMapByStudentId[student.student_id] = student;
+      }
+    });
+    
+    // Get assignment details
+    const { data: assignmentData } = await supabase
+      .from('assignments')
+      .select('title, due_date, total_marks')
+      .eq('id', assignmentId)
+      .single();
+    
+    // Process submissions
+    const processedSubmissions = submissions.map((sub, index) => {
+      console.log(`🔍 Processing submission ${index + 1}:`, {
+        submission_id: sub.id,
+        student_id_in_submission: sub.student_id,
+        student_id_type: typeof sub.student_id,
+        student_id_length: sub.student_id?.length
       });
       
-      if (error) throw error;
-      setAssignmentSubmissions(data || []);
+      let student = null;
       
-    } catch (error) {
-      console.error('Error fetching submissions:', error);
-    }
-  };
+      // Try to find student by ID (UUID)
+      if (sub.student_id && studentMapById[sub.student_id]) {
+        student = studentMapById[sub.student_id];
+        console.log(`✅ Found student by UUID: ${student.full_name}`);
+      }
+      // Try to find by student_id string
+      else if (sub.student_id && studentMapByStudentId[sub.student_id]) {
+        student = studentMapByStudentId[sub.student_id];
+        console.log(`✅ Found student by string ID: ${student.full_name}`);
+      }
+      // Try to find by partial match
+      else if (sub.student_id && typeof sub.student_id === 'string') {
+        for (const studentIdStr in studentMapByStudentId) {
+          if (studentIdStr.includes(sub.student_id) || sub.student_id.includes(studentIdStr)) {
+            student = studentMapByStudentId[studentIdStr];
+            console.log(`✅ Found student by partial match: ${student.full_name}`);
+            break;
+          }
+        }
+      }
+      
+      if (!student) {
+        console.log(`❌ No student found for submission ${sub.id} with student_id: ${sub.student_id}`);
+      }
+      
+      const submissionDate = sub.submission_date ? new Date(sub.submission_date) : null;
+      const dueDate = assignmentData?.due_date ? new Date(assignmentData.due_date) : null;
+      const isLate = submissionDate && dueDate && submissionDate > dueDate;
+      const daysLate = isLate ? Math.ceil((submissionDate - dueDate) / (1000 * 60 * 60 * 24)) : 0;
+      
+      // Generate download URLs
+      const fileDownloadUrls = (sub.file_urls || []).map(url => {
+        if (url && url.startsWith('http')) return url;
+        if (!url) return '';
+        const projectRef = supabase.supabaseUrl.split('//')[1].split('.')[0];
+        return `https://${projectRef}.supabase.co/storage/v1/object/public/assignments/${url}`;
+      }).filter(url => url && url !== '');
+      
+      return {
+        submission_id: sub.id,
+        student_id: sub.student_id,
+        student_name: student?.full_name || 'Unknown Student',
+        student_email: student?.email || 'No email',
+        student_program: student?.program || 'N/A',
+        student_department: student?.department_code || 'N/A',
+        submission_date: sub.submission_date,
+        submitted_text: sub.submitted_text,
+        file_urls: sub.file_urls || [],
+        file_download_urls: fileDownloadUrls,
+        status: sub.status || 'submitted',
+        marks_obtained: sub.marks_obtained,
+        feedback: sub.feedback,
+        graded_at: sub.graded_at,
+        late_submission: isLate,
+        days_late: daysLate,
+        assignment_title: assignmentData?.title || selectedAssignment?.title,
+        assignment_due_date: assignmentData?.due_date,
+        assignment_total_marks: assignmentData?.total_marks || selectedAssignment?.total_marks || 100
+      };
+    });
+    
+    console.log('✅ Final processed submissions:', processedSubmissions);
+    setAssignmentSubmissions(processedSubmissions);
+    
+  } catch (error) {
+    console.error('❌ Error in fetchAssignmentSubmissions:', error);
+    alert('Error loading submissions: ' + error.message);
+    setAssignmentSubmissions([]);
+  }
+};
 
-  // Fetch lecturer statistics
+// Helper function to process submissions when student data is unavailable
+const processSubmissionsWithoutStudents = (submissions, assignmentId) => {
+  // This function creates a basic submission object without student details
+  return submissions.map(sub => {
+    const submissionDate = sub.submission_date ? new Date(sub.submission_date) : null;
+    
+    // Generate download URLs
+    const fileDownloadUrls = (sub.file_urls || []).map(url => {
+      if (url && url.startsWith('http')) return url;
+      
+      if (!url) return '';
+      
+      const projectRef = supabase.supabaseUrl.split('//')[1].split('.')[0];
+      return `https://${projectRef}.supabase.co/storage/v1/object/public/assignments/${url}`;
+    }).filter(url => url && url !== '');
+    
+    return {
+      submission_id: sub.id,
+      student_id: sub.student_id || 'Unknown ID',
+      student_name: 'Unknown Student',
+      student_email: 'No email',
+      student_program: 'N/A',
+      student_department: 'N/A',
+      submission_date: sub.submission_date,
+      submitted_text: sub.submitted_text,
+      file_urls: sub.file_urls || [],
+      file_download_urls: fileDownloadUrls,
+      status: sub.status || 'submitted',
+      marks_obtained: sub.marks_obtained,
+      feedback: sub.feedback,
+      graded_at: sub.graded_at,
+      late_submission: false,
+      days_late: 0,
+      assignment_title: selectedAssignment?.title,
+      assignment_total_marks: selectedAssignment?.total_marks || 100
+    };
+  });
+};
   const fetchLecturerStatistics = async () => {
     if (!isLecturer) return;
-    
+   
     try {
       const { data, error } = await supabase.rpc('get_lecturer_statistics', {
         p_lecturer_id: profile.id
       });
-      
+     
       if (error) throw error;
-      
+     
       if (data && data.length > 0) {
         setStats(prev => ({
           ...prev,
@@ -343,67 +1096,70 @@ const AdminDashboard = () => {
           pendingGrading: data[0].pending_submissions || 0,
           gradedSubmissions: data[0].graded_submissions || 0,
           averageGrade: data[0].average_grading_time_hours || 0,
-          submissionRate: data[0].total_assignments > 0 
-            ? Math.round((data[0].graded_submissions / data[0].total_assignments) * 100) 
+          submissionRate: data[0].total_assignments > 0
+            ? Math.round((data[0].graded_submissions / data[0].total_assignments) * 100)
             : 0
         }));
       }
-      
+     
     } catch (error) {
       console.error('Error fetching lecturer stats:', error);
     }
   };
 
- // AdminDashboard.jsx - UPDATED FILE UPLOAD SECTION
-
-// In the handleCreateAssignment function, update the upload logic:
 const uploadAssignmentFiles = async (files) => {
   if (!files || files.length === 0) return [];
-  
-  const uploadedUrls = [];
+
+  const uploadedPaths = [];
   setUploadingFiles(true);
-  
+  setUploadProgress(0);
+
   try {
+    console.log('📤 Starting easy upload to lecturerbucket...', files.length, 'files');
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
-      
-      // IMPORTANT: Upload to a dedicated "assignment-questions" bucket
-      const filePath = `assignment-questions/${fileName}`;
-      
+      const originalName = file.name;
+
+      // Create a clean, unique filename
+      const timestamp = Date.now();
+      const randomStr = Math.random().toString(36).substring(2, 8);
+      const safeName = originalName.replace(/[^a-zA-Z0-9.]/g, '_');
+      const fileName = `${timestamp}_${randomStr}_${safeName}`;
+      const filePath = fileName; // Store just the filename (no folders needed)
+
       // Update progress
-      setUploadProgress(Math.round((i / files.length) * 100));
-      
-      // Upload to storage
-      const { data, error: uploadError } = await supabase.storage
-        .from('assignment-questions')  // Different bucket for assignment questions
-        .upload(filePath, file);
-      
-      if (uploadError) {
-        console.error('Upload error:', uploadError);
-        continue;
+      setUploadProgress(Math.round(((i + 1) / files.length) * 100));
+
+      console.log(`📤 Uploading ${i + 1}/${files.length}: ${originalName} → ${filePath}`);
+
+      // Simple, clean upload using authenticated Supabase client
+      const { data, error } = await supabase.storage
+        .from('lecturerbucket')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: false, // Set to true if you want to allow overwriting same name
+          contentType: file.type || 'application/octet-stream'
+        });
+
+      if (error) {
+        console.error(`❌ Failed to upload ${originalName}:`, error.message);
+        alert(`Failed to upload "${originalName}": ${error.message}`);
+        continue; // Skip this file, continue with others
       }
-      
-      // Get public URL - IMPORTANT: Use getPublicUrl
-      const { data: { publicUrl } } = supabase.storage
-        .from('assignment-questions')
-        .getPublicUrl(filePath);
-      
-      console.log('Uploaded file URL:', publicUrl);
-      
-      uploadedUrls.push({
-        url: publicUrl,
-        name: file.name,
-        size: file.size,
-        type: file.type
-      });
+
+      console.log(`✅ Uploaded: ${originalName} → ${filePath}`);
+      uploadedPaths.push(filePath);
     }
-    
-    return uploadedUrls.map(u => u.url);
-    
+
+    console.log('🎉 All files uploaded successfully!', uploadedPaths);
+    alert(`✅ Successfully uploaded ${uploadedPaths.length} file(s)!`);
+
+    return uploadedPaths;
+
   } catch (error) {
-    console.error('Error uploading files:', error);
+    console.error('❌ Unexpected upload error:', error);
+    alert('Upload failed: ' + error.message);
     return [];
   } finally {
     setUploadingFiles(false);
@@ -411,99 +1167,133 @@ const uploadAssignmentFiles = async (files) => {
   }
 };
 
-  // Create assignment with files
-  const handleCreateAssignment = async () => {
-    try {
-      setLoading(prev => ({ ...prev, creatingAssignment: true }));
-      
-      // Upload files if any
-      let fileUrls = [];
-      if (assignmentFiles.length > 0) {
-        fileUrls = await uploadAssignmentFiles(assignmentFiles);
-      }
-      
-      // Create assignment
-      const assignmentData = {
-        course_id: newAssignment.course_id,
-        lecturer_id: profile.id,
-        title: newAssignment.title,
-        due_date: newAssignment.due_date,
-        total_marks: newAssignment.total_marks,
-        description: newAssignment.description,
-        instructions: newAssignment.instructions,
-        submission_type: newAssignment.submission_type,
-        max_file_size: newAssignment.max_file_size,
-        allowed_formats: newAssignment.allowed_formats,
-        file_urls: fileUrls,
-        status: 'published'
-      };
-      
-      const { error } = await supabase
-        .from('assignments')
-        .insert([assignmentData]);
-      
-      if (error) throw error;
-      
-      // Reset form and close modal
-      setNewAssignment({
-        course_id: '',
-        title: '',
-        description: '',
-        instructions: '',
-        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16),
-        total_marks: 100,
-        submission_type: 'file',
-        max_file_size: 10,
-        allowed_formats: ['pdf', 'doc', 'docx', 'zip'],
-        file_urls: []
-      });
-      setAssignmentFiles([]);
-      setShowAssignmentUploadModal(false);
-      
-      // Refresh data
-      await Promise.all([
-        fetchMyAssignments(),
-        fetchDashboardStats(),
-        fetchLecturerStatistics()
-      ]);
-      
-      alert('Assignment created successfully!');
-      
-    } catch (error) {
-      console.error('Error creating assignment:', error);
-      alert('Error creating assignment: ' + error.message);
-    } finally {
-      setLoading(prev => ({ ...prev, creatingAssignment: false }));
-    }
-  };
+const handleCreateAssignment = async () => {
+  try {
+    setLoading(prev => ({ ...prev, creatingAssignment: true }));
 
-  // Grade submission
+    console.log('🔍 Creating new assignment...');
+
+    // Upload files first (to lecturerbucket)
+    let fileUrls = [];
+    if (assignmentFiles.length > 0) {
+      console.log('📤 Uploading files to lecturerbucket...');
+      fileUrls = await uploadAssignmentFiles(assignmentFiles);
+
+      if (fileUrls.length !== assignmentFiles.length) {
+        alert('⚠️ Some files failed to upload. Continuing with successful ones.');
+      }
+
+      console.log('✅ Files uploaded:', fileUrls);
+    }
+
+    // Basic validation
+    if (!newAssignment.course_id) {
+      alert('Please select a course');
+      return;
+    }
+
+    if (!newAssignment.title.trim()) {
+      alert('Please enter an assignment title');
+      return;
+    }
+
+    // Use current logged-in user's ID as lecturer_id
+    const lecturerId = profile?.id;
+    if (!lecturerId) {
+      alert('Error: User not authenticated. Please log in again.');
+      return;
+    }
+
+    // Prepare assignment data
+    const assignmentData = {
+      course_id: newAssignment.course_id,
+      lecturer_id: lecturerId,
+      title: newAssignment.title.trim(),
+      description: newAssignment.description?.trim() || '',
+      instructions: newAssignment.instructions?.trim() || '',
+      due_date: newAssignment.due_date,
+      total_marks: Number(newAssignment.total_marks) || 100,
+      submission_type: newAssignment.submission_type || 'file',
+      max_file_size: Number(newAssignment.max_file_size) || 10,
+      allowed_formats: newAssignment.allowed_formats || ['pdf', 'doc', 'docx', 'zip'],
+      file_urls: fileUrls, // Array of file paths in lecturerbucket
+      status: 'published',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    console.log('📝 Inserting assignment into database:', assignmentData);
+
+    // Insert into assignments table
+    const { data, error } = await supabase
+      .from('assignments')
+      .insert([assignmentData])
+      .select();
+
+    if (error) {
+      console.error('❌ Failed to create assignment:', error);
+      alert(`Failed to create assignment: ${error.message}`);
+      return;
+    }
+
+    console.log('✅ Assignment created successfully:', data);
+
+    // Success! Reset everything
+    setNewAssignment({
+      course_id: '',
+      title: '',
+      description: '',
+      instructions: '',
+      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16),
+      total_marks: 100,
+      submission_type: 'file',
+      max_file_size: 10,
+      allowed_formats: ['pdf', 'doc', 'docx', 'zip'],
+      file_urls: []
+    });
+
+    setAssignmentFiles([]);
+    setShowAssignmentUploadModal(false);
+
+    // Refresh data
+    await fetchMyAssignments();
+    await fetchDashboardStats();
+
+    alert('✅ Assignment created successfully with attached files!');
+
+  } catch (error) {
+    console.error('❌ Unexpected error in handleCreateAssignment:', error);
+    alert('An unexpected error occurred. Please try again.');
+  } finally {
+    setLoading(prev => ({ ...prev, creatingAssignment: false }));
+  }
+};
   const handleGradeSubmission = async (submissionId, marks, feedback) => {
     try {
       setGradingInProgress(true);
-      
+     
       const { error } = await supabase
         .from('assignment_submissions')
-        .update({ 
+        .update({
           marks_obtained: marks,
           feedback: feedback,
           status: 'graded',
           graded_at: new Date().toISOString()
         })
         .eq('id', submissionId);
-      
+     
       if (error) throw error;
-      
+     
       // Refresh submissions
       if (selectedAssignment) {
         fetchAssignmentSubmissions(selectedAssignment.id);
       }
-      
+     
       // Refresh stats
       fetchLecturerStatistics();
-      
+     
       return true;
-      
+     
     } catch (error) {
       console.error('Error grading submission:', error);
       alert('Error grading submission: ' + error.message);
@@ -513,16 +1303,15 @@ const uploadAssignmentFiles = async (files) => {
     }
   };
 
-  // Bulk grade submissions
   const handleBulkGrade = async () => {
     if (selectedSubmissions.length === 0) {
       alert('Please select submissions to grade');
       return;
     }
-    
+   
     try {
       setGradingInProgress(true);
-      
+     
       const updates = selectedSubmissions.map(submissionId => {
         const gradeData = gradeForm[submissionId];
         if (gradeData && gradeData.marks !== '') {
@@ -536,12 +1325,12 @@ const uploadAssignmentFiles = async (files) => {
         }
         return null;
       }).filter(update => update !== null);
-      
+     
       if (updates.length === 0) {
         alert('Please enter marks for selected submissions');
         return;
       }
-      
+     
       // Update each submission
       for (const update of updates) {
         const { error } = await supabase
@@ -553,25 +1342,25 @@ const uploadAssignmentFiles = async (files) => {
             graded_at: update.graded_at
           })
           .eq('id', update.id);
-        
+       
         if (error) {
           console.error('Error grading submission:', update.id, error);
         }
       }
-      
+     
       // Refresh data
       if (selectedAssignment) {
         fetchAssignmentSubmissions(selectedAssignment.id);
       }
       fetchLecturerStatistics();
-      
+     
       // Reset
       setSelectedSubmissions([]);
       setGradeForm({});
       setBulkGrading(false);
-      
+     
       alert(`${updates.length} submissions graded successfully!`);
-      
+     
     } catch (error) {
       console.error('Error bulk grading:', error);
       alert('Error grading submissions: ' + error.message);
@@ -580,40 +1369,38 @@ const uploadAssignmentFiles = async (files) => {
     }
   };
 
-  // Update assignment status
   const handleUpdateAssignmentStatus = async (assignmentId, status) => {
     if (!window.confirm(`Change assignment status to "${status}"?`)) return;
-    
+   
     try {
       const { error } = await supabase
         .from('assignments')
         .update({ status })
         .eq('id', assignmentId)
         .eq('lecturer_id', profile.id);
-      
+     
       if (error) throw error;
-      
+     
       // Refresh data
       fetchMyAssignments();
       fetchDashboardStats();
-      
+     
       alert(`Assignment status updated to "${status}"`);
-      
+     
     } catch (error) {
       console.error('Error updating assignment status:', error);
       alert('Error updating assignment status: ' + error.message);
     }
   };
 
-  // Download submissions as CSV
   const downloadSubmissionsCSV = () => {
     if (assignmentSubmissions.length === 0) {
       alert('No submissions to download');
       return;
     }
-    
-    const headers = ['Student Name', 'Student Email', 'Program', 'Submission Date', 'Status', 'Marks', 'Feedback', 'Late Submission'];
-    
+   
+    const headers = ['Student Name', 'Student Email', 'Program', 'Submission Date', 'Status', 'Marks', 'Feedback', 'Late Submission', 'Files'];
+   
     const csvData = assignmentSubmissions.map(sub => [
       sub.student_name,
       sub.student_email,
@@ -622,14 +1409,15 @@ const uploadAssignmentFiles = async (files) => {
       sub.status,
       sub.marks_obtained || 'Not Graded',
       sub.feedback || 'No feedback',
-      sub.late_submission ? 'Yes' : 'No'
+      sub.late_submission ? 'Yes' : 'No',
+      sub.file_urls ? sub.file_urls.join('; ') : 'No files'
     ]);
-    
+   
     const csvContent = [
       headers.join(','),
       ...csvData.map(row => row.map(cell => `"${cell}"`).join(','))
     ].join('\n');
-    
+   
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -642,27 +1430,26 @@ const uploadAssignmentFiles = async (files) => {
   };
 
   // =================== EXISTING FUNCTIONS ===================
-
   const fetchDashboardStats = async () => {
     try {
       // Student counts
       let studentQuery = supabase
         .from('students')
         .select('*', { count: 'exact', head: true });
-      
+     
       if (isLecturer && departmentCodes.length > 0) {
         studentQuery = studentQuery.in('department_code', departmentCodes);
       }
-      
+     
       // Course counts
       let courseQuery = supabase
         .from('courses')
         .select('*', { count: 'exact', head: true });
-      
+     
       if (isLecturer && departmentCodes.length > 0) {
         courseQuery = courseQuery.in('department_code', departmentCodes);
       }
-
+      
       // Execute all queries
       const [
         studentsRes,
@@ -683,18 +1470,18 @@ const uploadAssignmentFiles = async (files) => {
         supabase.from('attendance_records').select('status'),
         supabase.from('lectures').select('*', { count: 'exact', head: true })
       ]);
-
+      
       // Additional stats
       const [pendingExams, pendingAssignments, pendingPayments] = await Promise.all([
         supabase.from('examinations').select('*', { count: 'exact', head: true }).eq('status', 'published'),
         supabase.from('assignments').select('*', { count: 'exact', head: true }).gt('due_date', new Date().toISOString()),
         supabase.from('financial_records').select('*', { count: 'exact', head: true }).eq('status', 'pending')
       ]);
-
+      
       const presentAttendance = attendanceRes.data?.filter(a => a.status === 'present').length || 0;
       const totalAttendance = attendanceRes.data?.length || 1;
       const attendanceRate = Math.round((presentAttendance / totalAttendance) * 100);
-
+      
       setStats(prev => ({
         ...prev,
         totalStudents: studentsRes.count || 0,
@@ -721,20 +1508,20 @@ const uploadAssignmentFiles = async (files) => {
         .select('*')
         .limit(50)
         .order('created_at', { ascending: false });
-      
+     
       if (searchTerm) {
         query = query.or(`full_name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,student_id.ilike.%${searchTerm}%`);
       }
-      
+     
       if (isLecturer && departmentCodes.length > 0) {
         query = query.in('department_code', departmentCodes);
       }
-      
+     
       const { data, error } = await query;
-      
+     
       if (error) throw error;
       setStudents(data || []);
-      
+     
     } catch (error) {
       console.error('Error fetching students:', error);
     }
@@ -747,7 +1534,7 @@ const uploadAssignmentFiles = async (files) => {
         .select('*, lecturer_departments(department_code, department_name)')
         .limit(50)
         .order('created_at', { ascending: false });
-      
+     
       if (error) throw error;
       setLecturers(data || []);
     } catch (error) {
@@ -763,20 +1550,20 @@ const uploadAssignmentFiles = async (files) => {
         .limit(50)
         .order('year')
         .order('semester');
-      
+     
       if (searchTerm) {
         query = query.or(`course_code.ilike.%${searchTerm}%,course_name.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%`);
       }
-      
+     
       if (isLecturer && departmentCodes.length > 0) {
         query = query.in('department_code', departmentCodes);
       }
-      
+     
       const { data, error } = await query;
-      
+     
       if (error) throw error;
       setCourses(data || []);
-      
+     
     } catch (error) {
       console.error('Error fetching courses:', error);
     }
@@ -793,16 +1580,16 @@ const uploadAssignmentFiles = async (files) => {
         `)
         .limit(50)
         .order('due_date', { ascending: true });
-      
+     
       if (isLecturer) {
         query = query.eq('lecturer_id', profile.id);
       }
-      
+     
       const { data, error } = await query;
-      
+     
       if (error) throw error;
       setAssignments(data || []);
-      
+     
     } catch (error) {
       console.error('Error fetching assignments:', error);
     }
@@ -818,22 +1605,22 @@ const uploadAssignmentFiles = async (files) => {
         `)
         .limit(50)
         .order('start_time', { ascending: true });
-      
+     
       if (isLecturer && departmentCodes.length > 0) {
         // Get courses in lecturer's departments
         const { data: deptCourses } = await supabase
           .from('courses')
           .select('id')
           .in('department_code', departmentCodes);
-        
+       
         const courseIds = deptCourses?.map(c => c.id) || [];
         if (courseIds.length > 0) {
           query = query.in('course_id', courseIds);
         }
       }
-      
+     
       const { data, error } = await query;
-      
+     
       if (error) throw error;
       setExams(data || []);
     } catch (error) {
@@ -848,9 +1635,9 @@ const uploadAssignmentFiles = async (files) => {
         .select('*')
         .limit(50)
         .order('created_at', { ascending: false });
-      
+     
       const { data, error } = await query;
-      
+     
       if (error) throw error;
       setFinancialRecords(data || []);
     } catch (error) {
@@ -863,7 +1650,7 @@ const uploadAssignmentFiles = async (files) => {
       console.log('=== DEBUG: START FETCHING LECTURES ===');
       console.log('Current time:', new Date().toLocaleString());
       console.log('Profile ID:', profile?.id);
-      
+     
       // Fetch lectures with course and lecturer details
       let query = supabase
         .from('lectures')
@@ -874,44 +1661,44 @@ const uploadAssignmentFiles = async (files) => {
         `)
         .order('scheduled_date', { ascending: true })
         .order('start_time', { ascending: true });
-      
+     
       if (isLecturer) {
         console.log('DEBUG: Filtering for lecturer with ID:', profile.id);
         query = query.eq('lecturer_id', profile.id);
       }
-      
+     
       const { data, error } = await query;
-      
+     
       if (error) {
         console.error('DEBUG: Error fetching lectures:', error);
         throw error;
       }
-      
+     
       console.log('DEBUG: Found lectures:', data?.length || 0);
-      
+     
       // Process lectures to categorize them
       const processedLectures = (data || []).map(lecture => {
         const now = new Date();
         const today = now.toISOString().split('T')[0];
-        
+       
         // Create date strings for comparison (using local time)
         const lectureDateStr = lecture.scheduled_date;
         const isToday = lectureDateStr === today;
-        
+       
         // Parse times carefully
         const parseTimeToMinutes = (timeStr) => {
           if (!timeStr) return 0;
           const [hours, minutes] = timeStr.split(':').map(Number);
           return hours * 60 + minutes;
         };
-        
+       
         const startMinutes = parseTimeToMinutes(lecture.start_time);
         const endMinutes = parseTimeToMinutes(lecture.end_time);
         const nowMinutes = now.getHours() * 60 + now.getMinutes();
-        
+       
         // Determine status - ONLY use database status, don't auto-update
         let status = lecture.status || 'scheduled';
-        
+       
         // Only check if it's today and times make sense
         if (isToday && lecture.status === 'scheduled') {
           if (nowMinutes >= startMinutes && nowMinutes <= endMinutes) {
@@ -919,7 +1706,7 @@ const uploadAssignmentFiles = async (files) => {
           }
           // Don't automatically mark as completed - let the lecturer do that manually
         }
-        
+       
         // Format date and time for display
         const lectureDate = new Date(lecture.scheduled_date);
         const formattedDate = lectureDate.toLocaleDateString('en-US', {
@@ -928,7 +1715,7 @@ const uploadAssignmentFiles = async (files) => {
           month: 'long',
           day: 'numeric'
         });
-        
+       
         // Format time properly - handle 12:00 AM correctly
         const formatTimeDisplay = (timeStr) => {
           if (!timeStr) return 'TBD';
@@ -939,7 +1726,7 @@ const uploadAssignmentFiles = async (files) => {
           const displayHour = hourNum % 12 || 12;
           return `${displayHour}:${minuteStr.padStart(2, '0')} ${ampm}`;
         };
-        
+       
         return {
           ...lecture,
           formattedDate: formattedDate,
@@ -964,10 +1751,10 @@ const uploadAssignmentFiles = async (files) => {
           }
         };
       });
-      
+     
       console.log('DEBUG: Processed lectures with statuses:');
       processedLectures.forEach((lecture, idx) => {
-        console.log(`  Lecture ${idx + 1}:`, {
+        console.log(` Lecture ${idx + 1}:`, {
           title: lecture.title,
           date: lecture.scheduled_date,
           time: `${lecture.start_time} - ${lecture.end_time}`,
@@ -976,12 +1763,12 @@ const uploadAssignmentFiles = async (files) => {
           debug: lecture._debug
         });
       });
-      
+     
       console.log('DEBUG: Setting lectures state with:', processedLectures.length, 'lectures');
       setLectures(processedLectures);
-      
+     
       console.log('=== DEBUG: END FETCHING LECTURES ===');
-      
+     
     } catch (error) {
       console.error('DEBUG: Error in fetchLectures:', error);
       setLectures([]);
@@ -995,9 +1782,9 @@ const uploadAssignmentFiles = async (files) => {
         .select('*')
         .limit(100)
         .order('date', { ascending: false });
-      
+     
       const { data, error } = await query;
-      
+     
       if (error) throw error;
       setAttendance(data || []);
     } catch (error) {
@@ -1020,7 +1807,7 @@ const uploadAssignmentFiles = async (files) => {
     try {
       let tableName, data;
       const password = 'Default123!';
-      
+     
       if (newUser.role === 'student') {
         const studentId = `STU-${Date.now().toString().slice(-6)}`;
         data = {
@@ -1051,13 +1838,13 @@ const uploadAssignmentFiles = async (files) => {
         };
         tableName = 'lecturers';
       }
-      
+     
       const { error } = await supabase
         .from(tableName)
         .insert([data]);
-      
+     
       if (error) throw error;
-      
+     
       setShowUserModal(false);
       setNewUser({
         full_name: '',
@@ -1070,14 +1857,14 @@ const uploadAssignmentFiles = async (files) => {
         specialization: '',
         google_meet_link: ''
       });
-      
+     
       if (tableName === 'students') {
         fetchStudents();
       } else {
         fetchLecturers();
       }
       fetchDashboardStats();
-      
+     
     } catch (error) {
       console.error('Error adding user:', error);
       alert('Error adding user: ' + error.message);
@@ -1089,9 +1876,9 @@ const uploadAssignmentFiles = async (files) => {
       const { error } = await supabase
         .from('courses')
         .insert([newCourse]);
-      
+     
       if (error) throw error;
-      
+     
       setShowCourseModal(false);
       setNewCourse({
         course_code: '',
@@ -1106,10 +1893,10 @@ const uploadAssignmentFiles = async (files) => {
         department_code: '',
         is_core: true
       });
-      
+     
       fetchCourses();
       fetchDashboardStats();
-      
+     
     } catch (error) {
       console.error('Error adding course:', error);
       alert('Error adding course: ' + error.message);
@@ -1123,13 +1910,13 @@ const uploadAssignmentFiles = async (files) => {
         lecturer_id: profile.id,
         status: 'published'
       };
-      
+     
       const { error } = await supabase
         .from('assignments')
         .insert([assignmentData]);
-      
+     
       if (error) throw error;
-      
+     
       setShowAssignmentModal(false);
       setNewAssignment({
         course_id: '',
@@ -1140,10 +1927,10 @@ const uploadAssignmentFiles = async (files) => {
         total_marks: 100,
         submission_type: 'file'
       });
-      
+     
       fetchAssignments();
       fetchDashboardStats();
-      
+     
     } catch (error) {
       console.error('Error adding assignment:', error);
       alert('Error adding assignment: ' + error.message);
@@ -1155,32 +1942,31 @@ const uploadAssignmentFiles = async (files) => {
       console.log('DEBUG: Starting to add lecture');
       console.log('DEBUG: New lecture data:', newLecture);
       console.log('DEBUG: Profile ID:', profile?.id);
-      
+     
       // Validate required fields
-      if (!newLecture.course_id || !newLecture.title || !newLecture.scheduled_date || 
+      if (!newLecture.course_id || !newLecture.title || !newLecture.scheduled_date ||
           !newLecture.start_time || !newLecture.end_time) {
         alert('Please fill in all required fields');
         return;
       }
-
       // Calculate duration in minutes
       const start = new Date(`${newLecture.scheduled_date}T${newLecture.start_time}`);
       const end = new Date(`${newLecture.scheduled_date}T${newLecture.end_time}`);
       const durationMinutes = Math.round((end - start) / (1000 * 60));
-      
+     
       // Get course department code
       const { data: courseData, error: courseError } = await supabase
         .from('courses')
         .select('department_code, course_code, course_name')
         .eq('id', newLecture.course_id)
         .single();
-      
+     
       if (courseError) {
         console.error('DEBUG: Error fetching course:', courseError);
       }
-      
+     
       console.log('DEBUG: Course data:', courseData);
-      
+     
       const lectureData = {
         lecturer_id: profile.id,
         course_id: newLecture.course_id,
@@ -1197,21 +1983,21 @@ const uploadAssignmentFiles = async (files) => {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
-      
+     
       console.log('DEBUG: Lecture data to insert:', lectureData);
-      
+     
       const { data, error } = await supabase
         .from('lectures')
         .insert([lectureData])
         .select();
-      
+     
       if (error) {
         console.error('DEBUG: Supabase error inserting lecture:', error);
         throw error;
       }
-      
+     
       console.log('DEBUG: Lecture added successfully:', data);
-      
+     
       setShowLectureModal(false);
       setNewLecture({
         course_id: '',
@@ -1225,14 +2011,14 @@ const uploadAssignmentFiles = async (files) => {
         materials_url: [],
         status: 'scheduled'
       });
-      
+     
       // Refresh lectures immediately
       console.log('DEBUG: Refreshing lectures after adding...');
       await fetchLectures();
       await fetchDashboardStats();
-      
+     
       alert('Lecture scheduled successfully!');
-      
+     
     } catch (error) {
       console.error('DEBUG: Error adding lecture:', error);
       alert('Error adding lecture: ' + error.message);
@@ -1245,13 +2031,13 @@ const uploadAssignmentFiles = async (files) => {
         ...newExam,
         lecturer_id: profile.id
       };
-      
+     
       const { error } = await supabase
         .from('examinations')
         .insert([examData]);
-      
+     
       if (error) throw error;
-      
+     
       setShowExamsModal(false);
       setNewExam({
         course_id: '',
@@ -1264,12 +2050,12 @@ const uploadAssignmentFiles = async (files) => {
         venue: 'Main Hall',
         status: 'scheduled'
       });
-      
+     
       fetchExams();
       fetchDashboardStats();
-      
+     
       alert('Exam scheduled successfully!');
-      
+     
     } catch (error) {
       console.error('Error adding exam:', error);
       alert('Error adding exam: ' + error.message);
@@ -1281,9 +2067,9 @@ const uploadAssignmentFiles = async (files) => {
       const { error } = await supabase
         .from('financial_records')
         .insert([newFinanceRecord]);
-      
+     
       if (error) throw error;
-      
+     
       setShowFinanceModal(false);
       setNewFinanceRecord({
         student_id: '',
@@ -1293,12 +2079,12 @@ const uploadAssignmentFiles = async (files) => {
         status: 'pending',
         receipt_number: `REC-${Date.now().toString().slice(-6)}`
       });
-      
+     
       fetchFinancialRecords();
       fetchDashboardStats();
-      
+     
       alert('Financial record added successfully!');
-      
+     
     } catch (error) {
       console.error('Error adding financial record:', error);
       alert('Error adding financial record: ' + error.message);
@@ -1310,9 +2096,9 @@ const uploadAssignmentFiles = async (files) => {
       const { error } = await supabase
         .from('attendance_records')
         .insert([newAttendanceRecord]);
-      
+     
       if (error) throw error;
-      
+     
       setShowAttendanceModal(false);
       setNewAttendanceRecord({
         student_id: '',
@@ -1323,12 +2109,12 @@ const uploadAssignmentFiles = async (files) => {
         check_out_time: '11:00',
         remarks: ''
       });
-      
+     
       fetchAttendanceData();
       fetchDashboardStats();
-      
+     
       alert('Attendance record added successfully!');
-      
+     
     } catch (error) {
       console.error('Error adding attendance record:', error);
       alert('Error adding attendance record: ' + error.message);
@@ -1341,17 +2127,17 @@ const uploadAssignmentFiles = async (files) => {
       console.log('DEBUG: Starting lecture with ID:', lectureId);
       const { error } = await supabase
         .from('lectures')
-        .update({ 
+        .update({
           status: 'ongoing',
           updated_at: new Date().toISOString()
         })
         .eq('id', lectureId);
-      
+     
       if (error) throw error;
-      
+     
       fetchLectures();
       alert('Lecture started successfully!');
-      
+     
     } catch (error) {
       console.error('Error starting lecture:', error);
       alert('Error starting lecture: ' + error.message);
@@ -1362,17 +2148,17 @@ const uploadAssignmentFiles = async (files) => {
     try {
       const { error } = await supabase
         .from('lectures')
-        .update({ 
+        .update({
           status: 'completed',
           updated_at: new Date().toISOString()
         })
         .eq('id', lectureId);
-      
+     
       if (error) throw error;
-      
+     
       fetchLectures();
       alert('Lecture ended successfully!');
-      
+     
     } catch (error) {
       console.error('Error ending lecture:', error);
       alert('Error ending lecture: ' + error.message);
@@ -1393,9 +2179,9 @@ const uploadAssignmentFiles = async (files) => {
           updated_at: new Date().toISOString()
         })
         .eq('id', editingLecture.id);
-      
+     
       if (error) throw error;
-      
+     
       setEditingLecture(null);
       setEditLecture({
         title: '',
@@ -1405,10 +2191,10 @@ const uploadAssignmentFiles = async (files) => {
         start_time: '',
         end_time: ''
       });
-      
+     
       fetchLectures();
       alert('Lecture updated successfully!');
-      
+     
     } catch (error) {
       console.error('Error updating lecture:', error);
       alert('Error updating lecture: ' + error.message);
@@ -1419,18 +2205,18 @@ const uploadAssignmentFiles = async (files) => {
     if (!window.confirm('Are you sure you want to delete this lecture?')) {
       return;
     }
-    
+   
     try {
       const { error } = await supabase
         .from('lectures')
         .delete()
         .eq('id', lectureId);
-      
+     
       if (error) throw error;
-      
+     
       fetchLectures();
       alert('Lecture deleted successfully!');
-      
+     
     } catch (error) {
       console.error('Error deleting lecture:', error);
       alert('Error deleting lecture: ' + error.message);
@@ -1451,13 +2237,13 @@ const uploadAssignmentFiles = async (files) => {
           updated_at: new Date().toISOString()
         })
         .eq('id', editingExam.id);
-      
+     
       if (error) throw error;
-      
+     
       setEditingExam(null);
       fetchExams();
       alert('Exam updated successfully!');
-      
+     
     } catch (error) {
       console.error('Error updating exam:', error);
       alert('Error updating exam: ' + error.message);
@@ -1468,18 +2254,18 @@ const uploadAssignmentFiles = async (files) => {
     if (!window.confirm('Are you sure you want to delete this exam?')) {
       return;
     }
-    
+   
     try {
       const { error } = await supabase
         .from('examinations')
         .delete()
         .eq('id', examId);
-      
+     
       if (error) throw error;
-      
+     
       fetchExams();
       alert('Exam deleted successfully!');
-      
+     
     } catch (error) {
       console.error('Error deleting exam:', error);
       alert('Error deleting exam: ' + error.message);
@@ -1493,12 +2279,12 @@ const uploadAssignmentFiles = async (files) => {
         .from('students')
         .update({ status })
         .eq('id', studentId);
-      
+     
       if (error) throw error;
-      
+     
       fetchStudents();
       alert('Student status updated!');
-      
+     
     } catch (error) {
       console.error('Error updating student:', error);
       alert('Error updating student: ' + error.message);
@@ -1512,12 +2298,12 @@ const uploadAssignmentFiles = async (files) => {
         .from('courses')
         .update({ is_active: !isActive })
         .eq('id', courseId);
-      
+     
       if (error) throw error;
-      
+     
       fetchCourses();
       alert(`Course ${!isActive ? 'activated' : 'deactivated'}!`);
-      
+     
     } catch (error) {
       console.error('Error updating course:', error);
       alert('Error updating course: ' + error.message);
@@ -1531,12 +2317,12 @@ const uploadAssignmentFiles = async (files) => {
         .from('financial_records')
         .update({ status })
         .eq('id', recordId);
-      
+     
       if (error) throw error;
-      
+     
       fetchFinancialRecords();
       alert(`Payment marked as ${status}!`);
-      
+     
     } catch (error) {
       console.error('Error updating finance record:', error);
       alert('Error updating finance record: ' + error.message);
@@ -1558,7 +2344,7 @@ const uploadAssignmentFiles = async (files) => {
     if (!lecturer.lecturer_departments || lecturer.lecturer_departments.length === 0) {
       return <span className="text-muted small-text">No departments</span>;
     }
-    
+   
     return (
       <div className="departments-badges">
         {lecturer.lecturer_departments.slice(0, 3).map((dept, idx) => (
@@ -1582,16 +2368,16 @@ const uploadAssignmentFiles = async (files) => {
 
   const getUpcomingLectures = () => {
     const today = new Date().toISOString().split('T')[0];
-    return lectures.filter(lecture => 
-      (lecture.status === 'scheduled' || lecture.status === 'ongoing') && 
+    return lectures.filter(lecture =>
+      (lecture.status === 'scheduled' || lecture.status === 'ongoing') &&
       lecture.scheduled_date >= today
     );
   };
 
   const getPastLectures = () => {
     const today = new Date().toISOString().split('T')[0];
-    return lectures.filter(lecture => 
-      lecture.status === 'completed' || 
+    return lectures.filter(lecture =>
+      lecture.status === 'completed' ||
       (lecture.status === 'scheduled' && lecture.scheduled_date < today)
     );
   };
@@ -1617,7 +2403,7 @@ const uploadAssignmentFiles = async (files) => {
     const allIds = assignmentSubmissions
       .filter(sub => sub.status === 'submitted')
       .map(sub => sub.submission_id);
-    
+   
     if (selectedSubmissions.length === allIds.length) {
       setSelectedSubmissions([]);
     } else {
@@ -1660,7 +2446,7 @@ const uploadAssignmentFiles = async (files) => {
           <p>
             Please contact the system administrator to request department access.
           </p>
-          <button 
+          <button
             onClick={() => supabase.auth.signOut()}
             className="restricted-logout-button"
           >
@@ -1705,7 +2491,7 @@ const uploadAssignmentFiles = async (files) => {
               </div>
             )}
           </div>
-          
+         
           <div className="user-section">
             <div className="user-info">
               <div className={`avatar ${isAdmin ? 'admin' : 'lecturer'}`}>
@@ -1720,7 +2506,7 @@ const uploadAssignmentFiles = async (files) => {
                 </p>
               </div>
             </div>
-            <button 
+            <button
               className="logout-button"
               onClick={() => setShowLogoutModal(true)}
             >
@@ -1732,28 +2518,27 @@ const uploadAssignmentFiles = async (files) => {
 
       {/* Navigation */}
       <nav className="dashboard-nav">
-        <button 
+        <button
           className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}
           onClick={() => setActiveTab('dashboard')}
         >
           📊 Dashboard
         </button>
-
         {isLecturer && (
           <>
-            <button 
+            <button
               className={`nav-item ${activeTab === 'my-assignments' ? 'active' : ''}`}
               onClick={() => setActiveTab('my-assignments')}
             >
               📝 My Assignments
             </button>
-            <button 
+            <button
               className={`nav-item ${activeTab === 'lectures' ? 'active' : ''}`}
               onClick={() => setActiveTab('lectures')}
             >
               🎓 My Lectures
             </button>
-            <button 
+            <button
               className={`nav-item ${activeTab === 'grading' ? 'active' : ''}`}
               onClick={() => setActiveTab('grading')}
             >
@@ -1761,49 +2546,45 @@ const uploadAssignmentFiles = async (files) => {
             </button>
           </>
         )}
-
-        <button 
+        <button
           className={`nav-item ${activeTab === 'students' ? 'active' : ''}`}
           onClick={() => setActiveTab('students')}
         >
           👥 Students
         </button>
-
-        <button 
+        <button
           className={`nav-item ${activeTab === 'courses' ? 'active' : ''}`}
           onClick={() => setActiveTab('courses')}
         >
           📖 Courses
         </button>
-
-        <button 
+        <button
           className={`nav-item ${activeTab === 'exams' ? 'active' : ''}`}
           onClick={() => setActiveTab('exams')}
         >
           🎯 Exams
         </button>
-
         {isAdmin && (
           <>
-            <button 
+            <button
               className={`nav-item ${activeTab === 'lecturers' ? 'active' : ''}`}
               onClick={() => setActiveTab('lecturers')}
             >
               👨‍🏫 Lecturers
             </button>
-            <button 
+            <button
               className={`nav-item ${activeTab === 'finance' ? 'active' : ''}`}
               onClick={() => setActiveTab('finance')}
             >
               💰 Finance
             </button>
-            <button 
+            <button
               className={`nav-item ${activeTab === 'attendance' ? 'active' : ''}`}
               onClick={() => setActiveTab('attendance')}
             >
               📅 Attendance
             </button>
-            <button 
+            <button
               className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`}
               onClick={() => setActiveTab('settings')}
             >
@@ -1829,19 +2610,19 @@ const uploadAssignmentFiles = async (files) => {
                 <div className="welcome-section">
                   <div>
                     <h2>
-                      {isAdmin 
-                        ? `Welcome, System Administrator! 👑` 
+                      {isAdmin
+                        ? `Welcome, System Administrator! 👑`
                         : `Welcome, ${profile.full_name?.split(' ')[0] || 'Lecturer'}! 👨‍🏫`
                       }
                     </h2>
                     <p>
-                      {isAdmin 
+                      {isAdmin
                         ? `Last updated: ${new Date().toLocaleTimeString()}`
                         : `Managing ${allowedDepartments?.length || 0} department${(allowedDepartments?.length || 0) !== 1 ? 's' : ''} • ${new Date().toLocaleDateString()}`
                       }
                     </p>
                   </div>
-                  <button 
+                  <button
                     onClick={initializeDashboard}
                     disabled={loading.dashboard}
                     className="refresh-button"
@@ -1862,7 +2643,7 @@ const uploadAssignmentFiles = async (files) => {
                       </div>
                     )}
                   </div>
-                  
+                 
                   {isAdmin && (
                     <div className="stat-card">
                       <div className="stat-icon">👨‍🏫</div>
@@ -1870,7 +2651,7 @@ const uploadAssignmentFiles = async (files) => {
                       <p>Lecturers</p>
                     </div>
                   )}
-                  
+                 
                   <div className="stat-card">
                     <div className="stat-icon">📚</div>
                     <h3>{stats.totalCourses}</h3>
@@ -1881,19 +2662,19 @@ const uploadAssignmentFiles = async (files) => {
                       </div>
                     )}
                   </div>
-                  
+                 
                   <div className="stat-card">
                     <div className="stat-icon">📝</div>
                     <h3>{stats.totalAssignments}</h3>
                     <p>Assignments</p>
                   </div>
-                  
+                 
                   <div className="stat-card">
                     <div className="stat-icon">🎓</div>
                     <h3>{stats.totalLectures || 0}</h3>
                     <p>Lectures</p>
                   </div>
-                  
+                 
                   {isAdmin && (
                     <div className="stat-card">
                       <div className="stat-icon">💰</div>
@@ -1910,19 +2691,19 @@ const uploadAssignmentFiles = async (files) => {
                         <h3>{stats.myAssignments}</h3>
                         <p>My Assignments</p>
                       </div>
-                      
+                     
                       <div className="stat-card warning">
                         <div className="stat-icon">⏰</div>
                         <h3>{stats.pendingGrading}</h3>
                         <p>Pending Grading</p>
                       </div>
-                      
+                     
                       <div className="stat-card success">
                         <div className="stat-icon">✅</div>
                         <h3>{stats.gradedSubmissions}</h3>
                         <p>Graded</p>
                       </div>
-                      
+                     
                       <div className="stat-card">
                         <div className="stat-icon">📈</div>
                         <h3>{stats.submissionRate}%</h3>
@@ -1938,7 +2719,7 @@ const uploadAssignmentFiles = async (files) => {
                   <div className="actions-grid">
                     {isLecturer && (
                       <>
-                        <button 
+                        <button
                           className="action-button"
                           onClick={() => setShowAssignmentUploadModal(true)}
                         >
@@ -1946,8 +2727,8 @@ const uploadAssignmentFiles = async (files) => {
                           <span>Create Assignment</span>
                           <small>With file upload</small>
                         </button>
-                        
-                        <button 
+                       
+                        <button
                           className="action-button"
                           onClick={() => setShowLectureModal(true)}
                         >
@@ -1955,8 +2736,8 @@ const uploadAssignmentFiles = async (files) => {
                           <span>Schedule Lecture</span>
                           <small>With Google Meet</small>
                         </button>
-                        
-                        <button 
+                       
+                        <button
                           className="action-button"
                           onClick={() => setActiveTab('grading')}
                         >
@@ -1964,8 +2745,8 @@ const uploadAssignmentFiles = async (files) => {
                           <span>Grade Submissions</span>
                           <small>Pending: {stats.pendingGrading}</small>
                         </button>
-                        
-                        <button 
+                       
+                        <button
                           className="action-button"
                           onClick={() => setActiveTab('my-assignments')}
                         >
@@ -1975,10 +2756,10 @@ const uploadAssignmentFiles = async (files) => {
                         </button>
                       </>
                     )}
-                    
+                   
                     {isAdmin && (
                       <>
-                        <button 
+                        <button
                           className="action-button"
                           onClick={() => setShowUserModal(true)}
                         >
@@ -1986,8 +2767,8 @@ const uploadAssignmentFiles = async (files) => {
                           <span>Add New User</span>
                           <small>Student or Lecturer</small>
                         </button>
-                        
-                        <button 
+                       
+                        <button
                           className="action-button"
                           onClick={() => setShowCourseModal(true)}
                         >
@@ -1995,8 +2776,8 @@ const uploadAssignmentFiles = async (files) => {
                           <span>Add New Course</span>
                           <small>Academic program</small>
                         </button>
-                        
-                        <button 
+                       
+                        <button
                           className="action-button"
                           onClick={() => setActiveTab('finance')}
                         >
@@ -2014,14 +2795,14 @@ const uploadAssignmentFiles = async (files) => {
                   <div className="upcoming-lectures-section">
                     <div className="section-header">
                       <h3>🎥 Live & Upcoming Lectures</h3>
-                      <button 
+                      <button
                         className="view-all-button"
                         onClick={() => setActiveTab('lectures')}
                       >
                         View All →
                       </button>
                     </div>
-                    
+                   
                     {/* Live Lectures */}
                     <div className="lectures-grid">
                       {getLiveLectures().length > 0 ? (
@@ -2042,15 +2823,15 @@ const uploadAssignmentFiles = async (files) => {
                             </div>
                             {lecture.meetLink && (
                               <div className="lecture-actions">
-                                <a 
-                                  href={lecture.meetLink} 
-                                  target="_blank" 
-                                  rel="noreferrer" 
+                                <a
+                                  href={lecture.meetLink}
+                                  target="_blank"
+                                  rel="noreferrer"
                                   className="meet-link join-btn"
                                 >
                                   🎥 Join Google Meet
                                 </a>
-                                <button 
+                                <button
                                   className="action-btn end"
                                   onClick={() => handleEndLecture(lecture.id)}
                                 >
@@ -2087,15 +2868,15 @@ const uploadAssignmentFiles = async (files) => {
                             </div>
                             {lecture.meetLink && (
                               <div className="lecture-actions">
-                                <a 
-                                  href={lecture.meetLink} 
-                                  target="_blank" 
-                                  rel="noreferrer" 
+                                <a
+                                  href={lecture.meetLink}
+                                  target="_blank"
+                                  rel="noreferrer"
                                   className="meet-link"
                                 >
                                   🔗 Copy Meeting Link
                                 </a>
-                                <button 
+                                <button
                                   className="action-btn start"
                                   onClick={() => handleStartLecture(lecture.id)}
                                 >
@@ -2159,7 +2940,7 @@ const uploadAssignmentFiles = async (files) => {
                 <div className="tab-header">
                   <h2>📝 My Assignments</h2>
                   <div className="tab-actions">
-                    <button 
+                    <button
                       className="add-button"
                       onClick={() => setShowAssignmentUploadModal(true)}
                     >
@@ -2167,7 +2948,7 @@ const uploadAssignmentFiles = async (files) => {
                     </button>
                   </div>
                 </div>
-                
+               
                 {/* Assignment Statistics */}
                 <div className="assignment-stats">
                   <div className="stat-card-small">
@@ -2187,7 +2968,7 @@ const uploadAssignmentFiles = async (files) => {
                     <p>Submission Rate</p>
                   </div>
                 </div>
-                
+               
                 {/* Assignments List */}
                 <div className="assignments-list">
                   {myAssignments.length > 0 ? (
@@ -2245,7 +3026,7 @@ const uploadAssignmentFiles = async (files) => {
                                 </div>
                                 {assignment.total_students > 0 && (
                                   <div className="progress-bar">
-                                    <div 
+                                    <div
                                       className="progress-fill"
                                       style={{
                                         width: `${assignment.submission_rate || 0}%`
@@ -2259,7 +3040,7 @@ const uploadAssignmentFiles = async (files) => {
                               </td>
                               <td>
                                 <div className="action-buttons">
-                                  <button 
+                                  <button
                                     className="action-btn view"
                                     onClick={() => handleViewSubmissions({
                                       id: assignment.assignment_id,
@@ -2272,22 +3053,22 @@ const uploadAssignmentFiles = async (files) => {
                                   <div className="dropdown">
                                     <button className="action-btn more">⋮</button>
                                     <div className="dropdown-content">
-                                      <button 
+                                      <button
                                         onClick={() => handleUpdateAssignmentStatus(assignment.assignment_id, 'published')}
                                       >
                                         Publish
                                       </button>
-                                      <button 
+                                      <button
                                         onClick={() => handleUpdateAssignmentStatus(assignment.assignment_id, 'draft')}
                                       >
                                         Draft
                                       </button>
-                                      <button 
+                                      <button
                                         onClick={() => handleUpdateAssignmentStatus(assignment.assignment_id, 'closed')}
                                       >
                                         Close
                                       </button>
-                                      <button 
+                                      <button
                                         onClick={() => {
                                           if (window.confirm('Delete this assignment?')) {
                                             // Implement delete
@@ -2309,7 +3090,7 @@ const uploadAssignmentFiles = async (files) => {
                   ) : (
                     <div className="empty-state">
                       <p>No assignments found</p>
-                      <button 
+                      <button
                         onClick={() => setShowAssignmentUploadModal(true)}
                         className="add-button"
                       >
@@ -2321,354 +3102,721 @@ const uploadAssignmentFiles = async (files) => {
               </div>
             )}
 
-            {/* Grading Tab - Lecturer Only */}
-            {activeTab === 'grading' && isLecturer && (
-              <div className="tab-content">
-                <div className="tab-header">
-                  <h2>📊 Grading Center</h2>
-                  <div className="tab-actions">
-                    {bulkGrading && selectedSubmissions.length > 0 && (
-                      <button 
-                        className="add-button"
-                        onClick={handleBulkGrade}
-                        disabled={gradingInProgress}
-                      >
-                        {gradingInProgress ? 'Grading...' : `Grade ${selectedSubmissions.length} Selected`}
-                      </button>
-                    )}
-                    <button 
-                      className="action-button"
-                      onClick={() => setBulkGrading(!bulkGrading)}
+          {/* Grading Tab - Lecturer Only */}
+              {activeTab === 'grading' && isLecturer && (
+                
+                <div className="tab-content">
+                   {/* DEBUG INFO - Remove this after testing */}
+    <div className="debug-info" style={{
+      background: '#fff3cd',
+      border: '1px solid #ffeaa7',
+      borderRadius: '8px',
+      padding: '15px',
+      marginBottom: '20px',
+      fontSize: '13px'
+    }}>
+      <h4 style={{ marginTop: 0, color: '#856404' }}>🔍 Debug Information</h4>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
+        <div>
+          <strong>Lecturer ID:</strong> {profile?.id}
+        </div>
+        <div>
+          <strong>Total Assignments:</strong> {myAssignments.length}
+        </div>
+        <div>
+          <strong>Assignments with submissions:</strong> {myAssignments.filter(a => (a.submitted_count || 0) > 0).length}
+        </div>
+        <div>
+          <strong>Dashboard pending:</strong> {stats.pendingGrading}
+        </div>
+      </div>
+      <button
+        onClick={() => {
+          console.log('DEBUG: myAssignments:', myAssignments);
+          console.log('DEBUG: Profile:', profile);
+          fetchMyAssignments();
+        }}
+        style={{
+          marginTop: '10px',
+          background: '#17a2b8',
+          color: 'white',
+          border: 'none',
+          padding: '8px 16px',
+          borderRadius: '4px',
+          cursor: 'pointer',
+          fontSize: '12px'
+        }}
+      >
+        🔄 Refresh & Debug
+      </button>
+      <button
+  onClick={async () => {
+    console.log('Testing bucket connection...');
+    
+    // Test 1: List files in assignments bucket
+    const { data: files, error: listError } = await supabase.storage
+      .from('assignments')
+      .list();
+    
+    console.log('Bucket files:', files);
+    console.log('List error:', listError);
+    
+    // Test 2: Check if we can access any file
+    if (files && files.length > 0) {
+      const testFile = files[0].name;
+      const { data: urlData } = supabase.storage
+        .from('assignments')
+        .getPublicUrl(testFile);
+      
+      console.log('Public URL for', testFile, ':', urlData.publicUrl);
+    }
+    
+    alert('Check console for bucket connection test results');
+  }}
+  style={{
+    background: '#6c757d',
+    color: 'white',
+    border: 'none',
+    padding: '8px 16px',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '12px',
+    marginLeft: '10px'
+  }}
+>
+  🪣 Test Bucket Connection
+                    </button>
+                    
+                  </div>
+                  <div className="debug-info" style={{
+  background: '#fff3cd',
+  border: '1px solid #ffeaa7',
+  borderRadius: '8px',
+  padding: '15px',
+  marginBottom: '20px',
+  fontSize: '13px'
+}}>
+  <h4 style={{ marginTop: 0, color: '#856404' }}>🔍 Debug Information</h4>
+  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
+    <div>
+      <strong>Lecturer ID:</strong> {profile?.id}
+    </div>
+    <div>
+      <strong>Total Assignments:</strong> {myAssignments.length}
+    </div>
+    <div>
+      <strong>Assignments with submissions:</strong> {myAssignments.filter(a => (a.submitted_count || 0) > 0).length}
+    </div>
+    <div>
+      <strong>Dashboard pending:</strong> {stats.pendingGrading}
+    </div>
+    <div>
+      <strong>Selected Assignment:</strong> {selectedAssignment?.id ? 'Yes' : 'No'}
+    </div>
+    <div>
+      <strong>Current Submissions:</strong> {assignmentSubmissions.length}
+    </div>
+  </div>
+  
+  <div style={{ display: 'flex', gap: '10px', marginTop: '10px', flexWrap: 'wrap' }}>
+     {/* Add these new debug buttons: */}
+  <button
+    onClick={debugStudentRelationship}
+    style={{
+      background: '#dc3545',
+      color: 'white',
+      border: 'none',
+      padding: '8px 16px',
+      borderRadius: '4px',
+      cursor: 'pointer',
+      fontSize: '12px',
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '5px'
+    }}
+  >
+    🔍 Debug Student Relationship
+  </button>
+  
+  <button
+    onClick={testBucketAccess}
+    style={{
+      background: '#6c757d',
+      color: 'white',
+      border: 'none',
+      padding: '8px 16px',
+      borderRadius: '4px',
+      cursor: 'pointer',
+      fontSize: '12px',
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '5px'
+    }}
+  >
+    🪣 Test Bucket Access
+  </button>
+  
+  <button
+    onClick={testSpecificFile}
+    style={{
+      background: '#17a2b8',
+      color: 'white',
+      border: 'none',
+      padding: '8px 16px',
+      borderRadius: '4px',
+      cursor: 'pointer',
+      fontSize: '12px',
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '5px'
+    }}
+  >
+    📄 Test Specific File
+  </button>
+  
+  <button
+    onClick={testStudentDataRetrieval}
+    style={{
+      background: '#28a745',
+      color: 'white',
+      border: 'none',
+      padding: '8px 16px',
+      borderRadius: '4px',
+      cursor: 'pointer',
+      fontSize: '12px',
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: '5px'
+    }}
+  >
+    👤 Test Student Data
+  </button>
+                      
+                      <button
+      onClick={() => {
+        console.log('DEBUG: myAssignments:', myAssignments);
+        console.log('DEBUG: Profile:', profile);
+        fetchMyAssignments();
+      }}
+      style={{
+        background: '#17a2b8',
+        color: 'white',
+        border: 'none',
+        padding: '8px 16px',
+        borderRadius: '4px',
+        cursor: 'pointer',
+        fontSize: '12px',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '5px'
+      }}
+    >
+      🔄 Refresh Assignments
+    </button>
+    
+    <button
+      onClick={async () => {
+        console.log('Testing bucket connection...');
+        
+        // Test 1: List files in assignments bucket
+        const { data: files, error: listError } = await supabase.storage
+          .from('assignments')
+          .list();
+        
+        console.log('Bucket files:', files);
+        console.log('List error:', listError);
+        
+        // Test 2: Check if we can access any file
+        if (files && files.length > 0) {
+          const testFile = files[0].name;
+          const { data: urlData } = supabase.storage
+            .from('assignments')
+            .getPublicUrl(testFile);
+          
+          console.log('Public URL for', testFile, ':', urlData.publicUrl);
+        }
+        
+        alert('Check console for bucket connection test results');
+      }}
+      style={{
+        background: '#6c757d',
+        color: 'white',
+        border: 'none',
+        padding: '8px 16px',
+        borderRadius: '4px',
+        cursor: 'pointer',
+        fontSize: '12px',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '5px'
+      }}
+    >
+      🪣 Test Bucket Connection
+    </button>
+    
+    <button
+      onClick={async () => {
+        if (!selectedAssignment) {
+          alert('Please select an assignment first');
+          return;
+        }
+        
+        console.log('DEBUG: Testing assignment submissions for:', selectedAssignment.id);
+        
+        // Direct query test
+        const { data, error } = await supabase
+          .from('assignment_submissions')
+          .select('id, student_id, status, submission_date')
+          .eq('assignment_id', selectedAssignment.id);
+        
+        console.log('Direct query result:', { data, error });
+        
+        // Also test the RPC function
+        const { data: rpcData, error: rpcError } = await supabase.rpc('get_assignment_submissions_detail', {
+          p_assignment_id: selectedAssignment.id
+        });
+        
+        console.log('RPC function result:', { rpcData, rpcError });
+        
+        alert(`Found ${data?.length || 0} submissions via direct query\nRPC function ${rpcError ? 'failed' : 'found ' + (rpcData?.length || 0) + ' submissions'}`);
+      }}
+      style={{
+        background: '#28a745',
+        color: 'white',
+        border: 'none',
+        padding: '8px 16px',
+        borderRadius: '4px',
+        cursor: 'pointer',
+        fontSize: '12px',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '5px'
+      }}
+    >
+      🔍 Test Assignment Submissions
+    </button>
+  </div>
+</div>
+    <div className="tab-header">
+      <h2>📊 Grading Center</h2>
+      <div className="tab-actions">
+        {bulkGrading && selectedSubmissions.length > 0 && (
+          <button
+            className="add-button"
+            onClick={handleBulkGrade}
+            disabled={gradingInProgress}
+          >
+            {gradingInProgress ? 'Grading...' : `Grade ${selectedSubmissions.length} Selected`}
+          </button>
+        )}
+        <button
+          className="action-button"
+          onClick={() => setBulkGrading(!bulkGrading)}
+        >
+          {bulkGrading ? 'Cancel Bulk Grading' : 'Bulk Grade'}
+        </button>
+      </div>
+    </div>
+   
+    {selectedAssignment ? (
+      <div className="grading-content">
+        <div className="assignment-header">
+          <h3>{selectedAssignment.title}</h3>
+          <div className="assignment-meta">
+            <span>Total Marks: {selectedAssignment.total_marks}</span>
+            <span>Submissions: {assignmentSubmissions.length}</span>
+            <button
+              className="back-button"
+              onClick={() => {
+                setSelectedAssignment(null);
+                setAssignmentSubmissions([]);
+              }}
+            >
+              ← Back to List
+            </button>
+          </div>
+        </div>
+       
+        {/* Batch Download Progress */}
+        {batchDownloading && (
+          <div className="download-progress">
+            <div className="progress-info">
+              <span>Downloading files...</span>
+              <span>{batchProgress.current} of {batchProgress.total}</span>
+            </div>
+            <div className="progress-bar-container">
+              <div
+                className="progress-bar-fill"
+                style={{
+                  width: `${(batchProgress.current / batchProgress.total) * 100}%`
+                }}
+              ></div>
+            </div>
+          </div>
+        )}
+
+        {/* Bulk Grading Controls */}
+        {bulkGrading && (
+          <div className="bulk-grading-controls">
+            <div className="bulk-header">
+              <h4>Bulk Grading Mode</h4>
+              <div className="bulk-actions">
+                <label className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={selectedSubmissions.length === assignmentSubmissions.filter(s => s.status === 'submitted').length}
+                    onChange={handleSelectAllSubmissions}
+                  />
+                  Select All ({assignmentSubmissions.filter(s => s.status === 'submitted').length})
+                </label>
+                <button
+                  className="small-button"
+                  onClick={() => setSelectedSubmissions([])}
+                >
+                  Clear Selection
+                </button>
+              </div>
+            </div>
+            <p className="bulk-info">
+              Selected: {selectedSubmissions.length} submission(s)
+            </p>
+          </div>
+        )}
+       
+        {/* Submissions List */}
+        <div className="submissions-list">
+          {assignmentSubmissions.length > 0 ? (
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    {bulkGrading && <th>Select</th>}
+                    <th>Student</th>
+                    <th>Program</th>
+                    <th>Submission Date</th>
+                    <th>Status</th>
+                    <th>Files</th>
+                    <th>Marks</th>
+                    <th>Feedback</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {assignmentSubmissions.map(submission => (
+                    <tr key={submission.submission_id}>
+                      {bulkGrading && (
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={selectedSubmissions.includes(submission.submission_id)}
+                            onChange={() => handleToggleSubmissionSelection(submission.submission_id)}
+                            disabled={submission.status !== 'submitted'}
+                          />
+                        </td>
+                      )}
+                      <td>
+                        <strong>{submission.student_name || 'Unknown Student'}</strong>
+                        <br />
+                        <span className="small-text">{submission.student_email || 'No email'}</span>
+                      </td>
+                      <td>
+                        {submission.student_program || 'N/A'}
+                        <br />
+                        <span className="dept-badge">{submission.student_department || 'N/A'}</span>
+                      </td>
+                      <td>
+                        {submission.submission_date ? (
+                          <>
+                            {new Date(submission.submission_date).toLocaleDateString()}
+                            <br />
+                            <span className={`small-text ${submission.late_submission ? 'late' : ''}`}>
+                              {new Date(submission.submission_date).toLocaleTimeString()}
+                              {submission.late_submission && ` (Late: ${submission.days_late || 0} days)`}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-muted">Not submitted</span>
+                        )}
+                      </td>
+                      <td>
+                        <span className={`status-badge ${submission.status || 'not_submitted'}`}>
+                          {submission.status || 'Not Submitted'}
+                        </span>
+                      </td>
+                      <td>
+                        {submission.file_download_urls && submission.file_download_urls.length > 0 ? (
+                          <div className="file-links">
+                            {submission.file_download_urls.map((url, idx) => {
+                              const originalUrl = submission.file_urls?.[idx] || url;
+                              const fileName = getFileNameFromUrl(originalUrl);
+                              const fileExt = getFileExtension(originalUrl);
+                              const displayName = `File ${idx + 1}.${fileExt}`;
+                              const downloadKey = `${submission.submission_id}_file${idx + 1}`;
+                              
+                              return (
+                                <div key={idx} className="file-download-item">
+                                  <a
+                                    href="#"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      downloadFile(url, `${submission.student_name || 'Student'}_${displayName}`, submission.submission_id);
+                                    }}
+                                    className="file-link"
+                                  >
+                                    📥 {displayName}
+                                  </a>
+                                  {downloadingFile === downloadKey && (
+                                    <span className="downloading-text">Downloading...</span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                            <button
+                              className="download-all-btn"
+                              onClick={() => downloadAllFilesForSubmission(submission)}
+                              disabled={batchDownloading}
+                            >
+                              📦 Download All Files
+                            </button>
+                          </div>
+                        ) : submission.submitted_text ? (
+                          <div className="text-submission">
+                            <span className="text-preview">
+                              {submission.submitted_text.substring(0, 50)}...
+                            </span>
+                            <button
+                              className="view-text-btn"
+                              onClick={() => {
+                                alert(`Text Submission from ${submission.student_name}:\n\n${submission.submitted_text}`);
+                              }}
+                            >
+                              View Full Text
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-muted">No submission</span>
+                        )}
+                      </td>
+                      <td>
+                        {submission.status === 'graded' ? (
+                          <span className="grade-display">
+                            {submission.marks_obtained || 0}/{selectedAssignment.total_marks}
+                          </span>
+                        ) : submission.status === 'submitted' ? (
+                          <div className="grade-input">
+                            <input
+                              type="number"
+                              min="0"
+                              max={selectedAssignment.total_marks}
+                              step="0.5"
+                              value={gradeForm[submission.submission_id]?.marks || ''}
+                              onChange={(e) => setGradeForm(prev => ({
+                                ...prev,
+                                [submission.submission_id]: {
+                                  ...prev[submission.submission_id],
+                                  marks: e.target.value
+                                }
+                              }))}
+                              placeholder="Enter marks"
+                              className="small-input"
+                            />
+                          </div>
+                        ) : (
+                          <span className="text-muted">-</span>
+                        )}
+                      </td>
+                      <td>
+                        {submission.status === 'graded' ? (
+                          <span className="feedback-display">
+                            {submission.feedback || 'No feedback'}
+                          </span>
+                        ) : submission.status === 'submitted' ? (
+                          <div className="feedback-input">
+                            <textarea
+                              value={gradeForm[submission.submission_id]?.feedback || ''}
+                              onChange={(e) => setGradeForm(prev => ({
+                                ...prev,
+                                [submission.submission_id]: {
+                                  ...prev[submission.submission_id],
+                                  feedback: e.target.value
+                                }
+                              }))}
+                              placeholder="Enter feedback"
+                              rows="2"
+                              className="small-textarea"
+                            />
+                          </div>
+                        ) : (
+                          <span className="text-muted">-</span>
+                        )}
+                      </td>
+                      <td>
+                        <div className="action-buttons">
+                          {submission.status === 'submitted' && !bulkGrading && (
+                            <button
+                              className="action-btn grade"
+                              onClick={async () => {
+                                const marks = gradeForm[submission.submission_id]?.marks;
+                                const feedback = gradeForm[submission.submission_id]?.feedback || '';
+                               
+                                if (!marks || marks === '') {
+                                  alert('Please enter marks');
+                                  return;
+                                }
+                               
+                                if (parseFloat(marks) > selectedAssignment.total_marks) {
+                                  alert(`Marks cannot exceed ${selectedAssignment.total_marks}`);
+                                  return;
+                                }
+                               
+                                const success = await handleGradeSubmission(
+                                  submission.submission_id,
+                                  parseFloat(marks),
+                                  feedback
+                                );
+                               
+                                if (success) {
+                                  setGradeForm(prev => {
+                                    const newForm = { ...prev };
+                                    delete newForm[submission.submission_id];
+                                    return newForm;
+                                  });
+                                }
+                              }}
+                              disabled={gradingInProgress}
+                            >
+                              {gradingInProgress ? 'Grading...' : 'Grade'}
+                            </button>
+                          )}
+                          {submission.status === 'graded' && (
+                            <button
+                              className="action-btn view"
+                              onClick={() => {
+                                alert(`Marks: ${submission.marks_obtained || 0}/${selectedAssignment.total_marks}\n\nFeedback: ${submission.feedback || 'No feedback'}`);
+                              }}
+                            >
+                              View Grade
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="empty-state">
+              <p>No submissions found for this assignment</p>
+              <p className="small-text">
+                If students have submitted, try refreshing or check if the assignment ID is correct.
+              </p>
+              <button
+                className="refresh-button"
+                onClick={() => selectedAssignment && fetchAssignmentSubmissions(selectedAssignment.id)}
+              >
+                🔄 Refresh Submissions
+              </button>
+            </div>
+          )}
+        </div>
+       
+        {/* Export Options */}
+        {assignmentSubmissions.length > 0 && (
+          <div className="export-options">
+            <button
+              className="export-button"
+              onClick={downloadSubmissionsCSV}
+            >
+              📥 Export to CSV
+            </button>
+            <button
+              className="export-button"
+              onClick={downloadAllSubmissions}
+              disabled={batchDownloading}
+            >
+              📦 Download All Files
+            </button>
+          </div>
+        )}
+      </div>
+    ) : (
+      <div className="select-assignment">
+        <h3>Select an Assignment to Grade</h3>
+        <div className="assignments-grid">
+          {myAssignments.length > 0 ? (
+            myAssignments.map(assignment => {
+              const submittedCount = assignment.submitted_count || 0;
+              const gradedCount = assignment.graded_count || 0;
+              const pendingCount = submittedCount - gradedCount;
+              
+              return (
+                <div key={assignment.assignment_id} className="assignment-card">
+                  <div className="assignment-header">
+                    <h4>{assignment.title}</h4>
+                    <span className={`assignment-status ${assignment.status}`}>
+                      {assignment.status || 'published'}
+                    </span>
+                  </div>
+                  <p className="course-info">
+                    {assignment.course_code || 'No Code'} - {assignment.course_name || 'No Name'}
+                  </p>
+                  <div className="assignment-details">
+                    <span>📅 Due: {new Date(assignment.due_date).toLocaleDateString()}</span>
+                    <span>📊 Total Marks: {assignment.total_marks || 100}</span>
+                    <span>🏛️ {assignment.department_code || 'N/A'}</span>
+                  </div>
+                  <div className="submission-stats-card">
+                    <div className="stat">
+                      <span className="stat-label">Submitted:</span>
+                      <span className="stat-value">{submittedCount}</span>
+                    </div>
+                    <div className="stat">
+                      <span className="stat-label">Graded:</span>
+                      <span className="stat-value">{gradedCount}</span>
+                    </div>
+                    <div className="stat">
+                      <span className="stat-label">Pending:</span>
+                      <span className={`stat-value ${pendingCount > 0 ? 'warning' : ''}`}>
+                        {pendingCount}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="assignment-actions">
+                    <button
+                      className="action-btn grade"
+                      onClick={() => handleViewSubmissions({
+                        id: assignment.assignment_id,
+                        title: assignment.title,
+                        total_marks: assignment.total_marks || 100
+                      })}
+                      disabled={submittedCount === 0}
                     >
-                      {bulkGrading ? 'Cancel Bulk Grading' : 'Bulk Grade'}
+                      {submittedCount === 0 ? 'No Submissions' : 'Grade Submissions'}
                     </button>
                   </div>
                 </div>
-                
-                {selectedAssignment ? (
-                  <div className="grading-content">
-                    <div className="assignment-header">
-                      <h3>{selectedAssignment.title}</h3>
-                      <div className="assignment-meta">
-                        <span>Total Marks: {selectedAssignment.total_marks}</span>
-                        <span>Submissions: {assignmentSubmissions.length}</span>
-                        <button 
-                          className="back-button"
-                          onClick={() => {
-                            setSelectedAssignment(null);
-                            setAssignmentSubmissions([]);
-                          }}
-                        >
-                          ← Back to List
-                        </button>
-                      </div>
-                    </div>
-                    
-                    {/* Bulk Grading Controls */}
-                    {bulkGrading && (
-                      <div className="bulk-grading-controls">
-                        <div className="bulk-header">
-                          <h4>Bulk Grading Mode</h4>
-                          <div className="bulk-actions">
-                            <label className="checkbox-label">
-                              <input 
-                                type="checkbox"
-                                checked={selectedSubmissions.length === assignmentSubmissions.filter(s => s.status === 'submitted').length}
-                                onChange={handleSelectAllSubmissions}
-                              />
-                              Select All ({assignmentSubmissions.filter(s => s.status === 'submitted').length})
-                            </label>
-                            <button 
-                              className="small-button"
-                              onClick={() => setSelectedSubmissions([])}
-                            >
-                              Clear Selection
-                            </button>
-                          </div>
-                        </div>
-                        <p className="bulk-info">
-                          Selected: {selectedSubmissions.length} submission(s)
-                        </p>
-                      </div>
-                    )}
-                    
-                    {/* Submissions List */}
-                    <div className="submissions-list">
-                      {assignmentSubmissions.length > 0 ? (
-                        <div className="table-container">
-                          <table className="data-table">
-                            <thead>
-                              <tr>
-                                {bulkGrading && <th>Select</th>}
-                                <th>Student</th>
-                                <th>Program</th>
-                                <th>Submission Date</th>
-                                <th>Status</th>
-                                <th>Files</th>
-                                <th>Marks</th>
-                                <th>Feedback</th>
-                                <th>Actions</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {assignmentSubmissions.map(submission => (
-                                <tr key={submission.submission_id}>
-                                  {bulkGrading && (
-                                    <td>
-                                      <input 
-                                        type="checkbox"
-                                        checked={selectedSubmissions.includes(submission.submission_id)}
-                                        onChange={() => handleToggleSubmissionSelection(submission.submission_id)}
-                                        disabled={submission.status !== 'submitted'}
-                                      />
-                                    </td>
-                                  )}
-                                  <td>
-                                    <strong>{submission.student_name}</strong>
-                                    <br />
-                                    <span className="small-text">{submission.student_email}</span>
-                                  </td>
-                                  <td>
-                                    {submission.student_program || 'N/A'}
-                                    <br />
-                                    <span className="dept-badge">{submission.student_department || 'N/A'}</span>
-                                  </td>
-                                  <td>
-                                    {submission.submission_date ? (
-                                      <>
-                                        {new Date(submission.submission_date).toLocaleDateString()}
-                                        <br />
-                                        <span className={`small-text ${submission.late_submission ? 'late' : ''}`}>
-                                          {new Date(submission.submission_date).toLocaleTimeString()}
-                                          {submission.late_submission && ` (Late: ${submission.days_late} days)`}
-                                        </span>
-                                      </>
-                                    ) : (
-                                      <span className="text-muted">Not submitted</span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    <span className={`status-badge ${submission.status}`}>
-                                      {submission.status}
-                                    </span>
-                                  </td>
-                                  <td>
-                                    {submission.file_urls && submission.file_urls.length > 0 ? (
-                                      <div className="file-links">
-                                        {submission.file_urls.map((url, idx) => (
-                                          <a 
-                                            key={idx}
-                                            href={url}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="file-link"
-                                          >
-                                            File {idx + 1}
-                                          </a>
-                                        ))}
-                                      </div>
-                                    ) : submission.submitted_text ? (
-                                      <span className="text-preview">
-                                        {submission.submitted_text.substring(0, 50)}...
-                                      </span>
-                                    ) : (
-                                      <span className="text-muted">No files</span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    {submission.status === 'graded' ? (
-                                      <span className="grade-display">
-                                        {submission.marks_obtained}/{selectedAssignment.total_marks}
-                                      </span>
-                                    ) : submission.status === 'submitted' ? (
-                                      <div className="grade-input">
-                                        <input 
-                                          type="number"
-                                          min="0"
-                                          max={selectedAssignment.total_marks}
-                                          step="0.5"
-                                          value={gradeForm[submission.submission_id]?.marks || ''}
-                                          onChange={(e) => setGradeForm(prev => ({
-                                            ...prev,
-                                            [submission.submission_id]: {
-                                              ...prev[submission.submission_id],
-                                              marks: e.target.value
-                                            }
-                                          }))}
-                                          placeholder="Enter marks"
-                                          className="small-input"
-                                        />
-                                      </div>
-                                    ) : (
-                                      <span className="text-muted">-</span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    {submission.status === 'graded' ? (
-                                      <span className="feedback-display">
-                                        {submission.feedback || 'No feedback'}
-                                      </span>
-                                    ) : submission.status === 'submitted' ? (
-                                      <div className="feedback-input">
-                                        <textarea 
-                                          value={gradeForm[submission.submission_id]?.feedback || ''}
-                                          onChange={(e) => setGradeForm(prev => ({
-                                            ...prev,
-                                            [submission.submission_id]: {
-                                              ...prev[submission.submission_id],
-                                              feedback: e.target.value
-                                            }
-                                          }))}
-                                          placeholder="Enter feedback"
-                                          rows="2"
-                                          className="small-textarea"
-                                        />
-                                      </div>
-                                    ) : (
-                                      <span className="text-muted">-</span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    <div className="action-buttons">
-                                      {submission.status === 'submitted' && !bulkGrading && (
-                                        <button 
-                                          className="action-btn grade"
-                                          onClick={async () => {
-                                            const marks = gradeForm[submission.submission_id]?.marks;
-                                            const feedback = gradeForm[submission.submission_id]?.feedback || '';
-                                            
-                                            if (!marks || marks === '') {
-                                              alert('Please enter marks');
-                                              return;
-                                            }
-                                            
-                                            if (parseFloat(marks) > selectedAssignment.total_marks) {
-                                              alert(`Marks cannot exceed ${selectedAssignment.total_marks}`);
-                                              return;
-                                            }
-                                            
-                                            const success = await handleGradeSubmission(
-                                              submission.submission_id,
-                                              parseFloat(marks),
-                                              feedback
-                                            );
-                                            
-                                            if (success) {
-                                              setGradeForm(prev => {
-                                                const newForm = { ...prev };
-                                                delete newForm[submission.submission_id];
-                                                return newForm;
-                                              });
-                                            }
-                                          }}
-                                          disabled={gradingInProgress}
-                                        >
-                                          {gradingInProgress ? 'Grading...' : 'Grade'}
-                                        </button>
-                                      )}
-                                      {submission.status === 'graded' && (
-                                        <button 
-                                          className="action-btn view"
-                                          onClick={() => {
-                                            alert(`Marks: ${submission.marks_obtained}/${selectedAssignment.total_marks}\n\nFeedback: ${submission.feedback || 'No feedback'}`);
-                                          }}
-                                        >
-                                          View Grade
-                                        </button>
-                                      )}
-                                    </div>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      ) : (
-                        <div className="empty-state">
-                          <p>No submissions found for this assignment</p>
-                        </div>
-                      )}
-                    </div>
-                    
-                    {/* Export Options */}
-                    {assignmentSubmissions.length > 0 && (
-                      <div className="export-options">
-                        <button 
-                          className="export-button"
-                          onClick={downloadSubmissionsCSV}
-                        >
-                          📥 Export to CSV
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="select-assignment">
-                    <h3>Select an Assignment to Grade</h3>
-                    <div className="assignments-grid">
-                      {myAssignments.filter(a => a.submitted_count > 0).length > 0 ? (
-                        myAssignments
-                          .filter(a => a.submitted_count > 0)
-                          .map(assignment => (
-                            <div key={assignment.assignment_id} className="assignment-card">
-                              <div className="assignment-header">
-                                <h4>{assignment.title}</h4>
-                                <span className={`assignment-status ${assignment.status}`}>
-                                  {assignment.status}
-                                </span>
-                              </div>
-                              <p className="course-info">
-                                {assignment.course_code} - {assignment.course_name}
-                              </p>
-                              <div className="assignment-details">
-                                <span>📅 Due: {new Date(assignment.due_date).toLocaleDateString()}</span>
-                                <span>📊 Total Marks: {assignment.total_marks}</span>
-                                <span>🏛️ {assignment.department_code}</span>
-                              </div>
-                              <div className="submission-stats-card">
-                                <div className="stat">
-                                  <span className="stat-label">Submitted:</span>
-                                  <span className="stat-value">{assignment.submitted_count || 0}</span>
-                                </div>
-                                <div className="stat">
-                                  <span className="stat-label">Graded:</span>
-                                  <span className="stat-value">{assignment.graded_count || 0}</span>
-                                </div>
-                                <div className="stat">
-                                  <span className="stat-label">Pending:</span>
-                                  <span className="stat-value warning">
-                                    {assignment.submitted_count - (assignment.graded_count || 0)}
-                                  </span>
-                                </div>
-                              </div>
-                              <div className="assignment-actions">
-                                <button 
-                                  className="action-btn grade"
-                                  onClick={() => handleViewSubmissions({
-                                    id: assignment.assignment_id,
-                                    title: assignment.title,
-                                    total_marks: assignment.total_marks
-                                  })}
-                                >
-                                  Grade Submissions
-                                </button>
-                              </div>
-                            </div>
-                          ))
-                      ) : (
-                        <div className="empty-state">
-                          <p>No assignments with submissions to grade</p>
-                          <p className="small-text">
-                            Students need to submit their assignments before you can grade them
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
+              );
+            })
+          ) : (
+            <div className="empty-state">
+              <p>No assignments found</p>
+              <p className="small-text">
+                Create assignments first, then students can submit them for grading.
+              </p>
+              <button
+                onClick={() => setShowAssignmentUploadModal(true)}
+                className="add-button"
+              >
+                + Create Assignment
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+  </div>
+)}
             {/* Students Tab */}
             {activeTab === 'students' && (
               <div className="tab-content">
@@ -2686,7 +3834,7 @@ const uploadAssignmentFiles = async (files) => {
                       }}
                     />
                     {isAdmin && (
-                      <button 
+                      <button
                         className="add-button"
                         onClick={() => {
                           setNewUser({...newUser, role: 'student'});
@@ -2698,7 +3846,7 @@ const uploadAssignmentFiles = async (files) => {
                     )}
                   </div>
                 </div>
-                
+               
                 <div className="table-container">
                   <table className="data-table">
                     <thead>
@@ -2734,13 +3882,13 @@ const uploadAssignmentFiles = async (files) => {
                           {isAdmin && (
                             <td>
                               <div className="action-buttons">
-                                <button 
+                                <button
                                   className="action-btn view"
                                   onClick={() => setSelectedUser(student)}
                                 >
                                   View
                                 </button>
-                                <button 
+                                <button
                                   className="action-btn edit"
                                   onClick={() => {
                                     const newStatus = student.status === 'active' ? 'inactive' : 'active';
@@ -2777,7 +3925,7 @@ const uploadAssignmentFiles = async (files) => {
                       }}
                     />
                     {(isAdmin || isLecturer) && (
-                      <button 
+                      <button
                         className="add-button"
                         onClick={() => setShowCourseModal(true)}
                       >
@@ -2786,7 +3934,7 @@ const uploadAssignmentFiles = async (files) => {
                     )}
                   </div>
                 </div>
-                
+               
                 <div className="courses-grid">
                   {courses.map(course => (
                     <div key={course.id} className="course-card">
@@ -2809,14 +3957,14 @@ const uploadAssignmentFiles = async (files) => {
                         <span>{course.program}</span>
                       </div>
                       <div className="course-actions">
-                        <button 
+                        <button
                           className="course-btn"
                           onClick={() => setSelectedCourse(course)}
                         >
                           View Details
                         </button>
                         {isLecturer && (
-                          <button 
+                          <button
                             className="course-btn course-btn-secondary"
                             onClick={() => handleToggleCourseActive(course.id, course.is_active)}
                           >
@@ -2837,7 +3985,7 @@ const uploadAssignmentFiles = async (files) => {
                   <h2>🎓 Lecture Management</h2>
                   <div className="debug-info" style={{ fontSize: '12px', color: '#666', marginTop: '10px' }}>
                     <p>Debug: Showing {lectures.length} lectures | Lecturer ID: {profile?.id} | Is Lecturer: {isLecturer.toString()}</p>
-                    <button 
+                    <button
                       onClick={() => {
                         console.log('DEBUG: Current lectures state:', lectures);
                         fetchLectures();
@@ -2848,7 +3996,7 @@ const uploadAssignmentFiles = async (files) => {
                     </button>
                   </div>
                   {isLecturer && (
-                    <button 
+                    <button
                       className="add-button"
                       onClick={() => setShowLectureModal(true)}
                     >
@@ -2856,7 +4004,7 @@ const uploadAssignmentFiles = async (files) => {
                     </button>
                   )}
                 </div>
-                
+               
                 {/* Live Lectures */}
                 {getLiveLectures().length > 0 && (
                   <div className="lectures-section">
@@ -2884,22 +4032,22 @@ const uploadAssignmentFiles = async (files) => {
                           </div>
                           <div className="lecture-actions">
                             {lecture.meetLink && (
-                              <a 
-                                href={lecture.meetLink} 
-                                target="_blank" 
-                                rel="noreferrer" 
+                              <a
+                                href={lecture.meetLink}
+                                target="_blank"
+                                rel="noreferrer"
                                 className="meet-link join-btn"
                               >
                                 🎥 Join Google Meet
                               </a>
                             )}
-                            <button 
+                            <button
                               className="action-btn end"
                               onClick={() => handleEndLecture(lecture.id)}
                             >
                               End Lecture
                             </button>
-                            <button 
+                            <button
                               className="action-btn edit"
                               onClick={() => {
                                 setEditingLecture(lecture);
@@ -2921,7 +4069,7 @@ const uploadAssignmentFiles = async (files) => {
                     </div>
                   </div>
                 )}
-                
+               
                 {/* Upcoming Lectures */}
                 <div className="lectures-section">
                   <h3 className="section-title">📅 Upcoming Lectures</h3>
@@ -2949,22 +4097,22 @@ const uploadAssignmentFiles = async (files) => {
                           </div>
                           <div className="lecture-actions">
                             {lecture.meetLink && (
-                              <a 
-                                href={lecture.meetLink} 
-                                target="_blank" 
-                                rel="noreferrer" 
+                              <a
+                                href={lecture.meetLink}
+                                target="_blank"
+                                rel="noreferrer"
                                 className="meet-link"
                               >
                                 🔗 Copy Meeting Link
                               </a>
                             )}
-                            <button 
+                            <button
                               className="action-btn start"
                               onClick={() => handleStartLecture(lecture.id)}
                             >
                               Start Now
                             </button>
-                            <button 
+                            <button
                               className="action-btn edit"
                               onClick={() => {
                                 setEditingLecture(lecture);
@@ -2980,7 +4128,7 @@ const uploadAssignmentFiles = async (files) => {
                             >
                               Edit
                             </button>
-                            <button 
+                            <button
                               className="action-btn delete"
                               onClick={() => handleDeleteLecture(lecture.id)}
                             >
@@ -2993,7 +4141,7 @@ const uploadAssignmentFiles = async (files) => {
                   ) : (
                     <div className="empty-state">
                       <p>No upcoming lectures scheduled</p>
-                      <button 
+                      <button
                         onClick={() => setShowLectureModal(true)}
                         className="add-button-small"
                       >
@@ -3002,7 +4150,7 @@ const uploadAssignmentFiles = async (files) => {
                     </div>
                   )}
                 </div>
-                
+               
                 {/* Past Lectures */}
                 {getPastLectures().length > 0 && (
                   <div className="lectures-section">
@@ -3035,9 +4183,9 @@ const uploadAssignmentFiles = async (files) => {
                                 </td>
                                 <td>
                                   {lecture.recording_url ? (
-                                    <a 
-                                      href={lecture.recording_url} 
-                                      target="_blank" 
+                                    <a
+                                      href={lecture.recording_url}
+                                      target="_blank"
                                       rel="noreferrer"
                                       className="recording-link"
                                     >
@@ -3063,7 +4211,7 @@ const uploadAssignmentFiles = async (files) => {
                 <div className="tab-header">
                   <h2>🎯 Exam Management</h2>
                   {(isAdmin || isLecturer) && (
-                    <button 
+                    <button
                       className="add-button"
                       onClick={() => setShowExamsModal(true)}
                     >
@@ -3071,7 +4219,7 @@ const uploadAssignmentFiles = async (files) => {
                     </button>
                   )}
                 </div>
-                
+               
                 <div className="exams-list">
                   {exams.length > 0 ? (
                     exams.map(exam => (
@@ -3096,7 +4244,7 @@ const uploadAssignmentFiles = async (files) => {
                           <span>📍 Venue: {exam.venue}</span>
                         </div>
                         <div className="exam-actions">
-                          <button 
+                          <button
                             className="action-btn view"
                             onClick={() => setSelectedExam(exam)}
                           >
@@ -3104,7 +4252,7 @@ const uploadAssignmentFiles = async (files) => {
                           </button>
                           {(isAdmin || (isLecturer && exam.lecturer_id === profile.id)) && (
                             <>
-                              <button 
+                              <button
                                 className="action-btn edit"
                                 onClick={() => {
                                   setEditingExam(exam);
@@ -3120,7 +4268,7 @@ const uploadAssignmentFiles = async (files) => {
                               >
                                 Edit
                               </button>
-                              <button 
+                              <button
                                 className="action-btn delete"
                                 onClick={() => handleDeleteExam(exam.id)}
                               >
@@ -3156,7 +4304,7 @@ const uploadAssignmentFiles = async (files) => {
                         // Implement search
                       }}
                     />
-                    <button 
+                    <button
                       className="add-button"
                       onClick={() => {
                         setNewUser({...newUser, role: 'lecturer'});
@@ -3167,7 +4315,7 @@ const uploadAssignmentFiles = async (files) => {
                     </button>
                   </div>
                 </div>
-                
+               
                 <div className="table-container">
                   <table className="data-table">
                     <thead>
@@ -3190,9 +4338,9 @@ const uploadAssignmentFiles = async (files) => {
                           <td>{lecturer.email}</td>
                           <td>
                             {lecturer.google_meet_link ? (
-                              <a 
-                                href={lecturer.google_meet_link} 
-                                target="_blank" 
+                              <a
+                                href={lecturer.google_meet_link}
+                                target="_blank"
                                 rel="noreferrer"
                                 className="meet-link small"
                               >
@@ -3213,13 +4361,13 @@ const uploadAssignmentFiles = async (files) => {
                           </td>
                           <td>
                             <div className="action-buttons">
-                              <button 
+                              <button
                                 className="action-btn view"
                                 onClick={() => setSelectedUser(lecturer)}
                               >
                                 View
                               </button>
-                              <button 
+                              <button
                                 className="action-btn dept"
                                 onClick={() => {
                                   setSelectedLecturerForDept(lecturer);
@@ -3243,14 +4391,14 @@ const uploadAssignmentFiles = async (files) => {
               <div className="tab-content">
                 <div className="tab-header">
                   <h2>💰 Financial Management</h2>
-                  <button 
+                  <button
                     className="add-button"
                     onClick={() => setShowFinanceModal(true)}
                   >
                     + Add Record
                   </button>
                 </div>
-                
+               
                 <div className="financial-overview">
                   <div className="financial-card">
                     <h3>Total Revenue</h3>
@@ -3274,7 +4422,7 @@ const uploadAssignmentFiles = async (files) => {
                     <small>Successfully processed</small>
                   </div>
                 </div>
-                
+               
                 <div className="table-container">
                   <h3>Recent Transactions</h3>
                   <table className="data-table">
@@ -3304,15 +4452,15 @@ const uploadAssignmentFiles = async (files) => {
                           </td>
                           <td>
                             <div className="action-buttons">
-                              <button 
+                              <button
                                 className="action-btn view"
                                 onClick={() => setSelectedFinanceRecord(record)}
                               >
                                 View
                               </button>
-                              <button 
+                              <button
                                 className="action-btn edit"
-                                onClick={() => handleUpdateFinanceStatus(record.id, 
+                                onClick={() => handleUpdateFinanceStatus(record.id,
                                   record.status === 'pending' ? 'paid' : 'pending'
                                 )}
                               >
@@ -3338,7 +4486,7 @@ const uploadAssignmentFiles = async (files) => {
                       Overall Attendance Rate: {stats.attendanceRate}%
                     </div>
                     {isAdmin && (
-                      <button 
+                      <button
                         className="add-button"
                         onClick={() => setShowAttendanceModal(true)}
                       >
@@ -3347,7 +4495,7 @@ const uploadAssignmentFiles = async (files) => {
                     )}
                   </div>
                 </div>
-                
+               
                 <div className="table-container">
                   <table className="data-table">
                     <thead>
@@ -3407,7 +4555,7 @@ const uploadAssignmentFiles = async (files) => {
                     </div>
                     <button className="save-button">Save Changes</button>
                   </div>
-                  
+                 
                   <div className="setting-card">
                     <h3>System Preferences</h3>
                     <div className="setting-item">
@@ -3438,7 +4586,6 @@ const uploadAssignmentFiles = async (files) => {
       </main>
 
       {/* =================== MODALS =================== */}
-
       {/* Assignment Upload Modal */}
       {showAssignmentUploadModal && (
         <div className="modal-overlay">
@@ -3447,7 +4594,7 @@ const uploadAssignmentFiles = async (files) => {
             <div className="modal-form">
               <div className="form-group">
                 <label className="form-label">Course *</label>
-                <select 
+                <select
                   value={newAssignment.course_id}
                   onChange={(e) => setNewAssignment({ ...newAssignment, course_id: e.target.value })}
                   className="form-select"
@@ -3461,10 +4608,10 @@ const uploadAssignmentFiles = async (files) => {
                   ))}
                 </select>
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Title *</label>
-                <input 
+                <input
                   type="text"
                   value={newAssignment.title}
                   onChange={(e) => setNewAssignment({ ...newAssignment, title: e.target.value })}
@@ -3473,11 +4620,11 @@ const uploadAssignmentFiles = async (files) => {
                   required
                 />
               </div>
-              
+             
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Due Date & Time *</label>
-                  <input 
+                  <input
                     type="datetime-local"
                     value={newAssignment.due_date}
                     onChange={(e) => setNewAssignment({ ...newAssignment, due_date: e.target.value })}
@@ -3485,10 +4632,10 @@ const uploadAssignmentFiles = async (files) => {
                     required
                   />
                 </div>
-                
+               
                 <div className="form-group">
                   <label className="form-label">Total Marks *</label>
-                  <input 
+                  <input
                     type="number"
                     value={newAssignment.total_marks}
                     onChange={(e) => setNewAssignment({ ...newAssignment, total_marks: parseInt(e.target.value) })}
@@ -3498,10 +4645,10 @@ const uploadAssignmentFiles = async (files) => {
                   />
                 </div>
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Description</label>
-                <textarea 
+                <textarea
                   value={newAssignment.description}
                   onChange={(e) => setNewAssignment({ ...newAssignment, description: e.target.value })}
                   placeholder="Assignment description"
@@ -3509,10 +4656,10 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-textarea"
                 />
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Instructions</label>
-                <textarea 
+                <textarea
                   value={newAssignment.instructions}
                   onChange={(e) => setNewAssignment({ ...newAssignment, instructions: e.target.value })}
                   placeholder="Instructions for students"
@@ -3520,11 +4667,11 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-textarea"
                 />
               </div>
-              
+             
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Submission Type</label>
-                  <select 
+                  <select
                     value={newAssignment.submission_type}
                     onChange={(e) => setNewAssignment({ ...newAssignment, submission_type: e.target.value })}
                     className="form-select"
@@ -3534,10 +4681,10 @@ const uploadAssignmentFiles = async (files) => {
                     <option value="both">Both</option>
                   </select>
                 </div>
-                
+               
                 <div className="form-group">
                   <label className="form-label">Max File Size (MB)</label>
-                  <input 
+                  <input
                     type="number"
                     value={newAssignment.max_file_size}
                     onChange={(e) => setNewAssignment({ ...newAssignment, max_file_size: parseInt(e.target.value) })}
@@ -3547,13 +4694,13 @@ const uploadAssignmentFiles = async (files) => {
                   />
                 </div>
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Allowed Formats</label>
                 <div className="checkbox-group">
                   {['pdf', 'doc', 'docx', 'zip', 'jpg', 'png', 'txt'].map(format => (
                     <label key={format} className="checkbox-label">
-                      <input 
+                      <input
                         type="checkbox"
                         checked={newAssignment.allowed_formats.includes(format)}
                         onChange={(e) => {
@@ -3575,84 +4722,94 @@ const uploadAssignmentFiles = async (files) => {
                   ))}
                 </div>
               </div>
-              
-              {/* File Upload Section */}
-              <div className="form-group">
-                <label className="form-label">Assignment Files (Optional)</label>
-                <div 
-                  className="file-upload-area"
-                  onClick={() => fileInputRef.current?.click()}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.classList.add('drag-over');
-                  }}
-                  onDragLeave={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.classList.remove('drag-over');
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.classList.remove('drag-over');
-                    const files = Array.from(e.dataTransfer.files);
-                    setAssignmentFiles(prev => [...prev, ...files]);
-                  }}
-                >
-                  <input 
-                    type="file"
-                    ref={fileInputRef}
-                    multiple
-                    onChange={(e) => {
-                      const files = Array.from(e.target.files);
-                      setAssignmentFiles(prev => [...prev, ...files]);
-                    }}
-                    className="file-input"
-                  />
-                  <div className="upload-icon">📎</div>
-                  <p>Drag & drop files here or click to browse</p>
-                  <p className="small-text">Supports: PDF, DOC, DOCX, ZIP, Images</p>
-                </div>
-                
-                {/* Upload Progress */}
-                {uploadingFiles && (
-                  <div className="upload-progress">
-                    <div className="progress-bar">
-                      <div 
-                        className="progress-fill"
-                        style={{ width: `${uploadProgress}%` }}
-                      ></div>
-                    </div>
-                    <p className="progress-text">Uploading: {uploadProgress}%</p>
-                  </div>
-                )}
-                
-                {/* File List */}
-                {assignmentFiles.length > 0 && (
-                  <div className="file-list">
-                    <h4>Selected Files ({assignmentFiles.length})</h4>
-                    <div className="files-grid">
-                      {assignmentFiles.map((file, index) => (
-                        <div key={index} className="file-item">
-                          <span className="file-name">{file.name}</span>
-                          <span className="file-size">
-                            {(file.size / 1024 / 1024).toFixed(2)} MB
-                          </span>
-                          <button 
-                            className="remove-file"
-                            onClick={() => {
-                              setAssignmentFiles(prev => prev.filter((_, i) => i !== index));
-                            }}
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-              
+             
+            {/* File Upload Section */}
+<div className="form-group">
+  <label className="form-label">Assignment Files (Optional)</label>
+  <p className="small-text" style={{ color: '#3b82f6', marginBottom: '10px' }}>
+    📦 Files will be uploaded to <strong>public lecturerbucket</strong>
+  </p>
+  
+  <div
+    className="file-upload-area"
+    onClick={() => fileInputRef.current?.click()}
+    onDragOver={(e) => {
+      e.preventDefault();
+      e.currentTarget.classList.add('drag-over');
+    }}
+    onDragLeave={(e) => {
+      e.preventDefault();
+      e.currentTarget.classList.remove('drag-over');
+    }}
+    onDrop={(e) => {
+      e.preventDefault();
+      e.currentTarget.classList.remove('drag-over');
+      const files = Array.from(e.dataTransfer.files);
+      setAssignmentFiles(prev => [...prev, ...files]);
+    }}
+  >
+    <input
+      type="file"
+      ref={fileInputRef}
+      multiple
+      onChange={(e) => {
+        const files = Array.from(e.target.files);
+        setAssignmentFiles(prev => [...prev, ...files]);
+      }}
+      className="file-input"
+    />
+    <div className="upload-icon">📤</div>
+    <p><strong>Drag & drop files here or click to browse</strong></p>
+    <p className="small-text">Files uploaded to: lecturerbucket (public)</p>
+    <p className="small-text">Supported: PDF, DOC, DOCX, ZIP, Images, Text</p>
+  </div>
+ 
+  {/* Upload Progress */}
+  {uploadingFiles && (
+    <div className="upload-progress">
+      <div className="progress-bar">
+        <div
+          className="progress-fill"
+          style={{ width: `${uploadProgress}%` }}
+        ></div>
+      </div>
+      <p className="progress-text">Uploading: {uploadProgress}%</p>
+    </div>
+  )}
+ 
+  {/* File List */}
+  {assignmentFiles.length > 0 && (
+    <div className="file-list">
+      <h4>Files to Upload ({assignmentFiles.length})</h4>
+      <div className="files-grid">
+        {assignmentFiles.map((file, index) => (
+          <div key={index} className="file-item">
+            <div className="file-info">
+              <span className="file-name">{file.name}</span>
+              <span className="file-size">
+                {(file.size / 1024 / 1024).toFixed(2)} MB
+              </span>
+            </div>
+            <div className="file-actions">
+              <span className="file-type">{file.name.split('.').pop().toUpperCase()}</span>
+              <button
+                className="remove-file"
+                onClick={() => {
+                  setAssignmentFiles(prev => prev.filter((_, i) => i !== index));
+                }}
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )}
+</div>
+             
               <div className="modal-actions">
-                <button 
+                <button
                   className="cancel-button"
                   onClick={() => {
                     setShowAssignmentUploadModal(false);
@@ -3661,7 +4818,7 @@ const uploadAssignmentFiles = async (files) => {
                 >
                   Cancel
                 </button>
-                <button 
+                <button
                   className="confirm-button"
                   onClick={handleCreateAssignment}
                   disabled={loading.creatingAssignment || uploadingFiles}
@@ -3669,18 +4826,6 @@ const uploadAssignmentFiles = async (files) => {
                   {loading.creatingAssignment ? 'Creating...' : 'Create Assignment'}
                 </button>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Submissions Modal */}
-      {showSubmissionsModal && selectedAssignment && (
-        <div className="modal-overlay">
-          <div className="modal extra-large-modal">
-            <h3>Submissions: {selectedAssignment.title}</h3>
-            <div className="modal-content">
-              {/* Content from grading section can go here */}
             </div>
           </div>
         </div>
@@ -3709,7 +4854,7 @@ const uploadAssignmentFiles = async (files) => {
             <div className="modal-form">
               <div className="form-group">
                 <label className="form-label">Role</label>
-                <select 
+                <select
                   value={newUser.role}
                   onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
                   className="form-select"
@@ -3718,10 +4863,10 @@ const uploadAssignmentFiles = async (files) => {
                   <option value="lecturer">Lecturer</option>
                 </select>
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Full Name</label>
-                <input 
+                <input
                   type="text"
                   value={newUser.full_name}
                   onChange={(e) => setNewUser({ ...newUser, full_name: e.target.value })}
@@ -3730,10 +4875,10 @@ const uploadAssignmentFiles = async (files) => {
                   required
                 />
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Email</label>
-                <input 
+                <input
                   type="email"
                   value={newUser.email}
                   onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
@@ -3742,10 +4887,10 @@ const uploadAssignmentFiles = async (files) => {
                   required
                 />
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Phone</label>
-                <input 
+                <input
                   type="tel"
                   value={newUser.phone}
                   onChange={(e) => setNewUser({ ...newUser, phone: e.target.value })}
@@ -3753,12 +4898,12 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-input"
                 />
               </div>
-              
+             
               {newUser.role === 'student' ? (
                 <>
                   <div className="form-group">
                     <label className="form-label">Program</label>
-                    <input 
+                    <input
                       type="text"
                       value={newUser.program}
                       onChange={(e) => setNewUser({ ...newUser, program: e.target.value })}
@@ -3767,10 +4912,10 @@ const uploadAssignmentFiles = async (files) => {
                       required
                     />
                   </div>
-                  
+                 
                   <div className="form-group">
                     <label className="form-label">Year of Study</label>
-                    <select 
+                    <select
                       value={newUser.year_of_study}
                       onChange={(e) => setNewUser({ ...newUser, year_of_study: parseInt(e.target.value) })}
                       className="form-select"
@@ -3785,7 +4930,7 @@ const uploadAssignmentFiles = async (files) => {
                 <>
                   <div className="form-group">
                     <label className="form-label">Department</label>
-                    <input 
+                    <input
                       type="text"
                       value={newUser.department}
                       onChange={(e) => setNewUser({ ...newUser, department: e.target.value })}
@@ -3793,10 +4938,10 @@ const uploadAssignmentFiles = async (files) => {
                       className="form-input"
                     />
                   </div>
-                  
+                 
                   <div className="form-group">
                     <label className="form-label">Specialization</label>
-                    <input 
+                    <input
                       type="text"
                       value={newUser.specialization}
                       onChange={(e) => setNewUser({ ...newUser, specialization: e.target.value })}
@@ -3804,10 +4949,10 @@ const uploadAssignmentFiles = async (files) => {
                       className="form-input"
                     />
                   </div>
-                  
+                 
                   <div className="form-group">
                     <label className="form-label">Google Meet Link (Optional)</label>
-                    <input 
+                    <input
                       type="url"
                       value={newUser.google_meet_link}
                       onChange={(e) => setNewUser({ ...newUser, google_meet_link: e.target.value })}
@@ -3817,15 +4962,15 @@ const uploadAssignmentFiles = async (files) => {
                   </div>
                 </>
               )}
-              
+             
               <div className="modal-actions">
-                <button 
+                <button
                   className="cancel-button"
                   onClick={() => setShowUserModal(false)}
                 >
                   Cancel
                 </button>
-                <button 
+                <button
                   className="confirm-button"
                   onClick={handleAddUser}
                 >
@@ -3845,7 +4990,7 @@ const uploadAssignmentFiles = async (files) => {
             <div className="modal-form">
               <div className="form-group">
                 <label className="form-label">Course Code</label>
-                <input 
+                <input
                   type="text"
                   value={newCourse.course_code}
                   onChange={(e) => setNewCourse({ ...newCourse, course_code: e.target.value })}
@@ -3854,10 +4999,10 @@ const uploadAssignmentFiles = async (files) => {
                   required
                 />
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Course Name</label>
-                <input 
+                <input
                   type="text"
                   value={newCourse.course_name}
                   onChange={(e) => setNewCourse({ ...newCourse, course_name: e.target.value })}
@@ -3866,10 +5011,10 @@ const uploadAssignmentFiles = async (files) => {
                   required
                 />
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Description</label>
-                <textarea 
+                <textarea
                   value={newCourse.description}
                   onChange={(e) => setNewCourse({ ...newCourse, description: e.target.value })}
                   placeholder="Course description"
@@ -3877,11 +5022,11 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-textarea"
                 />
               </div>
-              
+             
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Year</label>
-                  <select 
+                  <select
                     value={newCourse.year}
                     onChange={(e) => setNewCourse({ ...newCourse, year: parseInt(e.target.value) })}
                     className="form-select"
@@ -3891,10 +5036,10 @@ const uploadAssignmentFiles = async (files) => {
                     ))}
                   </select>
                 </div>
-                
+               
                 <div className="form-group">
                   <label className="form-label">Semester</label>
-                  <select 
+                  <select
                     value={newCourse.semester}
                     onChange={(e) => setNewCourse({ ...newCourse, semester: parseInt(e.target.value) })}
                     className="form-select"
@@ -3903,10 +5048,10 @@ const uploadAssignmentFiles = async (files) => {
                     <option value={2}>Semester 2</option>
                   </select>
                 </div>
-                
+               
                 <div className="form-group">
                   <label className="form-label">Credits</label>
-                  <input 
+                  <input
                     type="number"
                     value={newCourse.credits}
                     onChange={(e) => setNewCourse({ ...newCourse, credits: parseInt(e.target.value) })}
@@ -3916,10 +5061,10 @@ const uploadAssignmentFiles = async (files) => {
                   />
                 </div>
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Department Code</label>
-                <input 
+                <input
                   type="text"
                   value={newCourse.department_code}
                   onChange={(e) => setNewCourse({ ...newCourse, department_code: e.target.value })}
@@ -3927,10 +5072,10 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-input"
                 />
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Department Name</label>
-                <input 
+                <input
                   type="text"
                   value={newCourse.department}
                   onChange={(e) => setNewCourse({ ...newCourse, department: e.target.value })}
@@ -3938,10 +5083,10 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-input"
                 />
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Program</label>
-                <input 
+                <input
                   type="text"
                   value={newCourse.program}
                   onChange={(e) => setNewCourse({ ...newCourse, program: e.target.value })}
@@ -3949,120 +5094,19 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-input"
                 />
               </div>
-              
+             
               <div className="modal-actions">
-                <button 
+                <button
                   className="cancel-button"
                   onClick={() => setShowCourseModal(false)}
                 >
                   Cancel
                 </button>
-                <button 
+                <button
                   className="confirm-button"
                   onClick={handleAddCourse}
                 >
                   Add Course
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Assignment Modal (Basic) */}
-      {showAssignmentModal && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>Create New Assignment</h3>
-            <div className="modal-form">
-              <div className="form-group">
-                <label className="form-label">Course</label>
-                <select 
-                  value={newAssignment.course_id}
-                  onChange={(e) => setNewAssignment({ ...newAssignment, course_id: e.target.value })}
-                  className="form-select"
-                  required
-                >
-                  <option value="">Select a course</option>
-                  {courses.map(course => (
-                    <option key={course.id} value={course.id}>
-                      {course.course_code} - {course.course_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              
-              <div className="form-group">
-                <label className="form-label">Title</label>
-                <input 
-                  type="text"
-                  value={newAssignment.title}
-                  onChange={(e) => setNewAssignment({ ...newAssignment, title: e.target.value })}
-                  placeholder="Assignment title"
-                  className="form-input"
-                  required
-                />
-              </div>
-              
-              <div className="form-group">
-                <label className="form-label">Description</label>
-                <textarea 
-                  value={newAssignment.description}
-                  onChange={(e) => setNewAssignment({ ...newAssignment, description: e.target.value })}
-                  placeholder="Assignment description"
-                  rows="3"
-                  className="form-textarea"
-                />
-              </div>
-              
-              <div className="form-group">
-                <label className="form-label">Instructions</label>
-                <textarea 
-                  value={newAssignment.instructions}
-                  onChange={(e) => setNewAssignment({ ...newAssignment, instructions: e.target.value })}
-                  placeholder="Instructions for students"
-                  rows="3"
-                  className="form-textarea"
-                />
-              </div>
-              
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Due Date & Time</label>
-                  <input 
-                    type="datetime-local"
-                    value={newAssignment.due_date}
-                    onChange={(e) => setNewAssignment({ ...newAssignment, due_date: e.target.value })}
-                    className="form-input"
-                    required
-                  />
-                </div>
-                
-                <div className="form-group">
-                  <label className="form-label">Total Marks</label>
-                  <input 
-                    type="number"
-                    value={newAssignment.total_marks}
-                    onChange={(e) => setNewAssignment({ ...newAssignment, total_marks: parseInt(e.target.value) })}
-                    min="1"
-                    className="form-input"
-                    required
-                  />
-                </div>
-              </div>
-              
-              <div className="modal-actions">
-                <button 
-                  className="cancel-button"
-                  onClick={() => setShowAssignmentModal(false)}
-                >
-                  Cancel
-                </button>
-                <button 
-                  className="confirm-button"
-                  onClick={handleAddAssignment}
-                >
-                  Create Assignment
                 </button>
               </div>
             </div>
@@ -4078,7 +5122,7 @@ const uploadAssignmentFiles = async (files) => {
             <div className="modal-form">
               <div className="form-group">
                 <label className="form-label">Course</label>
-                <select 
+                <select
                   value={newLecture.course_id}
                   onChange={(e) => setNewLecture({ ...newLecture, course_id: e.target.value })}
                   className="form-select"
@@ -4092,10 +5136,10 @@ const uploadAssignmentFiles = async (files) => {
                   ))}
                 </select>
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Title</label>
-                <input 
+                <input
                   type="text"
                   value={newLecture.title}
                   onChange={(e) => setNewLecture({ ...newLecture, title: e.target.value })}
@@ -4104,10 +5148,10 @@ const uploadAssignmentFiles = async (files) => {
                   required
                 />
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Description</label>
-                <textarea 
+                <textarea
                   value={newLecture.description}
                   onChange={(e) => setNewLecture({ ...newLecture, description: e.target.value })}
                   placeholder="Lecture description"
@@ -4115,11 +5159,11 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-textarea"
                 />
               </div>
-              
+             
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Date</label>
-                  <input 
+                  <input
                     type="date"
                     value={newLecture.scheduled_date}
                     onChange={(e) => setNewLecture({ ...newLecture, scheduled_date: e.target.value })}
@@ -4127,10 +5171,10 @@ const uploadAssignmentFiles = async (files) => {
                     required
                   />
                 </div>
-                
+               
                 <div className="form-group">
                   <label className="form-label">Start Time</label>
-                  <input 
+                  <input
                     type="time"
                     value={newLecture.start_time}
                     onChange={(e) => setNewLecture({ ...newLecture, start_time: e.target.value })}
@@ -4138,10 +5182,10 @@ const uploadAssignmentFiles = async (files) => {
                     required
                   />
                 </div>
-                
+               
                 <div className="form-group">
                   <label className="form-label">End Time</label>
-                  <input 
+                  <input
                     type="time"
                     value={newLecture.end_time}
                     onChange={(e) => setNewLecture({ ...newLecture, end_time: e.target.value })}
@@ -4150,10 +5194,10 @@ const uploadAssignmentFiles = async (files) => {
                   />
                 </div>
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Google Meet Link (Optional)</label>
-                <input 
+                <input
                   type="url"
                   value={newLecture.google_meet_link}
                   onChange={(e) => setNewLecture({ ...newLecture, google_meet_link: e.target.value })}
@@ -4161,15 +5205,15 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-input"
                 />
               </div>
-              
+             
               <div className="modal-actions">
-                <button 
+                <button
                   className="cancel-button"
                   onClick={() => setShowLectureModal(false)}
                 >
                   Cancel
                 </button>
-                <button 
+                <button
                   className="confirm-button"
                   onClick={handleAddLecture}
                 >
@@ -4189,7 +5233,7 @@ const uploadAssignmentFiles = async (files) => {
             <div className="modal-form">
               <div className="form-group">
                 <label className="form-label">Title</label>
-                <input 
+                <input
                   type="text"
                   value={editLecture.title}
                   onChange={(e) => setEditLecture({ ...editLecture, title: e.target.value })}
@@ -4197,20 +5241,20 @@ const uploadAssignmentFiles = async (files) => {
                   required
                 />
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Description</label>
-                <textarea 
+                <textarea
                   value={editLecture.description}
                   onChange={(e) => setEditLecture({ ...editLecture, description: e.target.value })}
                   rows="3"
                   className="form-textarea"
                 />
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Google Meet Link</label>
-                <input 
+                <input
                   type="url"
                   value={editLecture.google_meet_link}
                   onChange={(e) => setEditLecture({ ...editLecture, google_meet_link: e.target.value })}
@@ -4218,11 +5262,11 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-input"
                 />
               </div>
-              
+             
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Date</label>
-                  <input 
+                  <input
                     type="date"
                     value={editLecture.scheduled_date}
                     onChange={(e) => setEditLecture({ ...editLecture, scheduled_date: e.target.value })}
@@ -4230,10 +5274,10 @@ const uploadAssignmentFiles = async (files) => {
                     required
                   />
                 </div>
-                
+               
                 <div className="form-group">
                   <label className="form-label">Start Time</label>
-                  <input 
+                  <input
                     type="time"
                     value={editLecture.start_time}
                     onChange={(e) => setEditLecture({ ...editLecture, start_time: e.target.value })}
@@ -4241,10 +5285,10 @@ const uploadAssignmentFiles = async (files) => {
                     required
                   />
                 </div>
-                
+               
                 <div className="form-group">
                   <label className="form-label">End Time</label>
-                  <input 
+                  <input
                     type="time"
                     value={editLecture.end_time}
                     onChange={(e) => setEditLecture({ ...editLecture, end_time: e.target.value })}
@@ -4253,99 +5297,20 @@ const uploadAssignmentFiles = async (files) => {
                   />
                 </div>
               </div>
-              
+             
               <div className="modal-actions">
-                <button 
+                <button
                   className="cancel-button"
                   onClick={() => setEditingLecture(null)}
                 >
                   Cancel
                 </button>
-                <button 
+                <button
                   className="confirm-button"
                   onClick={handleEditLecture}
                 >
                   Update Lecture
                 </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Lecture Details Modal */}
-      {showLectureDetailsModal && selectedLecture && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>Lecture Details</h3>
-            <div className="lecture-details-modal">
-              <div className="detail-item">
-                <strong>Title:</strong>
-                <span>{selectedLecture.title}</span>
-              </div>
-              <div className="detail-item">
-                <strong>Course:</strong>
-                <span>{selectedLecture.courses?.course_code} - {selectedLecture.courses?.course_name}</span>
-              </div>
-              <div className="detail-item">
-                <strong>Lecturer:</strong>
-                <span>{selectedLecture.lecturers?.full_name}</span>
-              </div>
-              <div className="detail-item">
-                <strong>Date:</strong>
-                <span>{selectedLecture.formattedDate}</span>
-              </div>
-              <div className="detail-item">
-                <strong>Time:</strong>
-                <span>{selectedLecture.formattedTime}</span>
-              </div>
-              <div className="detail-item">
-                <strong>Department:</strong>
-                <span>{selectedLecture.courses?.department_code}</span>
-              </div>
-              <div className="detail-item">
-                <strong>Status:</strong>
-                <span className={`lecture-status ${selectedLecture.status}`}>
-                  {selectedLecture.status}
-                </span>
-              </div>
-              {selectedLecture.meetLink && (
-                <div className="detail-item">
-                  <strong>Google Meet:</strong>
-                  <a 
-                    href={selectedLecture.meetLink} 
-                    target="_blank" 
-                    rel="noreferrer"
-                    className="meet-link"
-                  >
-                    Join Meeting
-                  </a>
-                </div>
-              )}
-              {selectedLecture.description && (
-                <div className="detail-item">
-                  <strong>Description:</strong>
-                  <p>{selectedLecture.description}</p>
-                </div>
-              )}
-              <div className="modal-actions">
-                <button 
-                  className="cancel-button"
-                  onClick={() => setShowLectureDetailsModal(false)}
-                >
-                  Close
-                </button>
-                {isLecturer && selectedLecture.status === 'scheduled' && (
-                  <button 
-                    className="confirm-button"
-                    onClick={() => {
-                      handleStartLecture(selectedLecture.id);
-                      setShowLectureDetailsModal(false);
-                    }}
-                  >
-                    Start Lecture
-                  </button>
-                )}
               </div>
             </div>
           </div>
@@ -4360,7 +5325,7 @@ const uploadAssignmentFiles = async (files) => {
             <div className="modal-form">
               <div className="form-group">
                 <label className="form-label">Course</label>
-                <select 
+                <select
                   value={newExam.course_id}
                   onChange={(e) => setNewExam({ ...newExam, course_id: e.target.value })}
                   className="form-select"
@@ -4374,10 +5339,10 @@ const uploadAssignmentFiles = async (files) => {
                   ))}
                 </select>
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Title</label>
-                <input 
+                <input
                   type="text"
                   value={newExam.title}
                   onChange={(e) => setNewExam({ ...newExam, title: e.target.value })}
@@ -4386,10 +5351,10 @@ const uploadAssignmentFiles = async (files) => {
                   required
                 />
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Description</label>
-                <textarea 
+                <textarea
                   value={newExam.description}
                   onChange={(e) => setNewExam({ ...newExam, description: e.target.value })}
                   placeholder="Exam description"
@@ -4397,11 +5362,11 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-textarea"
                 />
               </div>
-              
+             
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Exam Type</label>
-                  <select 
+                  <select
                     value={newExam.exam_type}
                     onChange={(e) => setNewExam({ ...newExam, exam_type: e.target.value })}
                     className="form-select"
@@ -4412,10 +5377,10 @@ const uploadAssignmentFiles = async (files) => {
                     <option value="assignment">Assignment</option>
                   </select>
                 </div>
-                
+               
                 <div className="form-group">
                   <label className="form-label">Total Marks</label>
-                  <input 
+                  <input
                     type="number"
                     value={newExam.total_marks}
                     onChange={(e) => setNewExam({ ...newExam, total_marks: parseInt(e.target.value) })}
@@ -4425,11 +5390,11 @@ const uploadAssignmentFiles = async (files) => {
                   />
                 </div>
               </div>
-              
+             
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Start Time</label>
-                  <input 
+                  <input
                     type="datetime-local"
                     value={newExam.start_time}
                     onChange={(e) => setNewExam({ ...newExam, start_time: e.target.value })}
@@ -4437,10 +5402,10 @@ const uploadAssignmentFiles = async (files) => {
                     required
                   />
                 </div>
-                
+               
                 <div className="form-group">
                   <label className="form-label">End Time</label>
-                  <input 
+                  <input
                     type="datetime-local"
                     value={newExam.end_time}
                     onChange={(e) => setNewExam({ ...newExam, end_time: e.target.value })}
@@ -4449,10 +5414,10 @@ const uploadAssignmentFiles = async (files) => {
                   />
                 </div>
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Venue</label>
-                <input 
+                <input
                   type="text"
                   value={newExam.venue}
                   onChange={(e) => setNewExam({ ...newExam, venue: e.target.value })}
@@ -4460,114 +5425,19 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-input"
                 />
               </div>
-              
+             
               <div className="modal-actions">
-                <button 
+                <button
                   className="cancel-button"
                   onClick={() => setShowExamsModal(false)}
                 >
                   Cancel
                 </button>
-                <button 
+                <button
                   className="confirm-button"
                   onClick={handleAddExam}
                 >
                   Schedule Exam
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Exam Modal */}
-      {editingExam && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>Edit Exam</h3>
-            <div className="modal-form">
-              <div className="form-group">
-                <label className="form-label">Title</label>
-                <input 
-                  type="text"
-                  value={editExam.title}
-                  onChange={(e) => setEditExam({ ...editExam, title: e.target.value })}
-                  className="form-input"
-                  required
-                />
-              </div>
-              
-              <div className="form-group">
-                <label className="form-label">Description</label>
-                <textarea 
-                  value={editExam.description}
-                  onChange={(e) => setEditExam({ ...editExam, description: e.target.value })}
-                  rows="3"
-                  className="form-textarea"
-                />
-              </div>
-              
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Start Time</label>
-                  <input 
-                    type="datetime-local"
-                    value={editExam.start_time}
-                    onChange={(e) => setEditExam({ ...editExam, start_time: e.target.value })}
-                    className="form-input"
-                    required
-                  />
-                </div>
-                
-                <div className="form-group">
-                  <label className="form-label">End Time</label>
-                    <input 
-                      type="datetime-local"
-                      value={editExam.end_time}
-                      onChange={(e) => setEditExam({ ...editExam, end_time: e.target.value })}
-                      className="form-input"
-                      required
-                    />
-                </div>
-              </div>
-              
-              <div className="form-group">
-                <label className="form-label">Venue</label>
-                <input 
-                  type="text"
-                  value={editExam.venue}
-                  onChange={(e) => setEditExam({ ...editExam, venue: e.target.value })}
-                  placeholder="e.g., Main Hall, Room 101"
-                  className="form-input"
-                />
-              </div>
-              
-              <div className="form-group">
-                <label className="form-label">Status</label>
-                <select 
-                  value={editExam.status}
-                  onChange={(e) => setEditExam({ ...editExam, status: e.target.value })}
-                  className="form-select"
-                >
-                  <option value="scheduled">Scheduled</option>
-                  <option value="ongoing">Ongoing</option>
-                  <option value="completed">Completed</option>
-                  <option value="cancelled">Cancelled</option>
-                </select>
-              </div>
-              
-              <div className="modal-actions">
-                <button 
-                  className="cancel-button"
-                  onClick={() => setEditingExam(null)}
-                >
-                  Cancel
-                </button>
-                <button 
-                  className="confirm-button"
-                  onClick={handleEditExam}
-                >
-                  Update Exam
                 </button>
               </div>
             </div>
@@ -4583,7 +5453,7 @@ const uploadAssignmentFiles = async (files) => {
             <div className="modal-form">
               <div className="form-group">
                 <label className="form-label">Student ID</label>
-                <input 
+                <input
                   type="text"
                   value={newFinanceRecord.student_id}
                   onChange={(e) => setNewFinanceRecord({ ...newFinanceRecord, student_id: e.target.value })}
@@ -4592,10 +5462,10 @@ const uploadAssignmentFiles = async (files) => {
                   required
                 />
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Description</label>
-                <input 
+                <input
                   type="text"
                   value={newFinanceRecord.description}
                   onChange={(e) => setNewFinanceRecord({ ...newFinanceRecord, description: e.target.value })}
@@ -4604,11 +5474,11 @@ const uploadAssignmentFiles = async (files) => {
                   required
                 />
               </div>
-              
+             
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Amount ($)</label>
-                  <input 
+                  <input
                     type="number"
                     value={newFinanceRecord.amount}
                     onChange={(e) => setNewFinanceRecord({ ...newFinanceRecord, amount: parseFloat(e.target.value) })}
@@ -4618,10 +5488,10 @@ const uploadAssignmentFiles = async (files) => {
                     required
                   />
                 </div>
-                
+               
                 <div className="form-group">
                   <label className="form-label">Payment Date</label>
-                  <input 
+                  <input
                     type="date"
                     value={newFinanceRecord.payment_date}
                     onChange={(e) => setNewFinanceRecord({ ...newFinanceRecord, payment_date: e.target.value })}
@@ -4630,10 +5500,10 @@ const uploadAssignmentFiles = async (files) => {
                   />
                 </div>
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Status</label>
-                <select 
+                <select
                   value={newFinanceRecord.status}
                   onChange={(e) => setNewFinanceRecord({ ...newFinanceRecord, status: e.target.value })}
                   className="form-select"
@@ -4643,15 +5513,15 @@ const uploadAssignmentFiles = async (files) => {
                   <option value="cancelled">Cancelled</option>
                 </select>
               </div>
-              
+             
               <div className="modal-actions">
-                <button 
+                <button
                   className="cancel-button"
                   onClick={() => setShowFinanceModal(false)}
                 >
                   Cancel
                 </button>
-                <button 
+                <button
                   className="confirm-button"
                   onClick={handleAddFinanceRecord}
                 >
@@ -4671,7 +5541,7 @@ const uploadAssignmentFiles = async (files) => {
             <div className="modal-form">
               <div className="form-group">
                 <label className="form-label">Student ID</label>
-                <input 
+                <input
                   type="text"
                   value={newAttendanceRecord.student_id}
                   onChange={(e) => setNewAttendanceRecord({ ...newAttendanceRecord, student_id: e.target.value })}
@@ -4680,10 +5550,10 @@ const uploadAssignmentFiles = async (files) => {
                   required
                 />
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Lecture ID (Optional)</label>
-                <input 
+                <input
                   type="text"
                   value={newAttendanceRecord.lecture_id}
                   onChange={(e) => setNewAttendanceRecord({ ...newAttendanceRecord, lecture_id: e.target.value })}
@@ -4691,11 +5561,11 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-input"
                 />
               </div>
-              
+             
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Date</label>
-                  <input 
+                  <input
                     type="date"
                     value={newAttendanceRecord.date}
                     onChange={(e) => setNewAttendanceRecord({ ...newAttendanceRecord, date: e.target.value })}
@@ -4703,10 +5573,10 @@ const uploadAssignmentFiles = async (files) => {
                     required
                   />
                 </div>
-                
+               
                 <div className="form-group">
                   <label className="form-label">Status</label>
-                  <select 
+                  <select
                     value={newAttendanceRecord.status}
                     onChange={(e) => setNewAttendanceRecord({ ...newAttendanceRecord, status: e.target.value })}
                     className="form-select"
@@ -4718,21 +5588,21 @@ const uploadAssignmentFiles = async (files) => {
                   </select>
                 </div>
               </div>
-              
+             
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Check-in Time</label>
-                  <input 
+                  <input
                     type="time"
                     value={newAttendanceRecord.check_in_time}
                     onChange={(e) => setNewAttendanceRecord({ ...newAttendanceRecord, check_in_time: e.target.value })}
                     className="form-input"
                   />
                 </div>
-                
+               
                 <div className="form-group">
                   <label className="form-label">Check-out Time</label>
-                  <input 
+                  <input
                     type="time"
                     value={newAttendanceRecord.check_out_time}
                     onChange={(e) => setNewAttendanceRecord({ ...newAttendanceRecord, check_out_time: e.target.value })}
@@ -4740,10 +5610,10 @@ const uploadAssignmentFiles = async (files) => {
                   />
                 </div>
               </div>
-              
+             
               <div className="form-group">
                 <label className="form-label">Remarks</label>
-                <textarea 
+                <textarea
                   value={newAttendanceRecord.remarks}
                   onChange={(e) => setNewAttendanceRecord({ ...newAttendanceRecord, remarks: e.target.value })}
                   placeholder="Any remarks or notes"
@@ -4751,15 +5621,15 @@ const uploadAssignmentFiles = async (files) => {
                   className="form-textarea"
                 />
               </div>
-              
+             
               <div className="modal-actions">
-                <button 
+                <button
                   className="cancel-button"
                   onClick={() => setShowAttendanceModal(false)}
                 >
                   Cancel
                 </button>
-                <button 
+                <button
                   className="confirm-button"
                   onClick={handleAddAttendanceRecord}
                 >
@@ -4780,13 +5650,13 @@ const uploadAssignmentFiles = async (files) => {
               Are you sure you want to logout?
             </p>
             <div className="modal-actions">
-              <button 
+              <button
                 className="cancel-button"
                 onClick={() => setShowLogoutModal(false)}
               >
                 Cancel
               </button>
-              <button 
+              <button
                 className="confirm-logout-button"
                 onClick={handleLogout}
               >
@@ -4800,7 +5670,7 @@ const uploadAssignmentFiles = async (files) => {
       <footer className="footer">
         <p>© {new Date().getFullYear()} NLE University • {isAdmin ? 'Admin Portal' : 'Lecturer Portal'}</p>
         <p className="footer-stats">
-          {isAdmin 
+          {isAdmin
             ? `Total Students: ${stats.totalStudents} | Lecturers: ${stats.totalLecturers} | Last Updated: ${new Date().toLocaleTimeString()}`
             : `Your Students: ${stats.totalStudents} | Courses: ${stats.totalCourses} | Departments: ${allowedDepartments?.length || 0}`
           }
