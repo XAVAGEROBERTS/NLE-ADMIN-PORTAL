@@ -2321,7 +2321,7 @@ button {
 }
 
 .nav-item {
-  padding: 14px 24px;
+  padding: 14px 28px;           /* More horizontal space for longer text */
   background: white;
   border: 2px solid #e5e7eb;
   border-radius: 12px;
@@ -2331,12 +2331,22 @@ button {
   white-space: nowrap;
   transition: all 0.3s ease;
   color: #4b5563;
-  min-width: 140px;
-  text-align: center;
-  position: relative;
-  overflow: hidden;
-}
 
+  /* === KEY FIXES === */
+  min-width: unset !important;   /* Remove forced minimum width */
+  width: fit-content;            /* Button grows to fit content */
+  min-width: 130px;              /* Gentle minimum so short buttons don't look tiny */
+  max-width: none;               /* Allow full growth */
+
+  text-align: center;
+  display: inline-flex;          /* Better emoji + text alignment */
+  align-items: center;
+  justify-content: center;
+  gap: 8px;                      /* Space between emoji and text */
+
+  position: relative;
+  overflow: visible;             /* Critical: allow text to be visible */
+}
 .nav-item:hover {
   background: #f9fafb;
   border-color: #4f46e5;
@@ -2351,7 +2361,6 @@ button {
   border-color: transparent;
   box-shadow: 0 10px 30px rgba(79, 70, 229, 0.2);
 }
-
 .nav-item.active:hover {
   transform: translateY(-3px);
   box-shadow: 0 15px 40px rgba(79, 70, 229, 0.3);
@@ -2541,13 +2550,19 @@ button {
 }
 
 .department-badge {
-  background: rgba(255, 255, 255, 0.2);
-  color: white;
-  padding: 6px 12px;
-  border-radius: 8px;
+  background: #e0f2fe;           /* Light blue background - always visible */
+  color: #0369a1;                /* Darker blue text for contrast */
+  padding: 6px 14px;
+  border-radius: 20px;
   font-size: 12px;
   font-weight: 600;
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  border: 1px solid #7dd3fc;      /* Subtle border */
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+  white-space: nowrap;
 }
 
 /* ===== QUICK ACTIONS ===== */
@@ -3895,4 +3910,895 @@ button {
 
 .remove-file:hover {
   background: #bb2d3b;
+}
+
+/* Flat action buttons - all visible in a row */
+.action-buttons.flat {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.action-btn.small {
+  padding: 6px 12px;
+  font-size: 13px;
+  height: 32px;
+  border-radius: 6px;
+  min-width: 80px;
+  font-weight: 500;
+}
+
+.action-btn.small.publish {
+  background: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+}
+
+.action-btn.small.publish:hover:not(:disabled) {
+  background: #c3e6cb;
+}
+
+.action-btn.small.draft {
+  background: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffeaa7;
+}
+
+.action-btn.small.draft:hover:not(:disabled) {
+  background: #ffeaa7;
+}
+
+.action-btn.small.close {
+  background: #e2e3e5;
+  color: #41464b;
+  border: 1px solid #d6d8db;
+}
+
+.action-btn.small.close:hover:not(:disabled) {
+  background: #d6d8db;
+}
+
+.action-btn.small.delete {
+  background: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
+}
+
+.action-btn.small.delete:hover:not(:disabled) {
+  background: #f5c6cb;
+}
+
+.action-btn.small:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Optional: make View Submissions stand out more */
+.action-btn.view {
+  background: #007bff;
+  color: white;
+  padding: 8px 16px;
+  font-weight: 500;
+}
+
+.action-btn.view:hover {
+  background: #0056b3;
+}
+/* File Download Button Styles */
+.file-download-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.file-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  color: white;
+  text-decoration: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  border: 1px solid #1d4ed8;
+  box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
+}
+
+.file-link:hover {
+  background: linear-gradient(135deg, #1d4ed8, #1e40af);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(59, 130, 246, 0.4);
+}
+
+.file-link:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(59, 130, 246, 0.3);
+}
+
+.downloading-text {
+  font-size: 11px;
+  color: #6b7280;
+  font-style: italic;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.download-all-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  margin-top: 10px;
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 3px 6px rgba(16, 185, 129, 0.3);
+}
+
+.download-all-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #059669, #047857);
+  transform: translateY(-2px);
+  box-shadow: 0 5px 10px rgba(16, 185, 129, 0.4);
+}
+
+.download-all-btn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(16, 185, 129, 0.3);
+}
+
+.download-all-btn:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+  opacity: 0.7;
+  transform: none;
+  box-shadow: none;
+}
+
+.text-submission {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.text-preview {
+  background: #f3f4f6;
+  padding: 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #374151;
+  border-left: 3px solid #3b82f6;
+}
+
+.view-text-btn {
+  padding: 6px 12px;
+  background: #f3f4f6;
+  color: #4b5563;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.view-text-btn:hover {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+/* Export/Download All Files Buttons */
+.export-options {
+  display: flex;
+  gap: 15px;
+  justify-content: center;
+  margin-top: 30px;
+  padding: 20px;
+  background: #f8fafc;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+}
+
+.export-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px;
+  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 6px rgba(99, 102, 241, 0.3);
+}
+
+.export-button:nth-child(2) {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  box-shadow: 0 4px 6px rgba(245, 158, 11, 0.3);
+}
+
+.export-button:hover:not(:disabled) {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 12px rgba(99, 102, 241, 0.4);
+}
+
+.export-button:nth-child(2):hover:not(:disabled) {
+  box-shadow: 0 8px 12px rgba(245, 158, 11, 0.4);
+}
+
+.export-button:active:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 5px rgba(99, 102, 241, 0.3);
+}
+
+.export-button:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Download Progress Indicators */
+.download-progress {
+  background: #f0f9ff;
+  border: 2px solid #0ea5e9;
+  border-radius: 10px;
+  padding: 15px;
+  margin-bottom: 20px;
+}
+
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-weight: 600;
+  color: #0369a1;
+}
+
+.progress-bar-container {
+  height: 12px;
+  background: #e0f2fe;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #0ea5e9, #3b82f6);
+  border-radius: 6px;
+  transition: width 0.3s ease;
+}
+
+/* Batch Download Status */
+.batch-download-status {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  background: white;
+  border: 2px solid #10b981;
+  border-radius: 12px;
+  padding: 15px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+  min-width: 300px;
+}
+
+.batch-status-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  color: #065f46;
+  font-weight: 600;
+}
+
+.batch-progress {
+  height: 10px;
+  background: #d1fae5;
+  border-radius: 5px;
+  overflow: hidden;
+  margin: 10px 0;
+}
+
+.batch-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #10b981, #059669);
+  border-radius: 5px;
+  transition: width 0.3s ease;
+}
+
+.batch-file-info {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 5px;
+}
+
+/* Responsive Adjustments */
+@media (max-width: 768px) {
+  .export-options {
+    flex-direction: column;
+    gap: 10px;
+  }
+  
+  .export-button {
+    width: 100%;
+    justify-content: center;
+  }
+  
+  .file-link {
+    padding: 5px 10px;
+    font-size: 11px;
+  }
+  
+  .download-all-btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+/* Dark Mode Support (if needed) */
+@media (prefers-color-scheme: dark) {
+  .export-options {
+    background: #1f2937;
+    border-color: #374151;
+  }
+  
+  .file-link {
+    background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  }
+  
+  .download-all-btn {
+    background: linear-gradient(135deg, #059669, #047857);
+  }
+  
+  .download-progress {
+    background: #0f172a;
+    border-color: #1e40af;
+  }
+  
+  .batch-download-status {
+    background: #1f2937;
+    border-color: #059669;
+  }
+}
+
+/* Animation for completed download */
+@keyframes downloadComplete {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+
+.download-complete {
+  animation: downloadComplete 0.5s ease;
+}
+
+/* File type indicator colors */
+.file-type-pdf { color: #ef4444; }
+.file-type-doc, .file-type-docx { color: #2563eb; }
+.file-type-zip { color: #f59e0b; }
+.file-type-jpg, .file-type-png { color: #10b981; }
+.file-type-txt { color: #6b7280; }
+
+/* Success/Failure states */
+.download-success {
+  background: #dcfce7 !important;
+  border-color: #22c55e !important;
+  color: #166534 !important;
+}
+
+.download-error {
+  background: #fee2e2 !important;
+  border-color: #ef4444 !important;
+  color: #991b1b !important;
+}
+
+/* Enhanced CSV Export Button */
+.export-button.csv {
+  background: linear-gradient(135deg, #10b981, #059669);
+  position: relative;
+  overflow: hidden;
+}
+
+.export-button.csv::after {
+  content: "📊";
+  position: absolute;
+  right: -20px;
+  transition: right 0.3s ease;
+}
+
+.export-button.csv:hover::after {
+  right: 20px;
+}
+
+/* Enhanced File Download Button */
+.export-button.files {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  position: relative;
+  overflow: hidden;
+}
+
+.export-button.files::after {
+  content: "📦";
+  position: absolute;
+  right: -20px;
+  transition: right 0.3s ease;
+}
+
+.export-button.files:hover::after {
+  right: 20px;
+}
+/* Loading States */
+.loading-state {
+  text-align: center;
+  padding: 40px;
+  background: #f8fafc;
+  border-radius: 10px;
+  margin: 20px 0;
+  border: 2px dashed #e2e8f0;
+}
+
+.loading-state h4 {
+  margin-bottom: 10px;
+  color: #334155;
+  font-size: 18px;
+}
+
+.loading-state p {
+  color: #64748b;
+  margin-top: 10px;
+  font-size: 14px;
+}
+
+.spinner {
+  width: 50px;
+  height: 50px;
+  border: 5px solid #e2e8f0;
+  border-top: 5px solid #3b82f6;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 20px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.empty-state {
+  text-align: center;
+  padding: 40px;
+  background: #f8fafc;
+  border-radius: 10px;
+  margin: 20px 0;
+  border: 2px solid #e2e8f0;
+}
+
+.empty-state h4 {
+  margin-bottom: 10px;
+  color: #334155;
+  font-size: 18px;
+}
+
+.empty-state .small-text {
+  color: #64748b;
+  max-width: 500px;
+  margin: 0 auto;
+  line-height: 1.5;
+}
+
+/* For the "no assignments" state */
+.empty-state .add-button {
+  margin-top: 20px;
+  padding: 12px 24px;
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.empty-state .add-button:hover {
+  background: linear-gradient(135deg, #1d4ed8, #1e40af);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(59, 130, 246, 0.3);
+}
+
+.refresh-button {
+  padding: 10px 20px;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.refresh-button:hover {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+/* Download Progress */
+.download-progress {
+  background: #f0f9ff;
+  border: 2px solid #0ea5e9;
+  border-radius: 10px;
+  padding: 15px;
+  margin-bottom: 20px;
+}
+
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-weight: 600;
+  color: #0369a1;
+  font-size: 14px;
+}
+
+.progress-bar-container {
+  height: 12px;
+  background: #e0f2fe;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #0ea5e9, #3b82f6);
+  border-radius: 6px;
+  transition: width 0.3s ease;
+}
+
+/* Bulk Grading Controls */
+.bulk-grading-controls {
+  background: #fef3c7;
+  border: 2px solid #fbbf24;
+  border-radius: 10px;
+  padding: 15px;
+  margin-bottom: 20px;
+}
+
+.bulk-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.bulk-header h4 {
+  margin: 0;
+  color: #92400e;
+}
+
+.bulk-actions {
+  display: flex;
+  gap: 15px;
+  align-items: center;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  color: #92400e;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.small-button {
+  padding: 6px 12px;
+  background: #f59e0b;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.small-button:hover {
+  background: #d97706;
+}
+
+.bulk-info {
+  margin: 0;
+  font-weight: 600;
+  color: #92400e;
+  text-align: center;
+}
+
+/* Debug Info Styling */
+.debug-info {
+  background: #fff3cd;
+  border: 1px solid #ffeaa7;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  display: none;
+}
+
+.debug-info h4 {
+  margin-top: 0;
+  color: #856404;
+}
+
+.debug-info button {
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.2s ease;
+}
+
+.debug-info button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.export-options{
+   background: whitesmoke;
+}
+
+/* Assignment Header Styling */
+.assignment-header {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 16px;
+  padding: 24px 32px;
+  color: white;
+  margin-bottom: 24px;
+  box-shadow: 0 10px 25px rgba(102, 126, 234, 0.3);
+  position: relative;
+  overflow: hidden;
+}
+
+.assignment-header::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(45deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0) 100%);
+  z-index: 1;
+}
+
+.assignment-header h3 {
+  font-size: 28px;
+  font-weight: 700;
+  margin: 0 0 8px 0;
+  position: relative;
+  z-index: 2;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  letter-spacing: -0.5px;
+}
+
+.assignment-header .assignment-meta {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  flex-wrap: wrap;
+  position: relative;
+  z-index: 2;
+}
+
+.assignment-meta span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 500;
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(10px);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.assignment-meta span::before {
+  font-size: 20px;
+}
+
+.assignment-meta span:nth-child(1)::before {
+  content: '📊';
+}
+
+.assignment-meta span:nth-child(2)::before {
+  content: '📝';
+}
+
+.assignment-meta .back-button {
+  background: rgba(255, 255, 255, 0.25);
+  color: white;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  padding: 10px 24px;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  backdrop-filter: blur(10px);
+  margin-left: auto;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.assignment-meta .back-button:hover {
+  background: rgba(255, 255, 255, 0.35);
+  border-color: rgba(255, 255, 255, 0.6);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+}
+
+.assignment-meta .back-button:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.assignment-meta .back-button::before {
+  content: '←';
+  font-size: 18px;
+  font-weight: bold;
+}
+
+/* Dark Mode Support */
+@media (prefers-color-scheme: dark) {
+  .assignment-header {
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    box-shadow: 0 10px 25px rgba(79, 70, 229, 0.4);
+  }
+  
+  .assignment-meta .back-button {
+    background: rgba(255, 255, 255, 0.15);
+  }
+  
+  .assignment-meta .back-button:hover {
+    background: rgba(255, 255, 255, 0.25);
+  }
+}
+
+/* Mobile Responsive */
+@media (max-width: 768px) {
+  .assignment-header {
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  
+  .assignment-header h3 {
+    font-size: 22px;
+    margin-bottom: 16px;
+  }
+  
+  .assignment-header .assignment-meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  
+  .assignment-meta span {
+    width: 100%;
+    justify-content: space-between;
+  }
+  
+  .assignment-meta .back-button {
+    width: 100%;
+    justify-content: center;
+    margin-top: 8px;
+    margin-left: 0;
+  }
+}
+
+/* Animation for header */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.assignment-header {
+  animation: fadeInUp 0.5s ease-out;
+}
+
+/* Alternative Color Schemes - Choose one you prefer */
+/* Option 2: Blue Theme */
+.assignment-header.blue-theme {
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  box-shadow: 0 10px 25px rgba(59, 130, 246, 0.3);
+}
+
+/* Option 3: Green Theme */
+.assignment-header.green-theme {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  box-shadow: 0 10px 25px rgba(16, 185, 129, 0.3);
+}
+
+/* Option 4: Orange Theme */
+.assignment-header.orange-theme {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  box-shadow: 0 10px 25px rgba(245, 158, 11, 0.3);
+}
+/* Optional: Icon badges for counters */
+.assignment-meta .counter-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.counter-badge .badge-icon {
+  width: 32px;
+  height: 32px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+
+.counter-badge .badge-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.counter-badge .badge-value {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.counter-badge .badge-label {
+  font-size: 12px;
+  opacity: 0.9;
+  margin-top: 2px;
+}
+.status-badge.completed {
+  background-color: #28a745;
+  color: white;
+}
+
+.status-badge.enrolled {
+  background-color: #17a2b8;
+  color: white;
 }

@@ -22,10 +22,403 @@ const AdminDashboard = () => {
   // State management
   const [activeTab, setActiveTab] = useState('dashboard');
   const [showLogoutModal, setShowLogoutModal] = useState(false);
-  const [loading, setLoading] = useState({ dashboard: true });
+  // Update the loading state to include submissions
+const [loading, setLoading] = useState({ 
+  dashboard: true,
+  submissions: false, // Add this
+  creatingAssignment: false
+});
+
+//
+
+  // Add these states near your other state declarations (around line 50-100)
+const [showReversalMode, setShowReversalMode] = useState(false);
+const [reversalFilters, setReversalFilters] = useState({
+  program_id: '',
+  academic_year: '',
+  year_of_study: 1,
+  semester: 1
+});
+const [completedCourses, setCompletedCourses] = useState([]);
+const [selectedCoursesForReversal, setSelectedCoursesForReversal] = useState([]);
+const [reversalInProgress, setReversalInProgress] = useState(false);
+// [students, lecturers, courses, etc...]
   const [searchTerm, setSearchTerm] = useState('');
+  // === ADD TO STATE (near other states) ===
+
+
+// New state for course completion
+const [completionFilters, setCompletionFilters] = useState({
+  program_id: '',
+  academic_year: '',
+  year_of_study: 1,
+  semester: 1
+});
+const [coursesForCompletion, setCoursesForCompletion] = useState([]);
+const [studentsToComplete, setStudentsToComplete] = useState([]);
+const [selectedCoursesForCompletion, setSelectedCoursesForCompletion] = useState([]);
+const [markingInProgress, setMarkingInProgress] = useState(false);
+
+// === NEW FUNCTIONS ===
+
+const fetchCoursesForCompletion = async () => {
+  if (!completionFilters.year_of_study || !completionFilters.semester) {
+    setCoursesForCompletion([]);
+    return;
+  }
+
+  try {
+    let query = supabase
+      .from('courses')
+      .select('id, course_code, course_name, program, department_code, program_code')
+      .eq('year', completionFilters.year_of_study)
+      .eq('semester', completionFilters.semester)
+      .eq('is_active', true);
+
+    // If a program is selected, filter by program_code (text field)
+    if (completionFilters.program_id) {
+      const { data: selectedProgram } = await supabase
+        .from('programs')
+        .select('code')
+        .eq('id', completionFilters.program_id)
+        .single();
+
+      if (selectedProgram?.code) {
+        query = query.eq('program_code', selectedProgram.code);  // This matches BSCE, BSCS, etc.
+      }
+    }
+
+    const { data, error } = await query.order('course_code', { ascending: true });
+
+    if (error) throw error;
+
+    setCoursesForCompletion(data || []);
+  } catch (err) {
+    console.error('Error loading courses:', err);
+    alert('Failed to load courses: ' + err.message);
+    setCoursesForCompletion([]);
+  }
+};
+
+// Fetch students in the selected program and year
+const fetchStudentsForCompletion = async () => {
+  if (!completionFilters.year_of_study || !completionFilters.academic_year) {
+    setStudentsToComplete([]);
+    return;
+  }
+
+  try {
+    let query = supabase
+      .from('students')
+      .select('id')
+      .eq('year_of_study', completionFilters.year_of_study)
+      .eq('academic_year', completionFilters.academic_year)
+      .eq('status', 'active');
+
+    if (completionFilters.program_id) {
+      query = query.eq('program_id', completionFilters.program_id);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    setStudentsToComplete(data || []);
+  } catch (err) {
+    console.error('Error loading students:', err);
+    alert('Failed to load students: ' + err.message);
+    setStudentsToComplete([]);
+  }
+};
+// Run when filters change
+useEffect(() => {
+  fetchCoursesForCompletion();
+  fetchStudentsForCompletion();
+}, [completionFilters]);
+
+  // Add this useEffect after your existing useEffect for completionFilters
+useEffect(() => {
+  if (showReversalMode) {
+    fetchCompletedCourses();
+  } else {
+    fetchCoursesForCompletion();
+    fetchStudentsForCompletion();
+  }
+}, [
+  showReversalMode,
+  reversalFilters.program_id,
+  reversalFilters.academic_year,
+  reversalFilters.year_of_study,
+  reversalFilters.semester,
+  completionFilters.program_id,
+  completionFilters.academic_year,
+  completionFilters.year_of_study,
+  completionFilters.semester
+]);
+
+const handleMarkSemesterCompleted = async () => {
+  if (selectedCoursesForCompletion.length === 0) {
+    alert('Please select at least one course to mark as completed');
+    return;
+  }
+
+  if (studentsToComplete.length === 0) {
+    alert('No active students found for this program/year');
+    return;
+  }
+
+  if (!window.confirm('⚠️ IMPORTANT NOTICE: This will update existing enrollments to "completed" Are you sure you want to proceed?')) return;
+
+  setMarkingInProgress(true);
+
+  try {
+    console.log(`Processing ${selectedCoursesForCompletion.length} courses for ${studentsToComplete.length} students`);
+
+    let processedCount = 0;
+    let skippedCount = 0;
+
+    for (const student of studentsToComplete) {
+      for (const courseId of selectedCoursesForCompletion) {
+        // 1. Check if enrollment already exists
+        const { data: existing, error: checkError } = await supabase
+          .from('student_courses')
+          .select('id')
+          .eq('student_id', student.id)
+          .eq('course_id', courseId)
+          .maybeSingle();
+
+        if (checkError) {
+          console.error('Check error:', checkError);
+          skippedCount++;
+          continue;
+        }
+
+        let recordId;
+
+        if (existing) {
+          // Already enrolled → just update status
+          recordId = existing.id;
+          const { error: updateError } = await supabase
+            .from('student_courses')
+            .update({
+              status: 'completed',
+              // Add these only if columns exist:
+              // completion_date: new Date().toISOString().split('T')[0],
+              // updated_at: new Date().toISOString(),
+            })
+            .eq('id', recordId);
+
+          if (updateError) {
+            console.error('Update failed:', updateError);
+            skippedCount++;
+            continue;
+          }
+        } else {
+          // No enrollment → auto-enroll and mark as completed
+          const { data: inserted, error: insertError } = await supabase
+            .from('student_courses')
+            .insert({
+              student_id: student.id,
+              course_id: courseId,
+              status: 'completed', // Directly set to completed
+              // Add any other required columns here, e.g.:
+              // enrollment_date: new Date().toISOString().split('T')[0],
+              // program_id: student.program_id, // if you have this
+              // department_code: student.department_code,
+            })
+            .select('id')
+            .single();
+
+          if (insertError) {
+            console.error(`Auto-enroll failed for student ${student.id}, course ${courseId}:`, insertError.message);
+            skippedCount++;
+            continue;
+          }
+
+          recordId = inserted.id;
+        }
+
+        processedCount++;
+        console.log(`Success: Student ${student.id} → Course ${courseId} marked completed`);
+      }
+    }
+
+    alert(
+      `Operation completed!\n\n` +
+      `Processed: ${processedCount} records\n` +
+      `Skipped (failed): ${skippedCount} records\n\n` +
+      `All selected courses now marked as completed for enrolled students.`
+    );
+
+    setSelectedCoursesForCompletion([]);
+    fetchDashboardStats();
+
+  } catch (err) {
+    console.error('Critical error:', err);
+    alert('Failed: ' + (err.message || 'Unknown error'));
+  } finally {
+    setMarkingInProgress(false);
+  }
+  };
+  
+ // Add these functions after your handleMarkSemesterCompleted function (around line 300-400)
+
+// Fetch courses that have been marked as completed
+const fetchCompletedCourses = async () => {
+  if (!reversalFilters.year_of_study || !reversalFilters.semester) {
+    setCompletedCourses([]);
+    return;
+  }
+
+  try {
+    // First get all courses for this semester
+    let courseQuery = supabase
+      .from('courses')
+      .select('id, course_code, course_name, program, department_code, program_code')
+      .eq('year', reversalFilters.year_of_study)
+      .eq('semester', reversalFilters.semester)
+      .eq('is_active', true);
+
+    if (reversalFilters.program_id) {
+      const { data: selectedProgram } = await supabase
+        .from('programs')
+        .select('code')
+        .eq('id', reversalFilters.program_id)
+        .single();
+
+      if (selectedProgram?.code) {
+        courseQuery = courseQuery.eq('program_code', selectedProgram.code);
+      }
+    }
+
+    const { data: courses, error: coursesError } = await courseQuery.order('course_code', { ascending: true });
+
+    if (coursesError) throw coursesError;
+
+    // Then check which ones have completions
+    const coursesWithCompletions = await Promise.all(
+      (courses || []).map(async (course) => {
+        const { data: completions, error: completionError } = await supabase
+          .from('student_courses')
+          .select('id')
+          .eq('course_id', course.id)
+          .eq('status', 'completed')
+          .limit(1);
+
+        if (completionError) {
+          console.error('Error checking completions:', completionError);
+          return null;
+        }
+
+        // Return course only if it has completions
+        return completions && completions.length > 0 ? course : null;
+      })
+    );
+
+    // Filter out null values
+    const validCourses = coursesWithCompletions.filter(course => course !== null);
+    setCompletedCourses(validCourses);
+
+  } catch (err) {
+    console.error('Error loading completed courses:', err);
+    alert('Failed to load completed courses: ' + err.message);
+    setCompletedCourses([]);
+  }
+};
+
+// Handle reversing course completion
+const handleReverseCourseCompletion = async () => {
+  if (selectedCoursesForReversal.length === 0) {
+    alert('Please select at least one course to reverse');
+    return;
+  }
+
+  if (!window.confirm(
+    `⚠️ IMPORTANT: This will change ${selectedCoursesForReversal.length} course(s) from "completed" back to "enrolled" status.\n\n` +
+    `Students will be able to submit assignments/exams for these courses again.\n\n` +
+    `Are you sure you want to proceed?`
+  )) return;
+
+  setReversalInProgress(true);
+
+  try {
+    // Update all selected courses from "completed" to "enrolled"
+    const { data, error } = await supabase
+      .from('student_courses')
+      .update({
+        status: 'enrolled',
+        updated_at: new Date().toISOString()
+      })
+      .eq('status', 'completed')
+      .in('course_id', selectedCoursesForReversal);
+
+    if (error) throw error;
+
+    alert(`✅ Successfully reversed ${selectedCoursesForReversal.length} course(s) back to "enrolled" status!`);
+    
+    // Reset selections and refresh data
+    setSelectedCoursesForReversal([]);
+    fetchCompletedCourses();
+
+  } catch (err) {
+    console.error('Error reversing completion:', err);
+    alert('Failed to reverse completion: ' + err.message);
+  } finally {
+    setReversalInProgress(false);
+  }
+};
+
+// Toggle course selection for reversal
+const toggleCourseReversalSelection = (courseId) => {
+  setSelectedCoursesForReversal(prev =>
+    prev.includes(courseId)
+      ? prev.filter(id => id !== courseId)
+      : [...prev, courseId]
+  );
+};
+
+// Select all courses for reversal
+const selectAllForReversal = () => {
+  if (selectedCoursesForReversal.length === completedCourses.length) {
+    setSelectedCoursesForReversal([]);
+  } else {
+    setSelectedCoursesForReversal(completedCourses.map(c => c.id));
+  }
+};
+
+// Auto-select all when courses are loaded
+useEffect(() => {
+  if (completedCourses.length > 0) {
+    setSelectedCoursesForReversal(completedCourses.map(c => c.id));
+  }
+}, [completedCourses]); 
+
+const toggleCourseCompletionSelection = (courseId) => {
+  setSelectedCoursesForCompletion(prev =>
+    prev.includes(courseId)
+      ? prev.filter(id => id !== courseId)
+      : [...prev, courseId]
+  );
+};
+
+const selectAllForCompletion = () => {
+  if (selectedCoursesForCompletion.length === coursesForCompletion.length) {
+    setSelectedCoursesForCompletion([]);
+  } else {
+    setSelectedCoursesForCompletion(coursesForCompletion.map(c => c.id));
+  }
+  };
+  
+  // In your component, after fetching courses
+useEffect(() => {
+  if (coursesForCompletion.length > 0) {
+    // Auto-select ALL courses by default
+    setSelectedCoursesForCompletion(coursesForCompletion.map(c => c.id));
+  }
+}, [coursesForCompletion]);
+  
     // === TIMETABLE MANAGEMENT STATES ===
   const [timetables, setTimetables] = useState([]);
+  const [expandedTimetableId, setExpandedTimetableId] = useState(null);
   const [selectedTimetable, setSelectedTimetable] = useState(null);
   const [showTimetableModal, setShowTimetableModal] = useState(false);
   const [showSlotModal, setShowSlotModal] = useState(false);
@@ -112,6 +505,7 @@ const AdminDashboard = () => {
   const [showFinanceModal, setShowFinanceModal] = useState(false);
   const [showAttendanceModal, setShowAttendanceModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
+  const [selectedLecturerDetails, setSelectedLecturerDetails] = useState(null);
     // Student Edit States
   const [editingStudent, setEditingStudent] = useState(null);
  const [editStudentForm, setEditStudentForm] = useState({
@@ -989,7 +1383,6 @@ const testStudentDataRetrieval = async () => {
     }
   }
 };
-
 const fetchAssignmentSubmissions = async (assignmentId) => {
   console.log('🚀 DEBUG: Starting to fetch submissions for assignment:', assignmentId);
   
@@ -998,6 +1391,9 @@ const fetchAssignmentSubmissions = async (assignmentId) => {
     setAssignmentSubmissions([]);
     return;
   }
+
+  // Set loading state
+  setLoading(prev => ({ ...prev, submissions: true }));
   
   try {
     console.log('🔍 Step 1: Fetching submissions...');
@@ -1123,6 +1519,9 @@ const fetchAssignmentSubmissions = async (assignmentId) => {
     console.error('❌ Error in fetchAssignmentSubmissions:', error);
     alert('Error loading submissions: ' + error.message);
     setAssignmentSubmissions([]);
+  } finally {
+    // Clear loading state
+    setLoading(prev => ({ ...prev, submissions: false }));
   }
 };
 
@@ -2955,11 +3354,41 @@ Department: ${profileData.department || 'Not specified'}
   };
 
   // ASSIGNMENT HELPER FUNCTIONS
-  const handleViewSubmissions = async (assignment) => {
-    setSelectedAssignment(assignment);
-    setShowSubmissionsModal(true);
-    await fetchAssignmentSubmissions(assignment.id);
-  };
+const handleViewSubmissions = async (assignment) => {
+  // Get the assignment ID
+  const assignmentId = assignment.id || assignment.assignment_id;
+  
+  if (!assignmentId) {
+    console.error('ERROR: No assignment ID found:', assignment);
+    alert('Cannot view submissions: Assignment ID not found');
+    return;
+  }
+  
+  console.log('DEBUG: Navigating to Grading tab for assignment:', {
+    id: assignmentId,
+    title: assignment.title,
+    total_marks: assignment.total_marks
+  });
+  
+  // Set the selected assignment with all needed data
+  setSelectedAssignment({
+    id: assignmentId,
+    title: assignment.title || 'Untitled Assignment',
+    total_marks: assignment.total_marks || 100,
+    course_code: assignment.course_code,
+    course_name: assignment.course_name,
+    due_date: assignment.due_date
+  });
+  
+  // Navigate to Grading tab
+  setActiveTab('grading');
+  
+  // Clear any existing submissions
+  setAssignmentSubmissions([]);
+  
+  // Fetch submissions for this assignment
+  await fetchAssignmentSubmissions(assignmentId);
+};
 
   const handleToggleSubmissionSelection = (submissionId) => {
     setSelectedSubmissions(prev => {
@@ -3162,6 +3591,14 @@ Department: ${profileData.department || 'Not specified'}
             >
               📅 Attendance
             </button>
+            {isAdmin && (
+  <button
+    className={`nav-item ${activeTab === 'complete-courses' ? 'active' : ''}`}
+    onClick={() => setActiveTab('complete-courses')}
+  >
+    ✅ Complete Courses
+  </button>
+)}
             <button
               className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`}
               onClick={() => setActiveTab('settings')}
@@ -3425,7 +3862,9 @@ Department: ${profileData.department || 'Not specified'}
                           <p>No live lectures at the moment</p>
                         </div>
                       )}
-                    </div>
+                      </div>
+                      
+                      
 
                     {/* Upcoming Lectures */}
                     <div className="lectures-grid">
@@ -3618,50 +4057,72 @@ Department: ${profileData.department || 'Not specified'}
                                   </div>
                                 )}
                               </td>
-                              <td>
-                                <div className="action-buttons">
-                                  <button
-                                    className="action-btn view"
-                                    onClick={() => handleViewSubmissions({
-                                      id: assignment.assignment_id,
-                                      title: assignment.title,
-                                      total_marks: assignment.total_marks
-                                    })}
-                                  >
-                                    View Submissions
-                                  </button>
-                                  <div className="dropdown">
-                                    <button className="action-btn more">⋮</button>
-                                    <div className="dropdown-content">
-                                      <button
-                                        onClick={() => handleUpdateAssignmentStatus(assignment.assignment_id, 'published')}
-                                      >
-                                        Publish
-                                      </button>
-                                      <button
-                                        onClick={() => handleUpdateAssignmentStatus(assignment.assignment_id, 'draft')}
-                                      >
-                                        Draft
-                                      </button>
-                                      <button
-                                        onClick={() => handleUpdateAssignmentStatus(assignment.assignment_id, 'closed')}
-                                      >
-                                        Close
-                                      </button>
-                                      <button
-                                        onClick={() => {
-                                          if (window.confirm('Delete this assignment?')) {
-                                            // Implement delete
-                                          }
-                                        }}
-                                        className="danger"
-                                      >
-                                        Delete
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-                              </td>
+<td>
+  <div className="action-buttons flat">
+    {/* FIXED: View Submissions - passes full assignment object */}
+    <button
+      className="action-btn view"
+      onClick={() => handleViewSubmissions({
+        id: assignment.assignment_id,
+        title: assignment.title,
+        total_marks: assignment.total_marks,
+        course_code: assignment.course_code,
+        course_name: assignment.course_name,
+        due_date: assignment.due_date
+      })}
+    >
+      View Submissions
+    </button>
+     <button
+      className="action-btn small publish"
+      onClick={() => handleUpdateAssignmentStatus(assignment.assignment_id, 'published')}
+      disabled={assignment.status === 'published'}
+    >
+      Publish
+    </button>
+
+    <button
+      className="action-btn small draft"
+      onClick={() => handleUpdateAssignmentStatus(assignment.assignment_id, 'draft')}
+      disabled={assignment.status === 'draft'}
+    >
+      Draft
+    </button>
+
+    <button
+      className="action-btn small close"
+      onClick={() => handleUpdateAssignmentStatus(assignment.assignment_id, 'closed')}
+      disabled={assignment.status === 'closed'}
+    >
+      Close
+    </button>
+
+    <button
+      className="action-btn small delete"
+      onClick={async () => {
+        if (!window.confirm('⚠️ Permanently delete this assignment?\n\nAll submissions will be lost. This cannot be undone.')) {
+          return;
+        }
+        try {
+          const { error } = await supabase
+            .from('assignments')
+            .delete()
+            .eq('id', assignment.assignment_id)
+            .eq('lecturer_id', profile.id);
+
+          if (error) throw error;
+
+          alert('Assignment deleted successfully!');
+          await fetchMyAssignments();
+        } catch (err) {
+          alert('Failed to delete: ' + err.message);
+        }
+      }}
+    >
+      Delete
+    </button>
+  </div>
+</td>
                             </tr>
                           ))}
                         </tbody>
@@ -3682,11 +4143,10 @@ Department: ${profileData.department || 'Not specified'}
               </div>
             )}
 
-          {/* Grading Tab - Lecturer Only */}
-              {activeTab === 'grading' && isLecturer && (
-                
-                <div className="tab-content">
-                   {/* DEBUG INFO - Remove this after testing */}
+{/* Grading Tab - Lecturer Only */}
+{activeTab === 'grading' && isLecturer && (
+  <div className="tab-content">
+    {/* DEBUG INFO - You can keep or remove this based on your needs */}
     <div className="debug-info" style={{
       background: '#fff3cd',
       border: '1px solid #ffeaa7',
@@ -3709,274 +4169,193 @@ Department: ${profileData.department || 'Not specified'}
         <div>
           <strong>Dashboard pending:</strong> {stats.pendingGrading}
         </div>
+        <div>
+          <strong>Selected Assignment:</strong> {selectedAssignment?.id ? 'Yes' : 'No'}
+        </div>
+        <div>
+          <strong>Current Submissions:</strong> {assignmentSubmissions.length}
+        </div>
       </div>
-      <button
-        onClick={() => {
-          console.log('DEBUG: myAssignments:', myAssignments);
-          console.log('DEBUG: Profile:', profile);
-          fetchMyAssignments();
-        }}
-        style={{
-          marginTop: '10px',
-          background: '#17a2b8',
-          color: 'white',
-          border: 'none',
-          padding: '8px 16px',
-          borderRadius: '4px',
-          cursor: 'pointer',
-          fontSize: '12px'
-        }}
-      >
-        🔄 Refresh & Debug
-      </button>
-      <button
-  onClick={async () => {
-    console.log('Testing bucket connection...');
-    
-    // Test 1: List files in assignments bucket
-    const { data: files, error: listError } = await supabase.storage
-      .from('assignments')
-      .list();
-    
-    console.log('Bucket files:', files);
-    console.log('List error:', listError);
-    
-    // Test 2: Check if we can access any file
-    if (files && files.length > 0) {
-      const testFile = files[0].name;
-      const { data: urlData } = supabase.storage
-        .from('assignments')
-        .getPublicUrl(testFile);
       
-      console.log('Public URL for', testFile, ':', urlData.publicUrl);
-    }
+      <div style={{ display: 'flex', gap: '10px', marginTop: '10px', flexWrap: 'wrap' }}>
+        <button
+          onClick={debugStudentRelationship}
+          style={{
+            background: '#dc3545',
+            color: 'white',
+            border: 'none',
+            padding: '8px 16px',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '12px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '5px'
+          }}
+        >
+          🔍 Debug Student Relationship
+        </button>
+        
+        <button
+          onClick={testBucketAccess}
+          style={{
+            background: '#6c757d',
+            color: 'white',
+            border: 'none',
+            padding: '8px 16px',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '12px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '5px'
+          }}
+        >
+          🪣 Test Bucket Access
+        </button>
+        
+        <button
+          onClick={testSpecificFile}
+          style={{
+            background: '#17a2b8',
+            color: 'white',
+            border: 'none',
+            padding: '8px 16px',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '12px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '5px'
+          }}
+        >
+          📄 Test Specific File
+        </button>
+        
+        <button
+          onClick={testStudentDataRetrieval}
+          style={{
+            background: '#28a745',
+            color: 'white',
+            border: 'none',
+            padding: '8px 16px',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '12px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '5px'
+          }}
+        >
+          👤 Test Student Data
+        </button>
+        
+        <button
+          onClick={() => {
+            console.log('DEBUG: myAssignments:', myAssignments);
+            console.log('DEBUG: Profile:', profile);
+            fetchMyAssignments();
+          }}
+          style={{
+            background: '#17a2b8',
+            color: 'white',
+            border: 'none',
+            padding: '8px 16px',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '12px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '5px'
+          }}
+        >
+          🔄 Refresh Assignments
+        </button>
+        
+        <button
+          onClick={async () => {
+            console.log('Testing bucket connection...');
+            
+            // Test 1: List files in assignments bucket
+            const { data: files, error: listError } = await supabase.storage
+              .from('assignments')
+              .list();
+            
+            console.log('Bucket files:', files);
+            console.log('List error:', listError);
+            
+            // Test 2: Check if we can access any file
+            if (files && files.length > 0) {
+              const testFile = files[0].name;
+              const { data: urlData } = supabase.storage
+                .from('assignments')
+                .getPublicUrl(testFile);
+              
+              console.log('Public URL for', testFile, ':', urlData.publicUrl);
+            }
+            
+            alert('Check console for bucket connection test results');
+          }}
+          style={{
+            background: '#6c757d',
+            color: 'white',
+            border: 'none',
+            padding: '8px 16px',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '12px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '5px'
+          }}
+        >
+          🪣 Test Bucket Connection
+        </button>
+        
+        <button
+          onClick={async () => {
+            if (!selectedAssignment) {
+              alert('Please select an assignment first');
+              return;
+            }
+            
+            console.log('DEBUG: Testing assignment submissions for:', selectedAssignment.id);
+            
+            // Direct query test
+            const { data, error } = await supabase
+              .from('assignment_submissions')
+              .select('id, student_id, status, submission_date')
+              .eq('assignment_id', selectedAssignment.id);
+            
+            console.log('Direct query result:', { data, error });
+            
+            // Also test the RPC function
+            const { data: rpcData, error: rpcError } = await supabase.rpc('get_assignment_submissions_detail', {
+              p_assignment_id: selectedAssignment.id
+            });
+            
+            console.log('RPC function result:', { rpcData, rpcError });
+            
+            alert(`Found ${data?.length || 0} submissions via direct query\nRPC function ${rpcError ? 'failed' : 'found ' + (rpcData?.length || 0) + ' submissions'}`);
+          }}
+          style={{
+            background: '#28a745',
+            color: 'white',
+            border: 'none',
+            padding: '8px 16px',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '12px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '5px'
+          }}
+        >
+          🔍 Test Assignment Submissions
+        </button>
+      </div>
+    </div>
     
-    alert('Check console for bucket connection test results');
-  }}
-  style={{
-    background: '#6c757d',
-    color: 'white',
-    border: 'none',
-    padding: '8px 16px',
-    borderRadius: '4px',
-    cursor: 'pointer',
-    fontSize: '12px',
-    marginLeft: '10px'
-  }}
->
-  🪣 Test Bucket Connection
-                    </button>
-                    
-                  </div>
-                  <div className="debug-info" style={{
-  background: '#fff3cd',
-  border: '1px solid #ffeaa7',
-  borderRadius: '8px',
-  padding: '15px',
-  marginBottom: '20px',
-  fontSize: '13px'
-}}>
-  <h4 style={{ marginTop: 0, color: '#856404' }}>🔍 Debug Information</h4>
-  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
-    <div>
-      <strong>Lecturer ID:</strong> {profile?.id}
-    </div>
-    <div>
-      <strong>Total Assignments:</strong> {myAssignments.length}
-    </div>
-    <div>
-      <strong>Assignments with submissions:</strong> {myAssignments.filter(a => (a.submitted_count || 0) > 0).length}
-    </div>
-    <div>
-      <strong>Dashboard pending:</strong> {stats.pendingGrading}
-    </div>
-    <div>
-      <strong>Selected Assignment:</strong> {selectedAssignment?.id ? 'Yes' : 'No'}
-    </div>
-    <div>
-      <strong>Current Submissions:</strong> {assignmentSubmissions.length}
-    </div>
-  </div>
-  
-  <div style={{ display: 'flex', gap: '10px', marginTop: '10px', flexWrap: 'wrap' }}>
-     {/* Add these new debug buttons: */}
-  <button
-    onClick={debugStudentRelationship}
-    style={{
-      background: '#dc3545',
-      color: 'white',
-      border: 'none',
-      padding: '8px 16px',
-      borderRadius: '4px',
-      cursor: 'pointer',
-      fontSize: '12px',
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: '5px'
-    }}
-  >
-    🔍 Debug Student Relationship
-  </button>
-  
-  <button
-    onClick={testBucketAccess}
-    style={{
-      background: '#6c757d',
-      color: 'white',
-      border: 'none',
-      padding: '8px 16px',
-      borderRadius: '4px',
-      cursor: 'pointer',
-      fontSize: '12px',
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: '5px'
-    }}
-  >
-    🪣 Test Bucket Access
-  </button>
-  
-  <button
-    onClick={testSpecificFile}
-    style={{
-      background: '#17a2b8',
-      color: 'white',
-      border: 'none',
-      padding: '8px 16px',
-      borderRadius: '4px',
-      cursor: 'pointer',
-      fontSize: '12px',
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: '5px'
-    }}
-  >
-    📄 Test Specific File
-  </button>
-  
-  <button
-    onClick={testStudentDataRetrieval}
-    style={{
-      background: '#28a745',
-      color: 'white',
-      border: 'none',
-      padding: '8px 16px',
-      borderRadius: '4px',
-      cursor: 'pointer',
-      fontSize: '12px',
-      display: 'inline-flex',
-      alignItems: 'center',
-      gap: '5px'
-    }}
-  >
-    👤 Test Student Data
-  </button>
-                      
-                      <button
-      onClick={() => {
-        console.log('DEBUG: myAssignments:', myAssignments);
-        console.log('DEBUG: Profile:', profile);
-        fetchMyAssignments();
-      }}
-      style={{
-        background: '#17a2b8',
-        color: 'white',
-        border: 'none',
-        padding: '8px 16px',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        fontSize: '12px',
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: '5px'
-      }}
-    >
-      🔄 Refresh Assignments
-    </button>
-    
-    <button
-      onClick={async () => {
-        console.log('Testing bucket connection...');
-        
-        // Test 1: List files in assignments bucket
-        const { data: files, error: listError } = await supabase.storage
-          .from('assignments')
-          .list();
-        
-        console.log('Bucket files:', files);
-        console.log('List error:', listError);
-        
-        // Test 2: Check if we can access any file
-        if (files && files.length > 0) {
-          const testFile = files[0].name;
-          const { data: urlData } = supabase.storage
-            .from('assignments')
-            .getPublicUrl(testFile);
-          
-          console.log('Public URL for', testFile, ':', urlData.publicUrl);
-        }
-        
-        alert('Check console for bucket connection test results');
-      }}
-      style={{
-        background: '#6c757d',
-        color: 'white',
-        border: 'none',
-        padding: '8px 16px',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        fontSize: '12px',
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: '5px'
-      }}
-    >
-      🪣 Test Bucket Connection
-    </button>
-    
-    <button
-      onClick={async () => {
-        if (!selectedAssignment) {
-          alert('Please select an assignment first');
-          return;
-        }
-        
-        console.log('DEBUG: Testing assignment submissions for:', selectedAssignment.id);
-        
-        // Direct query test
-        const { data, error } = await supabase
-          .from('assignment_submissions')
-          .select('id, student_id, status, submission_date')
-          .eq('assignment_id', selectedAssignment.id);
-        
-        console.log('Direct query result:', { data, error });
-        
-        // Also test the RPC function
-        const { data: rpcData, error: rpcError } = await supabase.rpc('get_assignment_submissions_detail', {
-          p_assignment_id: selectedAssignment.id
-        });
-        
-        console.log('RPC function result:', { rpcData, rpcError });
-        
-        alert(`Found ${data?.length || 0} submissions via direct query\nRPC function ${rpcError ? 'failed' : 'found ' + (rpcData?.length || 0) + ' submissions'}`);
-      }}
-      style={{
-        background: '#28a745',
-        color: 'white',
-        border: 'none',
-        padding: '8px 16px',
-        borderRadius: '4px',
-        cursor: 'pointer',
-        fontSize: '12px',
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: '5px'
-      }}
-    >
-      🔍 Test Assignment Submissions
-    </button>
-  </div>
-</div>
     <div className="tab-header">
       <h2>📊 Grading Center</h2>
       <div className="tab-actions">
@@ -4000,324 +4379,356 @@ Department: ${profileData.department || 'Not specified'}
    
     {selectedAssignment ? (
       <div className="grading-content">
-        <div className="assignment-header">
-          <h3>{selectedAssignment.title}</h3>
-          <div className="assignment-meta">
-            <span>Total Marks: {selectedAssignment.total_marks}</span>
-            <span>Submissions: {assignmentSubmissions.length}</span>
-            <button
-              className="back-button"
-              onClick={() => {
-                setSelectedAssignment(null);
-                setAssignmentSubmissions([]);
-              }}
-            >
-              ← Back to List
-            </button>
-          </div>
-        </div>
+      <div className="assignment-header blue-theme">
+  <h3>{selectedAssignment.title}</h3>
+  <div className="assignment-meta">
+    <div className="counter-badge">
+      <div className="badge-icon">📊</div>
+      <div className="badge-content">
+        <span className="badge-value">{selectedAssignment.total_marks}</span>
+        <span className="badge-label">Total Marks</span>
+      </div>
+    </div>
+    
+    <div className="counter-badge">
+      <div className="badge-icon">📝</div>
+      <div className="badge-content">
+        <span className="badge-value">{assignmentSubmissions.length}</span>
+        <span className="badge-label">Submissions</span>
+      </div>
+    </div>
+    
+    <button
+      className="back-button"
+      onClick={() => {
+        setSelectedAssignment(null);
+        setAssignmentSubmissions([]);
+      }}
+    >
+      Back to List
+    </button>
+  </div>
+</div>
        
-        {/* Batch Download Progress */}
-        {batchDownloading && (
-          <div className="download-progress">
-            <div className="progress-info">
-              <span>Downloading files...</span>
-              <span>{batchProgress.current} of {batchProgress.total}</span>
-            </div>
-            <div className="progress-bar-container">
-              <div
-                className="progress-bar-fill"
-                style={{
-                  width: `${(batchProgress.current / batchProgress.total) * 100}%`
-                }}
-              ></div>
-            </div>
-          </div>
-        )}
-
-        {/* Bulk Grading Controls */}
-        {bulkGrading && (
-          <div className="bulk-grading-controls">
-            <div className="bulk-header">
-              <h4>Bulk Grading Mode</h4>
-              <div className="bulk-actions">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={selectedSubmissions.length === assignmentSubmissions.filter(s => s.status === 'submitted').length}
-                    onChange={handleSelectAllSubmissions}
-                  />
-                  Select All ({assignmentSubmissions.filter(s => s.status === 'submitted').length})
-                </label>
-                <button
-                  className="small-button"
-                  onClick={() => setSelectedSubmissions([])}
-                >
-                  Clear Selection
-                </button>
-              </div>
-            </div>
-            <p className="bulk-info">
-              Selected: {selectedSubmissions.length} submission(s)
+        {/* Loading State for Submissions */}
+        {loading.submissions ? (
+          <div className="loading-state">
+            <div className="spinner"></div>
+            <h4>Loading Submissions...</h4>
+            <p>
+              Fetching submission data for this assignment
             </p>
           </div>
-        )}
-       
-        {/* Submissions List */}
-        <div className="submissions-list">
-          {assignmentSubmissions.length > 0 ? (
-            <div className="table-container">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    {bulkGrading && <th>Select</th>}
-                    <th>Student</th>
-                    <th>Program</th>
-                    <th>Submission Date</th>
-                    <th>Status</th>
-                    <th>Files</th>
-                    <th>Marks</th>
-                    <th>Feedback</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {assignmentSubmissions.map(submission => (
-                    <tr key={submission.submission_id}>
-                      {bulkGrading && (
-                        <td>
-                          <input
-                            type="checkbox"
-                            checked={selectedSubmissions.includes(submission.submission_id)}
-                            onChange={() => handleToggleSubmissionSelection(submission.submission_id)}
-                            disabled={submission.status !== 'submitted'}
-                          />
-                        </td>
-                      )}
-                      <td>
-                        <strong>{submission.student_name || 'Unknown Student'}</strong>
-                        <br />
-                        <span className="small-text">{submission.student_email || 'No email'}</span>
-                      </td>
-                      <td>
-                        {submission.student_program || 'N/A'}
-                        <br />
-                        <span className="dept-badge">{submission.student_department || 'N/A'}</span>
-                      </td>
-                      <td>
-                        {submission.submission_date ? (
-                          <>
-                            {new Date(submission.submission_date).toLocaleDateString()}
+        ) : (
+          <>
+            {/* Batch Download Progress */}
+            {batchDownloading && (
+              <div className="download-progress">
+                <div className="progress-info">
+                  <span>Downloading files...</span>
+                  <span>{batchProgress.current} of {batchProgress.total}</span>
+                </div>
+                <div className="progress-bar-container">
+                  <div
+                    className="progress-bar-fill"
+                    style={{
+                      width: `${(batchProgress.current / batchProgress.total) * 100}%`
+                    }}
+                  ></div>
+                </div>
+              </div>
+            )}
+
+            {/* Bulk Grading Controls */}
+            {bulkGrading && (
+              <div className="bulk-grading-controls">
+                <div className="bulk-header">
+                  <h4>Bulk Grading Mode</h4>
+                  <div className="bulk-actions">
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={selectedSubmissions.length === assignmentSubmissions.filter(s => s.status === 'submitted').length}
+                        onChange={handleSelectAllSubmissions}
+                      />
+                      Select All ({assignmentSubmissions.filter(s => s.status === 'submitted').length})
+                    </label>
+                    <button
+                      className="small-button"
+                      onClick={() => setSelectedSubmissions([])}
+                    >
+                      Clear Selection
+                    </button>
+                  </div>
+                </div>
+                <p className="bulk-info">
+                  Selected: {selectedSubmissions.length} submission(s)
+                </p>
+              </div>
+            )}
+           
+            {/* Submissions List */}
+            <div className="submissions-list">
+              {assignmentSubmissions.length > 0 ? (
+                <div className="table-container">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        {bulkGrading && <th>Select</th>}
+                        <th>Student</th>
+                        <th>Program</th>
+                        <th>Submission Date</th>
+                        <th>Status</th>
+                        <th>Files</th>
+                        <th>Marks</th>
+                        <th>Feedback</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {assignmentSubmissions.map(submission => (
+                        <tr key={submission.submission_id}>
+                          {bulkGrading && (
+                            <td>
+                              <input
+                                type="checkbox"
+                                checked={selectedSubmissions.includes(submission.submission_id)}
+                                onChange={() => handleToggleSubmissionSelection(submission.submission_id)}
+                                disabled={submission.status !== 'submitted'}
+                              />
+                            </td>
+                          )}
+                          <td>
+                            <strong>{submission.student_name || 'Unknown Student'}</strong>
                             <br />
-                            <span className={`small-text ${submission.late_submission ? 'late' : ''}`}>
-                              {new Date(submission.submission_date).toLocaleTimeString()}
-                              {submission.late_submission && ` (Late: ${submission.days_late || 0} days)`}
+                            <span className="small-text">{submission.student_email || 'No email'}</span>
+                          </td>
+                          <td>
+                            {submission.student_program || 'N/A'}
+                            <br />
+                            <span className="dept-badge">{submission.student_department || 'N/A'}</span>
+                          </td>
+                          <td>
+                            {submission.submission_date ? (
+                              <>
+                                {new Date(submission.submission_date).toLocaleDateString()}
+                                <br />
+                                <span className={`small-text ${submission.late_submission ? 'late' : ''}`}>
+                                  {new Date(submission.submission_date).toLocaleTimeString()}
+                                  {submission.late_submission && ` (Late: ${submission.days_late || 0} days)`}
+                                </span>
+                              </>
+                            ) : (
+                              <span className="text-muted">Not submitted</span>
+                            )}
+                          </td>
+                          <td>
+                            <span className={`status-badge ${submission.status || 'not_submitted'}`}>
+                              {submission.status || 'Not Submitted'}
                             </span>
-                          </>
-                        ) : (
-                          <span className="text-muted">Not submitted</span>
-                        )}
-                      </td>
-                      <td>
-                        <span className={`status-badge ${submission.status || 'not_submitted'}`}>
-                          {submission.status || 'Not Submitted'}
-                        </span>
-                      </td>
-                      <td>
-                        {submission.file_download_urls && submission.file_download_urls.length > 0 ? (
-                          <div className="file-links">
-                            {submission.file_download_urls.map((url, idx) => {
-                              const originalUrl = submission.file_urls?.[idx] || url;
-                              const fileName = getFileNameFromUrl(originalUrl);
-                              const fileExt = getFileExtension(originalUrl);
-                              const displayName = `File ${idx + 1}.${fileExt}`;
-                              const downloadKey = `${submission.submission_id}_file${idx + 1}`;
-                              
-                              return (
-                                <div key={idx} className="file-download-item">
-                                  <a
-                                    href="#"
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      downloadFile(url, `${submission.student_name || 'Student'}_${displayName}`, submission.submission_id);
-                                    }}
-                                    className="file-link"
-                                  >
-                                    📥 {displayName}
-                                  </a>
-                                  {downloadingFile === downloadKey && (
-                                    <span className="downloading-text">Downloading...</span>
-                                  )}
-                                </div>
-                              );
-                            })}
-                            <button
-                              className="download-all-btn"
-                              onClick={() => downloadAllFilesForSubmission(submission)}
-                              disabled={batchDownloading}
-                            >
-                              📦 Download All Files
-                            </button>
-                          </div>
-                        ) : submission.submitted_text ? (
-                          <div className="text-submission">
-                            <span className="text-preview">
-                              {submission.submitted_text.substring(0, 50)}...
-                            </span>
-                            <button
-                              className="view-text-btn"
-                              onClick={() => {
-                                alert(`Text Submission from ${submission.student_name}:\n\n${submission.submitted_text}`);
-                              }}
-                            >
-                              View Full Text
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="text-muted">No submission</span>
-                        )}
-                      </td>
-                      <td>
-                        {submission.status === 'graded' ? (
-                          <span className="grade-display">
-                            {submission.marks_obtained || 0}/{selectedAssignment.total_marks}
-                          </span>
-                        ) : submission.status === 'submitted' ? (
-                          <div className="grade-input">
-                            <input
-                              type="number"
-                              min="0"
-                              max={selectedAssignment.total_marks}
-                              step="0.5"
-                              value={gradeForm[submission.submission_id]?.marks || ''}
-                              onChange={(e) => setGradeForm(prev => ({
-                                ...prev,
-                                [submission.submission_id]: {
-                                  ...prev[submission.submission_id],
-                                  marks: e.target.value
-                                }
-                              }))}
-                              placeholder="Enter marks"
-                              className="small-input"
-                            />
-                          </div>
-                        ) : (
-                          <span className="text-muted">-</span>
-                        )}
-                      </td>
-                      <td>
-                        {submission.status === 'graded' ? (
-                          <span className="feedback-display">
-                            {submission.feedback || 'No feedback'}
-                          </span>
-                        ) : submission.status === 'submitted' ? (
-                          <div className="feedback-input">
-                            <textarea
-                              value={gradeForm[submission.submission_id]?.feedback || ''}
-                              onChange={(e) => setGradeForm(prev => ({
-                                ...prev,
-                                [submission.submission_id]: {
-                                  ...prev[submission.submission_id],
-                                  feedback: e.target.value
-                                }
-                              }))}
-                              placeholder="Enter feedback"
-                              rows="2"
-                              className="small-textarea"
-                            />
-                          </div>
-                        ) : (
-                          <span className="text-muted">-</span>
-                        )}
-                      </td>
-                      <td>
-                        <div className="action-buttons">
-                          {submission.status === 'submitted' && !bulkGrading && (
-                            <button
-                              className="action-btn grade"
-                              onClick={async () => {
-                                const marks = gradeForm[submission.submission_id]?.marks;
-                                const feedback = gradeForm[submission.submission_id]?.feedback || '';
-                               
-                                if (!marks || marks === '') {
-                                  alert('Please enter marks');
-                                  return;
-                                }
-                               
-                                if (parseFloat(marks) > selectedAssignment.total_marks) {
-                                  alert(`Marks cannot exceed ${selectedAssignment.total_marks}`);
-                                  return;
-                                }
-                               
-                                const success = await handleGradeSubmission(
-                                  submission.submission_id,
-                                  parseFloat(marks),
-                                  feedback
-                                );
-                               
-                                if (success) {
-                                  setGradeForm(prev => {
-                                    const newForm = { ...prev };
-                                    delete newForm[submission.submission_id];
-                                    return newForm;
-                                  });
-                                }
-                              }}
-                              disabled={gradingInProgress}
-                            >
-                              {gradingInProgress ? 'Grading...' : 'Grade'}
-                            </button>
-                          )}
-                          {submission.status === 'graded' && (
-                            <button
-                              className="action-btn view"
-                              onClick={() => {
-                                alert(`Marks: ${submission.marks_obtained || 0}/${selectedAssignment.total_marks}\n\nFeedback: ${submission.feedback || 'No feedback'}`);
-                              }}
-                            >
-                              View Grade
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                          </td>
+                          <td>
+                            {submission.file_download_urls && submission.file_download_urls.length > 0 ? (
+                              <div className="file-links">
+                                {submission.file_download_urls.map((url, idx) => {
+                                  const originalUrl = submission.file_urls?.[idx] || url;
+                                  const fileName = getFileNameFromUrl(originalUrl);
+                                  const fileExt = getFileExtension(originalUrl);
+                                  const displayName = `File ${idx + 1}.${fileExt}`;
+                                  const downloadKey = `${submission.submission_id}_file${idx + 1}`;
+                                  
+                                  return (
+                                    <div key={idx} className="file-download-item">
+                                      <a
+                                        href="#"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          downloadFile(url, `${submission.student_name || 'Student'}_${displayName}`, submission.submission_id);
+                                        }}
+                                        className="file-link"
+                                      >
+                                        📥 {displayName}
+                                      </a>
+                                      {downloadingFile === downloadKey && (
+                                        <span className="downloading-text">Downloading...</span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                <button
+                                  className="download-all-btn"
+                                  onClick={() => downloadAllFilesForSubmission(submission)}
+                                  disabled={batchDownloading}
+                                >
+                                  📦 Download All Files
+                                </button>
+                              </div>
+                            ) : submission.submitted_text ? (
+                              <div className="text-submission">
+                                <span className="text-preview">
+                                  {submission.submitted_text.substring(0, 50)}...
+                                </span>
+                                <button
+                                  className="view-text-btn"
+                                  onClick={() => {
+                                    alert(`Text Submission from ${submission.student_name}:\n\n${submission.submitted_text}`);
+                                  }}
+                                >
+                                  View Full Text
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-muted">No submission</span>
+                            )}
+                          </td>
+                          <td>
+                            {submission.status === 'graded' ? (
+                              <span className="grade-display">
+                                {submission.marks_obtained || 0}/{selectedAssignment.total_marks}
+                              </span>
+                            ) : submission.status === 'submitted' ? (
+                              <div className="grade-input">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={selectedAssignment.total_marks}
+                                  step="0.5"
+                                  value={gradeForm[submission.submission_id]?.marks || ''}
+                                  onChange={(e) => setGradeForm(prev => ({
+                                    ...prev,
+                                    [submission.submission_id]: {
+                                      ...prev[submission.submission_id],
+                                      marks: e.target.value
+                                    }
+                                  }))}
+                                  placeholder="Enter marks"
+                                  className="small-input"
+                                />
+                              </div>
+                            ) : (
+                              <span className="text-muted">-</span>
+                            )}
+                          </td>
+                          <td>
+                            {submission.status === 'graded' ? (
+                              <span className="feedback-display">
+                                {submission.feedback || 'No feedback'}
+                              </span>
+                            ) : submission.status === 'submitted' ? (
+                              <div className="feedback-input">
+                                <textarea
+                                  value={gradeForm[submission.submission_id]?.feedback || ''}
+                                  onChange={(e) => setGradeForm(prev => ({
+                                    ...prev,
+                                    [submission.submission_id]: {
+                                      ...prev[submission.submission_id],
+                                      feedback: e.target.value
+                                    }
+                                  }))}
+                                  placeholder="Enter feedback"
+                                  rows="2"
+                                  className="small-textarea"
+                                />
+                              </div>
+                            ) : (
+                              <span className="text-muted">-</span>
+                            )}
+                          </td>
+                          <td>
+                            <div className="action-buttons">
+                              {submission.status === 'submitted' && !bulkGrading && (
+                                <button
+                                  className="action-btn grade"
+                                  onClick={async () => {
+                                    const marks = gradeForm[submission.submission_id]?.marks;
+                                    const feedback = gradeForm[submission.submission_id]?.feedback || '';
+                                   
+                                    if (!marks || marks === '') {
+                                      alert('Please enter marks');
+                                      return;
+                                    }
+                                   
+                                    if (parseFloat(marks) > selectedAssignment.total_marks) {
+                                      alert(`Marks cannot exceed ${selectedAssignment.total_marks}`);
+                                      return;
+                                    }
+                                   
+                                    const success = await handleGradeSubmission(
+                                      submission.submission_id,
+                                      parseFloat(marks),
+                                      feedback
+                                    );
+                                   
+                                    if (success) {
+                                      setGradeForm(prev => {
+                                        const newForm = { ...prev };
+                                        delete newForm[submission.submission_id];
+                                        return newForm;
+                                      });
+                                    }
+                                  }}
+                                  disabled={gradingInProgress}
+                                >
+                                  {gradingInProgress ? 'Grading...' : 'Grade'}
+                                </button>
+                              )}
+                              {submission.status === 'graded' && (
+                                <button
+                                  className="action-btn view"
+                                  onClick={() => {
+                                    alert(`Marks: ${submission.marks_obtained || 0}/${selectedAssignment.total_marks}\n\nFeedback: ${submission.feedback || 'No feedback'}`);
+                                  }}
+                                >
+                                  View Grade
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="empty-state">
+                  <div style={{ fontSize: '48px', marginBottom: '20px', opacity: 0.5 }}>
+                    📭
+                  </div>
+                  <h4>No Submissions Found</h4>
+                  <p className="small-text" style={{ maxWidth: '500px', margin: '0 auto' }}>
+                    No students have submitted this assignment yet.
+                    Students will appear here once they submit their work.
+                  </p>
+                  <button
+                    className="refresh-button"
+                    onClick={() => selectedAssignment && fetchAssignmentSubmissions(selectedAssignment.id)}
+                    style={{ marginTop: '20px' }}
+                  >
+                    🔄 Refresh Submissions
+                  </button>
+                </div>
+              )}
             </div>
-          ) : (
-            <div className="empty-state">
-              <p>No submissions found for this assignment</p>
-              <p className="small-text">
-                If students have submitted, try refreshing or check if the assignment ID is correct.
-              </p>
-              <button
-                className="refresh-button"
-                onClick={() => selectedAssignment && fetchAssignmentSubmissions(selectedAssignment.id)}
-              >
-                🔄 Refresh Submissions
-              </button>
-            </div>
-          )}
-        </div>
-       
-        {/* Export Options */}
-        {assignmentSubmissions.length > 0 && (
-          <div className="export-options">
-            <button
-              className="export-button"
-              onClick={downloadSubmissionsCSV}
-            >
-              📥 Export to CSV
-            </button>
-            <button
-              className="export-button"
-              onClick={downloadAllSubmissions}
-              disabled={batchDownloading}
-            >
-              📦 Download All Files
-            </button>
-          </div>
+           
+            {/* Export Options */}
+            {assignmentSubmissions.length > 0 && (
+              <div className="export-options">
+                <button
+                  className="export-button"
+                  onClick={downloadSubmissionsCSV}
+                >
+                  📥 Export to CSV
+                </button>
+                <button
+                  className="export-button"
+                  onClick={downloadAllSubmissions}
+                  disabled={batchDownloading}
+                >
+                  📦 Download All Files
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
     ) : (
@@ -4363,25 +4774,29 @@ Department: ${profileData.department || 'Not specified'}
                     </div>
                   </div>
                   <div className="assignment-actions">
-                    <button
-                      className="action-btn grade"
-                      onClick={() => handleViewSubmissions({
-                        id: assignment.assignment_id,
-                        title: assignment.title,
-                        total_marks: assignment.total_marks || 100
-                      })}
-                      disabled={submittedCount === 0}
-                    >
-                      {submittedCount === 0 ? 'No Submissions' : 'Grade Submissions'}
-                    </button>
+                   <button
+  className="action-btn view"
+  onClick={() => handleViewSubmissions({
+    id: assignment.assignment_id,
+    title: assignment.title,
+    total_marks: assignment.total_marks,
+    course_code: assignment.course_code,
+    course_name: assignment.course_name
+  })}
+>
+  View Submissions
+</button>
                   </div>
                 </div>
               );
             })
           ) : (
             <div className="empty-state">
-              <p>No assignments found</p>
-              <p className="small-text">
+              <div style={{ fontSize: '48px', marginBottom: '20px', opacity: 0.5 }}>
+                📝
+              </div>
+              <h4>No Assignments Found</h4>
+              <p className="small-text" style={{ maxWidth: '500px', margin: '0 auto 20px' }}>
                 Create assignments first, then students can submit them for grading.
               </p>
               <button
@@ -4461,7 +4876,7 @@ Department: ${profileData.department || 'Not specified'}
                                 {student.department_code || 'N/A'}
                               </span>
                             </td>
-                            <td>Year {student.year_of_study || 1}</td>
+                            <td>Year {student.year_of_study || 1} - Sem {student.semester || 1}</td>
                             <td>
                               <span className={`status-badge ${student.status || 'active'}`}>
                                 {student.status?.charAt(0).toUpperCase() + student.status?.slice(1) || 'Active'}
@@ -4590,7 +5005,7 @@ Department: ${profileData.department || 'Not specified'}
               <div className="tab-content">
                 <div className="tab-header">
                   <h2>🎓 Lecture Management</h2>
-                  <div className="debug-info" style={{ fontSize: '12px', color: '#666', marginTop: '10px' }}>
+                  <div className="debug-info" style={{ fontSize: '12px', color: '#666', marginTop: '10px', display: 'none' }}>
                     <p>Debug: Showing {lectures.length} lectures | Lecturer ID: {profile?.id} | Is Lecturer: {isLecturer.toString()}</p>
                     <button
                       onClick={() => {
@@ -4968,12 +5383,12 @@ Department: ${profileData.department || 'Not specified'}
                           </td>
                           <td>
                             <div className="action-buttons">
-                              <button
-                                className="action-btn view"
-                                onClick={() => setSelectedUser(lecturer)}
-                              >
-                                View
-                              </button>
+                          <button
+  className="action-btn view"
+  onClick={() => setSelectedLecturerDetails(lecturer)}
+>
+  View Details
+</button>
                               <button
                                 className="action-btn dept"
                                 onClick={() => {
@@ -5212,50 +5627,151 @@ Department: ${profileData.department || 'Not specified'}
                   </button>
                 </div>
 
-                <div className="timetables-grid">
-                  {timetables.length === 0 ? (
-                    <div className="empty-state">
-                      <p>No timetables created yet</p>
-                      <button
-                        onClick={() => setShowTimetableModal(true)}
-                        className="add-button"
-                      >
-                        Create First Timetable
-                      </button>
-                    </div>
-                  ) : (
-                    timetables.map(tt => (
-                      <div key={tt.id} className="timetable-card">
-                        <div className="timetable-header">
-                          <h3>
-                            {tt.programs?.name || 'Unknown Program'} - Year {tt.year_of_study}
-                          </h3>
-                          <div>
-                            <span className="semester-badge">
-                              Semester {tt.semester}
-                            </span>
-                            <span className={`status-badge ${tt.is_active ? 'active' : 'inactive'}`}>
-                              {tt.is_active ? 'Active' : 'Inactive'}
-                            </span>
-                          </div>
-                        </div>
-                        <p>{tt.academic_year}</p>
-                        <p className="small-text">
-                          {tt.program_timetable_slots?.length || 0} slots
-                        </p>
-                        <div className="timetable-actions">
-                          <button
-                            className="action-btn view"
-                            onClick={() => setSelectedTimetable(tt)}
-                          >
-                            View & Edit Slots
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
+               <div className="timetables-grid">
+  {timetables.length === 0 ? (
+    <div className="empty-state">
+      <p>No timetables created yet</p>
+      <button
+        onClick={() => setShowTimetableModal(true)}
+        className="add-button"
+      >
+        Create First Timetable
+      </button>
+    </div>
+  ) : (
+    timetables.map(tt => (
+      <div key={tt.id} className="timetable-card expandable">
+        <div className="timetable-header">
+          <h3>
+            {tt.programs?.name || 'Unknown Program'} - Year {tt.year_of_study}
+          </h3>
+          <div>
+            <span className="semester-badge">
+              Semester {tt.semester}
+            </span>
+            <span className={`status-badge ${tt.is_active ? 'active' : 'inactive'}`}>
+              {tt.is_active ? 'Active' : 'Inactive'}
+            </span>
+          </div>
+        </div>
+        <p>{tt.academic_year}</p>
+        <p className="small-text">
+          {tt.program_timetable_slots?.length || 0} slot{(tt.program_timetable_slots?.length || 0) !== 1 ? 's' : ''}
+        </p>
+        <div className="timetable-actions">
+          <button
+            className="action-btn view"
+            onClick={() => setExpandedTimetableId(expandedTimetableId === tt.id ? null : tt.id)}
+          >
+            {expandedTimetableId === tt.id ? '↑ Hide Slots' : '↓ View & Edit Slots'}
+          </button>
+        </div>
 
+        {/* Expanded Slots Table */}
+        {expandedTimetableId === tt.id && (
+          <div className="expanded-slots-section" style={{ marginTop: '20px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+              <h4 style={{ margin: 0 }}>Time Slots</h4>
+              <button
+                className="add-button small"
+                onClick={() => {
+                  setSelectedTimetable(tt);
+                  setEditingSlot(null);
+                  setNewSlot({
+                    course_code: '',
+                    course_name: '',
+                    lecturer_id: '',
+                    day_of_week: 1,
+                    start_time: '08:00',
+                    end_time: '10:00',
+                    room_number: '',
+                    building: 'CS Building',
+                    slot_type: 'lecture'
+                  });
+                  setShowSlotModal(true);
+                }}
+              >
+                + Add Slot
+              </button>
+            </div>
+
+            {tt.program_timetable_slots?.length > 0 ? (
+              <div className="table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Day</th>
+                      <th>Time</th>
+                      <th>Course</th>
+                      <th>Lecturer</th>
+                      <th>Location</th>
+                      <th>Type</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tt.program_timetable_slots.map(slot => (
+                      <tr key={slot.id}>
+                        <td>
+                          {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][slot.day_of_week]}
+                        </td>
+                        <td>{slot.start_time} – {slot.end_time}</td>
+                        <td>
+                          <strong>{slot.course_code}</strong><br/>
+                          <small>{slot.course_name}</small>
+                        </td>
+                        <td>{slot.lecturers?.full_name || 'Not Assigned'}</td>
+                        <td>{slot.room_number} {slot.building}</td>
+                        <td>
+                          <span className="status-badge">{slot.slot_type}</span>
+                        </td>
+                        <td>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              className="action-btn edit small"
+                              onClick={() => {
+                                setSelectedTimetable(tt);
+                                setEditingSlot(slot);
+                                setNewSlot({
+                                  course_code: slot.course_code,
+                                  course_name: slot.course_name,
+                                  lecturer_id: slot.lecturer_id || '',
+                                  day_of_week: slot.day_of_week,
+                                  start_time: slot.start_time,
+                                  end_time: slot.end_time,
+                                  room_number: slot.room_number,
+                                  building: slot.building,
+                                  slot_type: slot.slot_type
+                                });
+                                setShowSlotModal(true);
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className="action-btn delete small"
+                              onClick={() => handleDeleteSlot(slot.id)}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-muted" style={{ textAlign: 'center', padding: '20px' }}>
+                No slots added yet. Click "Add Slot" to create one.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    ))
+  )}
+</div>
                 {/* Detailed View of Selected Timetable */}
                 {selectedTimetable && (
                   <div className="timetable-detail" style={{ marginTop: '30px' }}>
@@ -5369,7 +5885,339 @@ Department: ${profileData.department || 'Not specified'}
                   </div>
                 )}
               </div>
-            )}
+        )}
+        
+{activeTab === 'complete-courses' && isAdmin && (
+  <div className="tab-content">
+    <div className="tab-header">
+      <h2>✅ Course Completion Management</h2>
+      <p>
+        Mark courses as completed for a semester OR reverse previously marked courses.
+      </p>
+    </div>
+
+    {/* Toggle between Mark and Reverse modes */}
+    <div className="mode-toggle" style={{ 
+      marginBottom: '20px', 
+      display: 'flex', 
+      gap: '10px',
+      background: '#f8f9fa',
+      padding: '15px',
+      borderRadius: '10px',
+      border: '1px solid #dee2e6'
+    }}>
+      <button
+        className={`mode-button ${!showReversalMode ? 'active' : ''}`}
+        onClick={() => {
+          setShowReversalMode(false);
+          setSelectedCoursesForReversal([]);
+        }}
+        style={{
+          flex: 1,
+          padding: '12px 20px',
+          border: '2px solid',
+          borderColor: !showReversalMode ? '#007bff' : '#dee2e6',
+          background: !showReversalMode ? '#007bff' : 'white',
+          color: !showReversalMode ? 'white' : '#495057',
+          borderRadius: '8px',
+          cursor: 'pointer',
+          fontWeight: 'bold',
+          fontSize: '14px',
+          transition: 'all 0.3s'
+        }}
+      >
+        📝 Mark as Completed
+      </button>
+      <button
+        className={`mode-button ${showReversalMode ? 'active' : ''}`}
+        onClick={() => {
+          setShowReversalMode(true);
+          // Refresh completed courses when switching to reversal mode
+          fetchCompletedCourses();
+        }}
+        style={{
+          flex: 1,
+          padding: '12px 20px',
+          border: '2px solid',
+          borderColor: showReversalMode ? '#dc3545' : '#dee2e6',
+          background: showReversalMode ? '#dc3545' : 'white',
+          color: showReversalMode ? 'white' : '#495057',
+          borderRadius: '8px',
+          cursor: 'pointer',
+          fontWeight: 'bold',
+          fontSize: '14px',
+          transition: 'all 0.3s'
+        }}
+      >
+        ↩️ Reverse Completion
+      </button>
+    </div>
+
+    {/* FILTERS SECTION - Common for both modes */}
+    <div className="filters-section" style={{ 
+      padding: '20px', 
+      background: showReversalMode ? '#fff8f8' : '#f8fff8', 
+      borderRadius: '10px', 
+      marginBottom: '20px' 
+    }}>
+      <div className="form-row">
+        <div className="form-group">
+          <label>Program (Optional)</label>
+          <select
+            value={showReversalMode ? reversalFilters.program_id : completionFilters.program_id}
+            onChange={(e) => showReversalMode 
+              ? setReversalFilters({ ...reversalFilters, program_id: e.target.value })
+              : setCompletionFilters({ ...completionFilters, program_id: e.target.value })
+            }
+            className="form-select"
+          >
+            <option value="">All Programs</option>
+            {programs.map(p => (
+              <option key={p.id} value={p.id}>{p.name} ({p.code})</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label>Academic Year *</label>
+          <select
+            value={showReversalMode ? reversalFilters.academic_year : completionFilters.academic_year}
+            onChange={(e) => showReversalMode 
+              ? setReversalFilters({ ...reversalFilters, academic_year: e.target.value })
+              : setCompletionFilters({ ...completionFilters, academic_year: e.target.value })
+            }
+            className="form-select"
+            required
+          >
+            <option value="">Select Academic Year</option>
+            <option value="2023/2024">2023/2024</option>
+            <option value="2024/2025">2024/2025</option>
+            <option value="2025/2026">2025/2026</option>
+            <option value="2026/2027">2026/2027</option>
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label>Year of Study *</label>
+          <select
+            value={showReversalMode ? reversalFilters.year_of_study : completionFilters.year_of_study}
+            onChange={(e) => showReversalMode 
+              ? setReversalFilters({ ...reversalFilters, year_of_study: parseInt(e.target.value) })
+              : setCompletionFilters({ ...completionFilters, year_of_study: parseInt(e.target.value) })
+            }
+            className="form-select"
+          >
+            <option value="">Select Year</option>
+            {[1,2,3,4].map(y => <option key={y} value={y}>Year {y}</option>)}
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label>Semester *</label>
+          <select
+            value={showReversalMode ? reversalFilters.semester : completionFilters.semester}
+            onChange={(e) => showReversalMode 
+              ? setReversalFilters({ ...reversalFilters, semester: parseInt(e.target.value) })
+              : setCompletionFilters({ ...completionFilters, semester: parseInt(e.target.value) })
+            }
+            className="form-select"
+          >
+            <option value="">Select Semester</option>
+            <option value={1}>Semester 1</option>
+            <option value={2}>Semester 2</option>
+          </select>
+        </div>
+      </div>
+
+      <div style={{ 
+        marginTop: '15px', 
+        padding: '10px', 
+        background: showReversalMode ? '#ffecec' : '#e3fcec', 
+        borderRadius: '6px' 
+      }}>
+        <strong>Cohort:</strong> {
+          showReversalMode 
+            ? reversalFilters.academic_year || '—' 
+            : completionFilters.academic_year || '—'
+        } • Year {
+          showReversalMode 
+            ? reversalFilters.year_of_study || '—' 
+            : completionFilters.year_of_study || '—'
+        } • Semester {
+          showReversalMode 
+            ? reversalFilters.semester || '—' 
+            : completionFilters.semester || '—'
+        }<br/>
+        {showReversalMode ? (
+          <strong>Completed courses found:</strong>
+        ) : (
+          <strong>Active students found:</strong>
+        )} {
+          showReversalMode 
+            ? completedCourses.length 
+            : studentsToComplete.length
+        }
+      </div>
+    </div>
+
+    {/* CONTENT BASED ON MODE */}
+    {showReversalMode ? (
+      /* REVERSAL MODE */
+      completedCourses.length > 0 ? (
+        <>
+          <div style={{ marginBottom: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3>Completed Courses to Reverse</h3>
+            <label>
+              <input
+                type="checkbox"
+                checked={selectedCoursesForReversal.length === completedCourses.length && completedCourses.length > 0}
+                onChange={selectAllForReversal}
+              />
+              Select All ({selectedCoursesForReversal.length} selected)
+            </label>
+          </div>
+
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Select</th>
+                  <th>Course Code</th>
+                  <th>Course Name</th>
+                  <th>Program</th>
+                  <th>Department</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {completedCourses.map(course => (
+                  <tr key={course.id}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedCoursesForReversal.includes(course.id)}
+                        onChange={() => toggleCourseReversalSelection(course.id)}
+                      />
+                    </td>
+                    <td><strong>{course.course_code}</strong></td>
+                    <td>{course.course_name}</td>
+                    <td>{course.program || 'N/A'}</td>
+                    <td>{course.department_code || 'N/A'}</td>
+                    <td>
+                      <span className="status-badge completed">Completed</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ textAlign: 'center', marginTop: '25px' }}>
+            <button
+              className="confirm-button large"
+              onClick={handleReverseCourseCompletion}
+              disabled={reversalInProgress || selectedCoursesForReversal.length === 0}
+              style={{
+                background: reversalInProgress ? '#6c757d' : '#dc3545',
+                borderColor: reversalInProgress ? '#6c757d' : '#dc3545'
+              }}
+            >
+              {reversalInProgress
+                ? 'Processing Reversal...'
+                : `↩️ Reverse ${selectedCoursesForReversal.length} Course(s) to "Enrolled"`
+              }
+            </button>
+            <p style={{ marginTop: '10px', fontSize: '12px', color: '#666' }}>
+              This will change course status from "completed" to "enrolled" for all students.
+            </p>
+          </div>
+        </>
+      ) : (
+        <div className="empty-state">
+          <div style={{ fontSize: '48px', marginBottom: '20px', opacity: 0.5 }}>
+            ✅
+          </div>
+          <h4>No Completed Courses Found</h4>
+          <p className="small-text" style={{ maxWidth: '500px', margin: '0 auto' }}>
+            No courses have been marked as completed for the selected filters.
+            <br />
+            Adjust the filters or use "Mark as Completed" mode instead.
+          </p>
+        </div>
+      )
+    ) : (
+      /* MARKING MODE (ORIGINAL) */
+      coursesForCompletion.length > 0 ? (
+        <>
+          <div style={{ marginBottom: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h3>Courses to Mark as Completed</h3>
+            <label>
+              <input
+                type="checkbox"
+                checked={selectedCoursesForCompletion.length === coursesForCompletion.length && coursesForCompletion.length > 0}
+                onChange={selectAllForCompletion}
+              />
+              Select All ({selectedCoursesForCompletion.length} selected)
+            </label>
+          </div>
+
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Select</th>
+                  <th>Course Code</th>
+                  <th>Course Name</th>
+                  <th>Program</th>
+                  <th>Department</th>
+                </tr>
+              </thead>
+              <tbody>
+                {coursesForCompletion.map(course => (
+                  <tr key={course.id}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedCoursesForCompletion.includes(course.id)}
+                        onChange={() => toggleCourseCompletionSelection(course.id)}
+                      />
+                    </td>
+                    <td><strong>{course.course_code}</strong></td>
+                    <td>{course.course_name}</td>
+                    <td>{course.program || 'N/A'}</td>
+                    <td>{course.department_code || 'N/A'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ textAlign: 'center', marginTop: '25px' }}>
+            <button
+              className="confirm-button large"
+              onClick={handleMarkSemesterCompleted}
+              disabled={markingInProgress || selectedCoursesForCompletion.length === 0 || studentsToComplete.length === 0}
+              style={{
+                background: markingInProgress ? '#6c757d' : '#28a745',
+                borderColor: markingInProgress ? '#6c757d' : '#28a745'
+              }}
+            >
+              {markingInProgress
+                ? 'Processing...'
+                : `✅ Mark ${selectedCoursesForCompletion.length} Course(s) as Completed`
+              }
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="empty-state">
+          <p>No courses found. Adjust filters or add courses for this year/semester.</p>
+        </div>
+      )
+    )}
+  </div>
+)}
+
       </main>
 
       {/* =================== MODALS =================== */}
@@ -5464,36 +6312,47 @@ Department: ${profileData.department || 'Not specified'}
   />
   <small>Edit the short department name if needed</small>
 </div>
+<div className="form-row">
+  <div className="form-group">
+    <label className="form-label">Year of Study</label>
+    <select
+      value={editStudentForm.year_of_study}
+      onChange={(e) => setEditStudentForm({ ...editStudentForm, year_of_study: parseInt(e.target.value) })}
+      className="form-select"
+    >
+      {[1,2,3,4,5].map(y => (
+        <option key={y} value={y}>Year {y}</option>
+      ))}
+    </select>
+  </div>
 
+  {/* NEW: Semester dropdown */}
+  <div className="form-group">
+    <label className="form-label">Semester</label>
+    <select
+      value={editStudentForm.semester}
+      onChange={(e) => setEditStudentForm({ ...editStudentForm, semester: parseInt(e.target.value) })}
+      className="form-select"
+    >
+      <option value={1}>Semester 1</option>
+      <option value={2}>Semester 2</option>
+    </select>
+  </div>
 
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Year of Study</label>
-                  <select
-                    value={editStudentForm.year_of_study}
-                    onChange={(e) => setEditStudentForm({ ...editStudentForm, year_of_study: parseInt(e.target.value) })}
-                    className="form-select"
-                  >
-                    {[1,2,3,4,5].map(y => (
-                      <option key={y} value={y}>Year {y}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Status</label>
-                  <select
-                    value={editStudentForm.status}
-                    onChange={(e) => setEditStudentForm({ ...editStudentForm, status: e.target.value })}
-                    className="form-select"
-                  >
-                    <option value="active">Active</option>
-                    <option value="inactive">Inactive</option>
-                    <option value="graduated">Graduated</option>
-                    <option value="suspended">Suspended</option>
-                  </select>
-                </div>
-              </div>
+  <div className="form-group">
+    <label className="form-label">Status</label>
+    <select
+      value={editStudentForm.status}
+      onChange={(e) => setEditStudentForm({ ...editStudentForm, status: e.target.value })}
+      className="form-select"
+    >
+      <option value="active">Active</option>
+      <option value="inactive">Inactive</option>
+      <option value="graduated">Graduated</option>
+      <option value="suspended">Suspended</option>
+    </select>
+  </div>
+</div>
 
               <div className="form-group">
                 <label className="form-label">Department Code </label>
@@ -5801,19 +6660,101 @@ Department: ${profileData.department || 'Not specified'}
       )}
 
       {/* Department Assignment Modal */}
-      {showDepartmentModal && selectedLecturerForDept && (
-        <DepartmentAssignmentModal
-          lecturer={selectedLecturerForDept}
-          onClose={() => {
-            setShowDepartmentModal(false);
-            setSelectedLecturerForDept(null);
-          }}
-          onAssign={() => {
-            fetchLecturers();
-            fetchDashboardStats();
-          }}
-        />
+     {showDepartmentModal && selectedLecturerForDept && (
+  <DepartmentAssignmentModal
+    lecturer={selectedLecturerForDept}
+    onClose={() => {
+      setShowDepartmentModal(false);
+      setSelectedLecturerForDept(null);
+    }}
+    onAssign={() => {
+      fetchLecturers();
+      fetchDashboardStats();
+    }}
+  />
+)}
+
+      {/* NEW: Lecturer Details Modal */}
+      {selectedLecturerDetails && (
+        <div className="modal-overlay" onClick={() => setSelectedLecturerDetails(null)}>
+          <div className="modal large-modal" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h3>Lecturer Details: {selectedLecturerDetails.full_name}</h3>
+              <button
+                className="cancel-button"
+                onClick={() => setSelectedLecturerDetails(null)}
+                style={{ padding: '8px 16px' }}
+              >
+                ✕ Close
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px' }}>
+              <div>
+                <strong>Lecturer ID:</strong><br/>
+                <span>{selectedLecturerDetails.lecturer_id || 'N/A'}</span>
+              </div>
+              <div>
+                <strong>Email:</strong><br/>
+                <span>{selectedLecturerDetails.email}</span>
+              </div>
+              <div>
+                <strong>Phone:</strong><br/>
+                <span>{selectedLecturerDetails.phone || 'Not provided'}</span>
+              </div>
+              <div>
+                <strong>Specialization:</strong><br/>
+                <span>{selectedLecturerDetails.specialization || 'Not specified'}</span>
+              </div>
+              <div>
+                <strong>Google Meet Link:</strong><br/>
+                {selectedLecturerDetails.google_meet_link ? (
+                  <a href={selectedLecturerDetails.google_meet_link} target="_blank" rel="noreferrer" className="meet-link small">
+                    🔗 Open Meet Link
+                  </a>
+                ) : (
+                  <span className="text-muted">No link provided</span>
+                )}
+              </div>
+              <div>
+                <strong>Status:</strong><br/>
+                <span className={`status-badge ${selectedLecturerDetails.status || 'active'}`}>
+                  {selectedLecturerDetails.status?.charAt(0).toUpperCase() + selectedLecturerDetails.status?.slice(1) || 'Active'}
+                </span>
+              </div>
+            </div>
+
+            <div style={{ marginTop: '30px' }}>
+              <h4>Assigned Departments</h4>
+              {selectedLecturerDetails.lecturer_departments && selectedLecturerDetails.lecturer_departments.length > 0 ? (
+                <div className="departments-badges" style={{ marginTop: '10px' }}>
+                  {selectedLecturerDetails.lecturer_departments.map((dept, idx) => (
+                    <span key={idx} className="department-badge">
+                      {dept.department_code} - {dept.department_name || dept.department_code}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-muted">No departments assigned yet.</p>
+              )}
+            </div>
+
+            <div style={{ marginTop: '30px', textAlign: 'right' }}>
+              <button
+                className="action-btn dept"
+                onClick={() => {
+                  setSelectedLecturerForDept(selectedLecturerDetails);
+                  setShowDepartmentModal(true);
+                  setSelectedLecturerDetails(null);
+                }}
+              >
+                🏢 Manage Departments
+              </button>
+            </div>
+          </div>
+        </div>
       )}
+
 
       {/* User Modal */}
       {showUserModal && (
