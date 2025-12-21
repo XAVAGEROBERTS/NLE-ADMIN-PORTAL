@@ -49,7 +49,15 @@ const [showEnrollModal, setShowEnrollModal] = useState(false);
   specialization: '',
    google_meet_link: '',
   program_duration_years: 4,
-}); 
+ }); 
+  
+  // === NEW: Cohort selection for assignments and lectures ===
+const [selectedCohort, setSelectedCohort] = useState({
+  academic_year: '',
+  year_of_study: 1,
+  semester: 1
+});
+const [cohortError, setCohortError] = useState('');
 
   // Add these states near your other state declarations (around line 50-100)
 const [showReversalMode, setShowReversalMode] = useState(false);
@@ -403,7 +411,67 @@ const selectAllForReversal = () => {
   } else {
     setSelectedCoursesForReversal(completedCourses.map(c => c.id));
   }
-};
+  };
+  
+  useEffect(() => {
+  const fetchLectures = async () => {
+    try {
+      // Get current logged-in student (adjust based on your auth context)
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.error('No user logged in');
+        setLectures([]);
+        return;
+      }
+
+      // Get student's cohort
+      const { data: student, error: studentError } = await supabase
+        .from('students')
+        .select('id, academic_year, year_of_study, semester')
+        .eq('auth_uid', user.id)  // or .eq('id', user.id) if you link differently
+        .single();
+
+      if (studentError || !student) {
+        console.error('Student profile not found:', studentError);
+        setLectures([]);
+        return;
+      }
+
+      console.log('Student cohort:', {
+        academic_year: student.academic_year,
+        year: student.year_of_study,
+        semester: student.semester
+      });
+
+      // Fetch only lectures matching student's cohort
+      const { data: lectures, error } = await supabase
+        .from('lectures')
+        .select(`
+          *,
+          courses(course_code, course_name, department_code),
+          lecturers(full_name, google_meet_link)
+        `)
+        .eq('target_academic_year', student.academic_year)
+        .eq('target_year_of_study', student.year_of_study)
+        .eq('target_semester', student.semester)
+        .order('scheduled_date', { ascending: true })
+        .order('start_time', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching lectures:', error);
+        setLectures([]);
+      } else {
+        console.log(`Found ${lectures?.length || 0} lectures for this cohort`);
+        setLectures(lectures || []);
+      }
+    } catch (err) {
+      console.error('Unexpected error:', err);
+      setLectures([]);
+    }
+  };
+
+  fetchLectures();
+}, []);
 
 // Auto-select all when courses are loaded
 useEffect(() => {
@@ -1529,6 +1597,23 @@ const fetchAssignmentSubmissions = async (assignmentId) => {
     // Clear loading state
     setLoading(prev => ({ ...prev, submissions: false }));
   }
+  };
+  
+  const validateCohort = () => {
+  if (!selectedCohort.academic_year.trim()) {
+    setCohortError('Please enter Academic Year (e.g. 2025/2029)');
+    return false;
+  }
+  if (!selectedCohort.year_of_study) {
+    setCohortError('Please select Year of Study');
+    return false;
+  }
+  if (!selectedCohort.semester) {
+    setCohortError('Please select Semester');
+    return false;
+  }
+  setCohortError('');
+  return true;
 };
 
 // Helper function to process submissions when student data is unavailable
@@ -2264,6 +2349,8 @@ const handleCreateAssignment = async () => {
       setLectures([]);
     }
   };
+
+
     const fetchProgramTimetables = async () => {
     try {
       const { data, error } = await supabase
@@ -2987,25 +3074,26 @@ const handleAddLecture = async () => {
 
     console.log('DEBUG: Course data:', courseData);
 
-    // === IMPORTANT: Build the insert object carefully ===
-    // Only include fields that exist in the 'lectures' table
-    const lectureData = {
-      lecturer_id: profile.id,
-      course_id: newLecture.course_id,
-      title: newLecture.title.trim(),
-      description: newLecture.description?.trim() || '',
-      google_meet_link: newLecture.google_meet_link?.trim() || null,
-      scheduled_date: newLecture.scheduled_date,
-      start_time: newLecture.start_time,
-      end_time: newLecture.end_time,
-      duration_minutes: durationMinutes,
-      lecturer_department_code: courseData?.department_code || null, // ← Correct column name
-      status: 'scheduled',
-      materials_url: newLecture.materials_url || [],
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    };
-
+ const lectureData = {
+  lecturer_id: profile.id,
+  course_id: newLecture.course_id,
+  title: newLecture.title.trim(),
+  description: newLecture.description?.trim() || '',
+  google_meet_link: newLecture.google_meet_link?.trim() || null,
+  scheduled_date: newLecture.scheduled_date,
+  start_time: newLecture.start_time,
+  end_time: newLecture.end_time,
+  duration_minutes: durationMinutes,
+  lecturer_department_code: courseData?.department_code || null,
+  status: 'scheduled',
+  materials_url: newLecture.materials_url || [],
+  // === NEW: Save the selected cohort ===
+  target_academic_year: selectedCohort.academic_year.trim(),
+  target_year_of_study: selectedCohort.year_of_study,
+  target_semester: selectedCohort.semester,
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString()
+};
     // DEBUG: Log the exact payload being sent
     console.log('DEBUG: Lecture insert payload:', lectureData);
 
@@ -3019,6 +3107,7 @@ const handleAddLecture = async () => {
       .from('lectures')
       .insert([lectureData])
       .select();
+    
 
     if (error) {
       console.error('DEBUG: Supabase insert error:', error);
@@ -6511,250 +6600,236 @@ const handleViewSubmissions = async (assignment) => {
 
 
       
-      {/* Assignment Upload Modal */}
-      {showAssignmentUploadModal && (
-        <div className="modal-overlay">
-          <div className="modal large-modal">
-            <h3>Create New Assignment</h3>
-            <div className="modal-form">
-              <div className="form-group">
-                <label className="form-label">Course *</label>
-                <select
-                  value={newAssignment.course_id}
-                  onChange={(e) => setNewAssignment({ ...newAssignment, course_id: e.target.value })}
-                  className="form-select"
-                  required
-                >
-                  <option value="">Select a course</option>
-                  {courses.map(course => (
-                    <option key={course.id} value={course.id}>
-                      {course.course_code} - {course.course_name} ({course.department_code})
-                    </option>
-                  ))}
-                </select>
-              </div>
-             
-              <div className="form-group">
-                <label className="form-label">Title *</label>
-                <input
-                  type="text"
-                  value={newAssignment.title}
-                  onChange={(e) => setNewAssignment({ ...newAssignment, title: e.target.value })}
-                  placeholder="Assignment title"
-                  className="form-input"
-                  required
-                />
-              </div>
-             
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Due Date & Time *</label>
-                  <input
-                    type="datetime-local"
-                    value={newAssignment.due_date}
-                    onChange={(e) => setNewAssignment({ ...newAssignment, due_date: e.target.value })}
-                    className="form-input"
-                    required
-                  />
-                </div>
-               
-                <div className="form-group">
-                  <label className="form-label">Total Marks *</label>
-                  <input
-                    type="number"
-                    value={newAssignment.total_marks}
-                    onChange={(e) => setNewAssignment({ ...newAssignment, total_marks: parseInt(e.target.value) })}
-                    min="1"
-                    className="form-input"
-                    required
-                  />
-                </div>
-              </div>
-             
-              <div className="form-group">
-                <label className="form-label">Description</label>
-                <textarea
-                  value={newAssignment.description}
-                  onChange={(e) => setNewAssignment({ ...newAssignment, description: e.target.value })}
-                  placeholder="Assignment description"
-                  rows="3"
-                  className="form-textarea"
-                />
-              </div>
-             
-              <div className="form-group">
-                <label className="form-label">Instructions</label>
-                <textarea
-                  value={newAssignment.instructions}
-                  onChange={(e) => setNewAssignment({ ...newAssignment, instructions: e.target.value })}
-                  placeholder="Instructions for students"
-                  rows="3"
-                  className="form-textarea"
-                />
-              </div>
-             
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Submission Type</label>
-                  <select
-                    value={newAssignment.submission_type}
-                    onChange={(e) => setNewAssignment({ ...newAssignment, submission_type: e.target.value })}
-                    className="form-select"
-                  >
-                    <option value="file">File Upload</option>
-                    <option value="text">Text Submission</option>
-                    <option value="both">Both</option>
-                  </select>
-                </div>
-               
-                <div className="form-group">
-                  <label className="form-label">Max File Size (MB)</label>
-                  <input
-                    type="number"
-                    value={newAssignment.max_file_size}
-                    onChange={(e) => setNewAssignment({ ...newAssignment, max_file_size: parseInt(e.target.value) })}
-                    min="1"
-                    max="100"
-                    className="form-input"
-                  />
-                </div>
-              </div>
-             
-              <div className="form-group">
-                <label className="form-label">Allowed Formats</label>
-                <div className="checkbox-group">
-                  {['pdf', 'doc', 'docx', 'zip', 'jpg', 'png', 'txt'].map(format => (
-                    <label key={format} className="checkbox-label">
-                      <input
-                        type="checkbox"
-                        checked={newAssignment.allowed_formats.includes(format)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setNewAssignment({
-                              ...newAssignment,
-                              allowed_formats: [...newAssignment.allowed_formats, format]
-                            });
-                          } else {
-                            setNewAssignment({
-                              ...newAssignment,
-                              allowed_formats: newAssignment.allowed_formats.filter(f => f !== format)
-                            });
-                          }
-                        }}
-                      />
-                      {format.toUpperCase()}
-                    </label>
-                  ))}
-                </div>
-              </div>
-             
-            {/* File Upload Section */}
-<div className="form-group">
-  <label className="form-label">Assignment Files (Optional)</label>
-  <p className="small-text" style={{ color: '#3b82f6', marginBottom: '10px' }}>
-    📦 Files will be uploaded to <strong>public lecturerbucket</strong>
-  </p>
-  
-  <div
-    className="file-upload-area"
-    onClick={() => fileInputRef.current?.click()}
-    onDragOver={(e) => {
-      e.preventDefault();
-      e.currentTarget.classList.add('drag-over');
-    }}
-    onDragLeave={(e) => {
-      e.preventDefault();
-      e.currentTarget.classList.remove('drag-over');
-    }}
-    onDrop={(e) => {
-      e.preventDefault();
-      e.currentTarget.classList.remove('drag-over');
-      const files = Array.from(e.dataTransfer.files);
-      setAssignmentFiles(prev => [...prev, ...files]);
-    }}
-  >
-    <input
-      type="file"
-      ref={fileInputRef}
-      multiple
-      onChange={(e) => {
-        const files = Array.from(e.target.files);
-        setAssignmentFiles(prev => [...prev, ...files]);
-      }}
-      className="file-input"
-    />
-    <div className="upload-icon">📤</div>
-    <p><strong>Drag & drop files here or click to browse</strong></p>
-    <p className="small-text">Files uploaded to: lecturerbucket (public)</p>
-    <p className="small-text">Supported: PDF, DOC, DOCX, ZIP, Images, Text</p>
-  </div>
- 
-  {/* Upload Progress */}
-  {uploadingFiles && (
-    <div className="upload-progress">
-      <div className="progress-bar">
-        <div
-          className="progress-fill"
-          style={{ width: `${uploadProgress}%` }}
-        ></div>
-      </div>
-      <p className="progress-text">Uploading: {uploadProgress}%</p>
-    </div>
-  )}
- 
-  {/* File List */}
-  {assignmentFiles.length > 0 && (
-    <div className="file-list">
-      <h4>Files to Upload ({assignmentFiles.length})</h4>
-      <div className="files-grid">
-        {assignmentFiles.map((file, index) => (
-          <div key={index} className="file-item">
-            <div className="file-info">
-              <span className="file-name">{file.name}</span>
-              <span className="file-size">
-                {(file.size / 1024 / 1024).toFixed(2)} MB
-              </span>
-            </div>
-            <div className="file-actions">
-              <span className="file-type">{file.name.split('.').pop().toUpperCase()}</span>
-              <button
-                className="remove-file"
-                onClick={() => {
-                  setAssignmentFiles(prev => prev.filter((_, i) => i !== index));
-                }}
-              >
-                ×
-              </button>
-            </div>
+   {showAssignmentUploadModal && (
+  <div className="modal-overlay">
+    <div className="modal large-modal">
+      <h3>Create New Assignment</h3>
+
+      {/* REQUIRED COHORT SELECTION */}
+      <div style={{
+        background: '#f0f8ff',
+        padding: '20px',
+        borderRadius: '10px',
+        marginBottom: '25px',
+        border: '2px solid #1976d2'
+      }}>
+        <h4 style={{ margin: '0 0 10px 0', color: '#1976d2' }}>Target Student Cohort (REQUIRED)</h4>
+        <p style={{ fontSize: '14px', marginBottom: '15px', color: '#555' }}>
+          Select the exact group of students who should receive this assignment.
+        </p>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Academic Year *</label>
+            <input
+              type="text"
+              value={selectedCohort.academic_year}
+              onChange={(e) => setSelectedCohort({ ...selectedCohort, academic_year: e.target.value.trim() })}
+              placeholder="e.g. 2025/2029"
+              className="form-input"
+              style={{ borderColor: cohortError ? '#d32f2f' : '' }}
+            />
           </div>
-        ))}
-      </div>
-    </div>
-  )}
-</div>
-             
-              <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => {
-                    setShowAssignmentUploadModal(false);
-                    setAssignmentFiles([]);
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="confirm-button"
-                  onClick={handleCreateAssignment}
-                  disabled={loading.creatingAssignment || uploadingFiles}
-                >
-                  {loading.creatingAssignment ? 'Creating...' : 'Create Assignment'}
-                </button>
-              </div>
-            </div>
+          <div className="form-group">
+            <label>Year of Study *</label>
+            <select
+              value={selectedCohort.year_of_study}
+              onChange={(e) => setSelectedCohort({ ...selectedCohort, year_of_study: parseInt(e.target.value) })}
+              className="form-select"
+            >
+              <option value={1}>Year 1</option>
+              <option value={2}>Year 2</option>
+              <option value={3}>Year 3</option>
+              <option value={4}>Year 4</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Semester *</label>
+            <select
+              value={selectedCohort.semester}
+              onChange={(e) => setSelectedCohort({ ...selectedCohort, semester: parseInt(e.target.value) })}
+              className="form-select"
+            >
+              <option value={1}>Semester 1</option>
+              <option value={2}>Semester 2</option>
+            </select>
           </div>
         </div>
-      )}
+        {cohortError && (
+          <p style={{ color: '#d32f2f', fontWeight: 'bold', marginTop: '10px' }}>
+            ⚠️ {cohortError}
+          </p>
+        )}
+      </div>
+
+      <div className="modal-form">
+        <div className="form-group">
+          <label className="form-label">Course *</label>
+          <select
+            value={newAssignment.course_id}
+            onChange={(e) => setNewAssignment({ ...newAssignment, course_id: e.target.value })}
+            className="form-select"
+            required
+          >
+            <option value="">Select a course</option>
+            {courses.map(course => (
+              <option key={course.id} value={course.id}>
+                {course.course_code} - {course.course_name} ({course.department_code})
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Title *</label>
+          <input
+            type="text"
+            value={newAssignment.title}
+            onChange={(e) => setNewAssignment({ ...newAssignment, title: e.target.value })}
+            placeholder="Assignment title"
+            className="form-input"
+            required
+          />
+        </div>
+
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">Due Date & Time *</label>
+            <input
+              type="datetime-local"
+              value={newAssignment.due_date}
+              onChange={(e) => setNewAssignment({ ...newAssignment, due_date: e.target.value })}
+              className="form-input"
+              required
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Total Marks *</label>
+            <input
+              type="number"
+              value={newAssignment.total_marks}
+              onChange={(e) => setNewAssignment({ ...newAssignment, total_marks: parseInt(e.target.value) })}
+              min="1"
+              className="form-input"
+              required
+            />
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Description</label>
+          <textarea
+            value={newAssignment.description}
+            onChange={(e) => setNewAssignment({ ...newAssignment, description: e.target.value })}
+            placeholder="Assignment description"
+            rows="3"
+            className="form-textarea"
+          />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Instructions</label>
+          <textarea
+            value={newAssignment.instructions}
+            onChange={(e) => setNewAssignment({ ...newAssignment, instructions: e.target.value })}
+            placeholder="Instructions for students"
+            rows="3"
+            className="form-textarea"
+          />
+        </div>
+
+        {/* File upload section remains exactly as before */}
+        <div className="form-group">
+          <label className="form-label">Assignment Files (Optional)</label>
+          <p className="small-text" style={{ color: '#3b82f6', marginBottom: '10px' }}>
+            📦 Files will be uploaded to <strong>public lecturerbucket</strong>
+          </p>
+          <div
+            className="file-upload-area"
+            onClick={() => fileInputRef.current?.click()}
+            onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('drag-over'); }}
+            onDragLeave={(e) => { e.preventDefault(); e.currentTarget.classList.remove('drag-over'); }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.currentTarget.classList.remove('drag-over');
+              const files = Array.from(e.dataTransfer.files);
+              setAssignmentFiles(prev => [...prev, ...files]);
+            }}
+          >
+            <input
+              type="file"
+              ref={fileInputRef}
+              multiple
+              onChange={(e) => {
+                const files = Array.from(e.target.files);
+                setAssignmentFiles(prev => [...prev, ...files]);
+              }}
+              className="file-input"
+            />
+            <div className="upload-icon">📤</div>
+            <p><strong>Drag & drop files here or click to browse</strong></p>
+            <p className="small-text">Supported: PDF, DOC, DOCX, ZIP, Images, Text</p>
+          </div>
+
+          {uploadingFiles && (
+            <div className="upload-progress">
+              <div className="progress-bar">
+                <div className="progress-fill" style={{ width: `${uploadProgress}%` }}></div>
+              </div>
+              <p className="progress-text">Uploading: {uploadProgress}%</p>
+            </div>
+          )}
+
+          {assignmentFiles.length > 0 && (
+            <div className="file-list">
+              <h4>Files to Upload ({assignmentFiles.length})</h4>
+              <div className="files-grid">
+                {assignmentFiles.map((file, index) => (
+                  <div key={index} className="file-item">
+                    <div className="file-info">
+                      <span className="file-name">{file.name}</span>
+                      <span className="file-size">{(file.size / 1024 / 1024).toFixed(2)} MB</span>
+                    </div>
+                    <div className="file-actions">
+                      <span className="file-type">{file.name.split('.').pop().toUpperCase()}</span>
+                      <button
+                        className="remove-file"
+                        onClick={() => setAssignmentFiles(prev => prev.filter((_, i) => i !== index))}
+                      >×</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="modal-actions">
+          <button
+            className="cancel-button"
+            onClick={() => {
+              setShowAssignmentUploadModal(false);
+              setAssignmentFiles([]);
+              setSelectedCohort({ academic_year: '', year_of_study: 1, semester: 1 });
+              setCohortError('');
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            className="confirm-button"
+            onClick={() => {
+              if (!validateCohort()) return;
+              handleCreateAssignment();
+            }}
+            disabled={loading.creatingAssignment || uploadingFiles}
+          >
+            {loading.creatingAssignment ? 'Creating...' : 'Create Assignment'}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
 
       {/* Department Assignment Modal */}
      {showDepartmentModal && selectedLecturerForDept && (
@@ -7263,6 +7338,61 @@ const handleViewSubmissions = async (assignment) => {
         <div className="modal-overlay">
           <div className="modal">
             <h3>Schedule New Lecture</h3>
+                  {/* REQUIRED COHORT SELECTION FOR LECTURES */}
+      <div style={{
+        background: '#f0fff4',
+        padding: '20px',
+        borderRadius: '10px',
+        marginBottom: '25px',
+        border: '2px solid #388e3c'
+      }}>
+        <h4 style={{ margin: '0 0 10px 0', color: '#388e3c' }}>Target Student Cohort (REQUIRED)</h4>
+        <p style={{ fontSize: '14px', marginBottom: '15px', color: '#555' }}>
+          Select the exact group of students who should see this lecture.
+        </p>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Academic Year *</label>
+            <input
+              type="text"
+              value={selectedCohort.academic_year}
+              onChange={(e) => setSelectedCohort({ ...selectedCohort, academic_year: e.target.value.trim() })}
+              placeholder="e.g. 2025/2029"
+              className="form-input"
+              style={{ borderColor: cohortError ? '#d32f2f' : '' }}
+            />
+          </div>
+          <div className="form-group">
+            <label>Year of Study *</label>
+            <select
+              value={selectedCohort.year_of_study}
+              onChange={(e) => setSelectedCohort({ ...selectedCohort, year_of_study: parseInt(e.target.value) })}
+              className="form-select"
+            >
+              <option value={1}>Year 1</option>
+              <option value={2}>Year 2</option>
+              <option value={3}>Year 3</option>
+              <option value={4}>Year 4</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Semester *</label>
+            <select
+              value={selectedCohort.semester}
+              onChange={(e) => setSelectedCohort({ ...selectedCohort, semester: parseInt(e.target.value) })}
+              className="form-select"
+            >
+              <option value={1}>Semester 1</option>
+              <option value={2}>Semester 2</option>
+            </select>
+          </div>
+        </div>
+        {cohortError && (
+          <p style={{ color: '#d32f2f', fontWeight: 'bold', marginTop: '10px' }}>
+            ⚠️ {cohortError}
+          </p>
+        )}
+      </div>
             <div className="modal-form">
               <div className="form-group">
                 <label className="form-label">Course</label>
@@ -7351,18 +7481,25 @@ const handleViewSubmissions = async (assignment) => {
               </div>
              
               <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => setShowLectureModal(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="confirm-button"
-                  onClick={handleAddLecture}
-                >
-                  Schedule Lecture
-                </button>
+               <button
+  className="cancel-button"
+  onClick={() => {
+    setShowLectureModal(false);
+    setSelectedCohort({ academic_year: '', year_of_study: 1, semester: 1 });
+    setCohortError('');
+  }}
+>
+  Cancel
+</button>
+              <button
+  className="confirm-button"
+  onClick={() => {
+    if (!validateCohort()) return;
+    handleAddLecture();
+  }}
+>
+  Schedule Lecture
+</button>
               </div>
             </div>
           </div>
