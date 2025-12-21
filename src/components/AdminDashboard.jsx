@@ -59,6 +59,8 @@ const [selectedCohort, setSelectedCohort] = useState({
 });
 const [cohortError, setCohortError] = useState('');
 
+
+
   // Add these states near your other state declarations (around line 50-100)
 const [showReversalMode, setShowReversalMode] = useState(false);
 const [reversalFilters, setReversalFilters] = useState({
@@ -645,6 +647,14 @@ useEffect(() => {
   const [assignmentFiles, setAssignmentFiles] = useState([]);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadingFiles, setUploadingFiles] = useState(false);
+  // === TUTORIALS UPLOAD STATES ===
+const [showTutorialsModal, setShowTutorialsModal] = useState(false);
+const [tutorialTitle, setTutorialTitle] = useState('');
+const [tutorialDescription, setTutorialDescription] = useState('');
+const [tutorialFiles, setTutorialFiles] = useState([]);
+const [uploadingTutorial, setUploadingTutorial] = useState(false);
+const [tutorialUploadProgress, setTutorialUploadProgress] = useState(0);
+const tutorialFileInputRef = useRef(null);
 
   const [newLecture, setNewLecture] = useState({
     course_id: '',
@@ -1740,6 +1750,66 @@ const uploadAssignmentFiles = async (files) => {
     setUploadingFiles(false);
     setUploadProgress(0);
   }
+  };
+  
+
+
+  // Upload tutorial files to 'tutorials' bucket
+const uploadTutorialFiles = async (files) => {
+  if (!files || files.length === 0) return [];
+  const uploadedPaths = [];
+  setUploadingTutorial(true);
+  setTutorialUploadProgress(0);
+
+  try {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const originalName = file.name;
+      const timestamp = Date.now();
+      const randomStr = Math.random().toString(36).substring(2, 8);
+      const safeName = originalName.replace(/[^a-zA-Z0-9.]/g, '_');
+      const fileName = `${timestamp}_${randomStr}_${safeName}`;
+      const filePath = `${
+        selectedCohort.academic_year || 'general'
+      }/Year${selectedCohort.year_of_study || ''}_Sem${selectedCohort.semester || ''}/${fileName}`;
+
+      setTutorialUploadProgress(Math.round(((i + 1) / files.length) * 100));
+
+      const { data, error } = await supabase.storage
+        .from('Tutorials')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: false,
+        });
+
+      if (error) {
+        console.error(`Failed to upload ${originalName}:`, error);
+        alert(`Failed to upload "${originalName}"`);
+        continue;
+      }
+
+      // Get public URL
+      const { data: publicUrlData } = supabase.storage
+        .from('Tutorials')
+        .getPublicUrl(filePath);
+
+      uploadedPaths.push({
+        path: filePath,
+        url: publicUrlData.publicUrl,
+        name: originalName,
+      });
+    }
+
+    alert(`✅ Successfully uploaded ${uploadedPaths.length} tutorial file(s)!`);
+    return uploadedPaths;
+  } catch (error) {
+    console.error('Tutorial upload error:', error);
+    alert('Upload failed: ' + error.message);
+    return [];
+  } finally {
+    setUploadingTutorial(false);
+    setTutorialUploadProgress(0);
+  }
 };
 
 const handleCreateAssignment = async () => {
@@ -2706,38 +2776,36 @@ const handleAddUser = async () => {
       const departmentCode = newUser.department_code.trim().toUpperCase();
       const academicYear = CURRENT_ACADEMIC_YEAR;
 
-      // Generate the next sequence number for this department and year
-      // Fetch existing IDs for this department and year to determine the next number
-      const { data: existingStudents, error: fetchError } = await supabase
-        .from('students')
-        .select('student_id')
-        .like('student_id', `${departmentCode}-${academicYear}-%`)
-        .order('student_id', { ascending: false })
-        .limit(1);
+// Generate the next sequence number for this department and year
+const { data: existingStudents, error: fetchError } = await supabase
+  .from('students')
+  .select('student_id')
+  .like('student_id', `${departmentCode}-${academicYear}-%`)
+  .order('student_id', { ascending: false })
+  .limit(1);
 
-      if (fetchError) {
-        throw new Error('Failed to check existing student IDs');
-      }
+if (fetchError) {
+  throw new Error('Failed to check existing student IDs');
+}
 
-      let sequenceNumber = 1; // Start from 1 for new department-year combinations
-      
-      if (existingStudents && existingStudents.length > 0) {
-        // Extract the sequence number from the latest ID
-        const latestId = existingStudents[0].student_id;
-        const idParts = latestId.split('-');
-        if (idParts.length === 3) {
-          const existingSequence = idParts[2];
-          // Convert hex to decimal, increment, then back to hex
-          sequenceNumber = parseInt(existingSequence, 16) + 1;
-        }
-      }
+let sequenceNumber = 1; // Start from 1 if no existing
 
-      // Convert sequence number to 6-character hex string
-      const sequenceHex = sequenceNumber.toString(16).padStart(6, '0').toLowerCase();
-      
-      // Construct the student ID: DEP-YYYY-XXXXXX (where XXXXXX is hex sequence)
-      const studentId = `${departmentCode}-${academicYear}-${sequenceHex}`;
+if (existingStudents && existingStudents.length > 0) {
+  const latestId = existingStudents[0].student_id;
+  const idParts = latestId.split('-');
+  if (idParts.length === 3) {
+    const lastSequence = parseInt(idParts[2], 10); // Base 10, not hex!
+    if (!isNaN(lastSequence)) {
+      sequenceNumber = lastSequence + 1;
+    }
+  }
+}
 
+// Use real sequential decimal number, padded to 6 digits
+const sequencePadded = sequenceNumber.toString().padStart(6, '0');
+
+// Final Student ID: e.g., SCT-2025-000042
+const studentId = `${departmentCode}-${academicYear}-${sequencePadded}`;
       tableName = 'students';
 profileData = {
   student_id: studentId,
@@ -2754,11 +2822,12 @@ profileData = {
   status: 'active',
   program_id: newUser.program_id,
   program_code: newUser.program_code.trim().toUpperCase(),
-department: editStudentForm.department.trim(),
-department_code: editStudentForm.department_code.trim().toUpperCase(),
+department: newUser.department.trim(),
+department_code: newUser.department_code.trim().toUpperCase(),
   program_duration_years: parseInt(newUser.program_duration_years),
   program_total_semesters: parseInt(newUser.program_duration_years) * 2,  // Auto-calculated
   created_at: new Date().toISOString(),
+  
 };
 
       // === Duplicate checks ===
@@ -4112,7 +4181,21 @@ const handleViewSubmissions = async (assignment) => {
                       onClick={() => setShowAssignmentUploadModal(true)}
                     >
                       + Create Assignment
-                    </button>
+                      </button>
+                      
+                    <button
+  className="action-button"
+  onClick={() => {
+    setShowTutorialsModal(true);
+    setTutorialTitle('');
+    setTutorialDescription('');
+    setTutorialFiles([]);
+  }}
+>
+  <span className="action-icon">📚</span>
+  <span>Upload Tutorials</span>
+  <small>PDFs, Docs, Videos for students</small>
+</button>
                   </div>
                 </div>
                
@@ -6373,8 +6456,217 @@ const handleViewSubmissions = async (assignment) => {
         </div>
       )
     )}
-  </div>
-)}
+          </div>
+          
+          
+        )}
+        
+              {/* === TUTORIALS UPLOAD MODAL === */}
+      {showTutorialsModal && (
+        <div className="modal-overlay">
+          <div className="modal large-modal">
+            <h3>Upload Tutorial Materials</h3>
+
+            {/* Cohort Selection - REQUIRED */}
+            <div style={{
+              background: '#fff8e1',
+              padding: '20px',
+              borderRadius: '10px',
+              marginBottom: '25px',
+              border: '2px solid #ffb300'
+            }}>
+              <h4 style={{ margin: '0 0 10px 0', color: '#ff8f00' }}>
+                Target Student Cohort (REQUIRED)
+              </h4>
+              <p style={{ fontSize: '14px', marginBottom: '15px', color: '#555' }}>
+                Select the exact group of students who should see this tutorial.
+              </p>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Academic Year *</label>
+                  <input
+                    type="text"
+                    value={selectedCohort.academic_year}
+                    onChange={(e) => setSelectedCohort({ ...selectedCohort, academic_year: e.target.value.trim() })}
+                    placeholder="e.g. 2025/2029"
+                    className="form-input"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Year *</label>
+                  <select
+                    value={selectedCohort.year_of_study}
+                    onChange={(e) => setSelectedCohort({ ...selectedCohort, year_of_study: parseInt(e.target.value) })}
+                    className="form-select"
+                  >
+                    <option value={1}>Year 1</option>
+                    <option value={2}>Year 2</option>
+                    <option value={3}>Year 3</option>
+                    <option value={4}>Year 4</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Semester *</label>
+                  <select
+                    value={selectedCohort.semester}
+                    onChange={(e) => setSelectedCohort({ ...selectedCohort, semester: parseInt(e.target.value) })}
+                    className="form-select"
+                  >
+                    <option value={1}>Semester 1</option>
+                    <option value={2}>Semester 2</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-form">
+              <div className="form-group">
+                <label>Title *</label>
+                <input
+                  type="text"
+                  value={tutorialTitle}
+                  onChange={(e) => setTutorialTitle(e.target.value)}
+                  placeholder="e.g. Week 5 Tutorial - Database Normalization"
+                  className="form-input"
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Description (Optional)</label>
+                <textarea
+                  value={tutorialDescription}
+                  onChange={(e) => setTutorialDescription(e.target.value)}
+                  placeholder="Brief description of this tutorial"
+                  rows="3"
+                  className="form-textarea"
+                />
+              </div>
+
+              <div className="form-group">
+                <label>Tutorial Files *</label>
+                <div
+                  className="file-upload-area"
+                  onClick={() => tutorialFileInputRef.current?.click()}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.classList.add('drag-over');
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.classList.remove('drag-over');
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.classList.remove('drag-over');
+                    const files = e.dataTransfer?.files;
+                    if (files) {
+                      setTutorialFiles(Array.from(files));
+                    }
+                  }}
+                >
+                  <input
+                    type="file"
+                    ref={tutorialFileInputRef}
+                    multiple
+                    onChange={(e) => {
+                      const files = e.target.files;
+                      if (files) {
+                        setTutorialFiles(Array.from(files));
+                      }
+                    }}
+                    className="file-input"
+                    style={{ display: 'none' }}
+                  />
+                  <div className="upload-icon">📤</div>
+                  <p><strong>Drop files here or click to browse</strong></p>
+                  <p className="small-text">PDF, DOC, PPT, MP4, ZIP, etc.</p>
+                </div>
+
+                {uploadingTutorial && (
+                  <div className="upload-progress">
+                    <div className="progress-bar">
+                      <div
+                        className="progress-fill"
+                        style={{ width: `${tutorialUploadProgress}%` }}
+                      ></div>
+                    </div>
+                    <p>Uploading: {tutorialUploadProgress}%</p>
+                  </div>
+                )}
+
+                {tutorialFiles.length > 0 && (
+                  <div className="file-list">
+                    <h4>Selected Files ({tutorialFiles.length})</h4>
+                    <div className="files-grid">
+                      {tutorialFiles.map((file, i) => (
+                        <div key={i} className="file-item">
+                          <div className="file-info">
+                            <span className="file-name">{file.name}</span>
+                            <span className="file-size">
+                              {(file.size / 1024 / 1024).toFixed(2)} MB
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => setTutorialFiles(prev => prev.filter((_, idx) => idx !== i))}
+                            className="remove-file"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="modal-actions">
+                <button
+                  className="cancel-button"
+                  onClick={() => {
+                    setShowTutorialsModal(false);
+                    setTutorialFiles([]);
+                    setTutorialTitle('');
+                    setTutorialDescription('');
+                    setSelectedCohort({ academic_year: '', year_of_study: 1, semester: 1 });
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="confirm-button"
+                  onClick={async () => {
+                    if (!tutorialTitle.trim()) {
+                      alert('Please enter a title');
+                      return;
+                    }
+                    if (tutorialFiles.length === 0) {
+                      alert('Please select at least one file');
+                      return;
+                    }
+                    if (!selectedCohort.academic_year || !selectedCohort.year_of_study || !selectedCohort.semester) {
+                      alert('Please select the target cohort');
+                      return;
+                    }
+
+                    const uploaded = await uploadTutorialFiles(tutorialFiles);
+                    if (uploaded.length > 0) {
+                      setShowTutorialsModal(false);
+                      setTutorialFiles([]);
+                      setTutorialTitle('');
+                      setTutorialDescription('');
+                      setSelectedCohort({ academic_year: '', year_of_study: 1, semester: 1 });
+                    }
+                  }}
+                  disabled={uploadingTutorial}
+                >
+                  {uploadingTutorial ? 'Uploading...' : 'Upload Tutorials'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+        
 
       </main>
 
@@ -6596,9 +6888,9 @@ const handleViewSubmissions = async (assignment) => {
       </div>
     </div>
   </div>
-)}
-
-
+      )}
+      
+    
       
    {showAssignmentUploadModal && (
   <div className="modal-overlay">
