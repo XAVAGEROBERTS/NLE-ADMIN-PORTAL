@@ -28,8 +28,28 @@ const [loading, setLoading] = useState({
   submissions: false, // Add this
   creatingAssignment: false
 });
-
-//
+const [enrollStudent, setEnrollStudent] = useState(null);
+const [showEnrollModal, setShowEnrollModal] = useState(false);
+  
+ const [newUser, setNewUser] = useState({
+  full_name: '',
+  email: '',
+  phone: '',
+  role: 'student',
+  program_id: '',
+  program: '',
+  department: '',
+   department_code: '',
+  program_code: '',  // ← ADD THIS
+  year_of_study: 1,
+  semester: 1,
+  intake: 'January',
+  academic_year: '',        // ← Now manual input (e.g., 2025/2029)
+  date_of_birth: '',        // ← NEW: Date of birth
+  specialization: '',
+   google_meet_link: '',
+  program_duration_years: 4,
+}); 
 
   // Add these states near your other state declarations (around line 50-100)
 const [showReversalMode, setShowReversalMode] = useState(false);
@@ -525,20 +545,6 @@ useEffect(() => {
   const [selectedExam, setSelectedExam] = useState(null);
   const [selectedFinanceRecord, setSelectedFinanceRecord] = useState(null);
 
-const [newUser, setNewUser] = useState({
-  full_name: '',
-  email: '',
-  phone: '',
-  role: 'student',
-  program_id: '',           // We'll store the selected program ID
-  program: '',
-  year_of_study: 1,
-  semester: 1,              // New field
-  department: '',
-  department_code: '',
-  specialization: '',
-  google_meet_link: ''
-});
 
   const [newCourse, setNewCourse] = useState({
     course_code: '',
@@ -2584,11 +2590,7 @@ const handleSaveTimetable = async () => {
   // Form handlers
 const handleAddUser = async () => {
   try {
-    // Required fields validation
-    if (!newUser.full_name?.trim() || !newUser.email?.trim() || !newUser.role) {
-      alert('Please fill in all required fields: Full Name, Email, and Role');
-      return;
-    }
+   // === AUTO-ENROLL NEW STUDENT IN CURRENT SEMESTER COURSES ===
 
     // Email validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -2650,30 +2652,27 @@ const handleAddUser = async () => {
       const studentId = `${departmentCode}-${academicYear}-${sequenceHex}`;
 
       tableName = 'students';
-      profileData = {
-        student_id: studentId,
-        full_name: newUser.full_name.trim(),
-        email: newUser.email.toLowerCase().trim(),
-        password_hash: password,
-        phone: newUser.phone?.trim() || null,
-        date_of_birth: newUser.date_of_birth || null,
-        program: programName,
-        year_of_study: parseInt(newUser.year_of_study) || 1,
-        semester: newUser.semester || 1,
-        intake: newUser.intake || 'January',
-        academic_year: `${CURRENT_ACADEMIC_YEAR}/${parseInt(CURRENT_ACADEMIC_YEAR) + 1}`,
-        status: 'active',
-        program_duration_years: ['BSCS', 'BIT', 'CSC'].includes(departmentCode) ? 3 : 4,
-        program_total_semesters: ['BSCS', 'BIT', 'CSC'].includes(departmentCode) ? 6 : 8,
-        department_code: departmentCode,
-        department: newUser.department?.trim() || 
-          (departmentCode === 'BSCS' || departmentCode === 'CSC' ? 'Computer Science' :
-           departmentCode === 'BSSE' ? 'Software Engineering' :
-           departmentCode === 'BSCE' || departmentCode === 'ENG' ? 'Engineering' :
-           departmentCode === 'BIT' ? 'Information Technology' :
-           'General Studies'),
-        created_at: new Date().toISOString(),
-      };
+profileData = {
+  student_id: studentId,
+  full_name: newUser.full_name.trim(),
+  email: newUser.email.toLowerCase().trim(),
+  password_hash: password,
+  phone: newUser.phone?.trim() || null,
+  date_of_birth: newUser.date_of_birth || null,
+  program: newUser.program,
+  year_of_study: parseInt(newUser.year_of_study),
+  semester: parseInt(newUser.semester),
+  intake: newUser.intake,
+  academic_year: newUser.academic_year.trim(),
+  status: 'active',
+  program_id: newUser.program_id,
+  program_code: newUser.program_code.trim().toUpperCase(),
+department: editStudentForm.department.trim(),
+department_code: editStudentForm.department_code.trim().toUpperCase(),
+  program_duration_years: parseInt(newUser.program_duration_years),
+  program_total_semesters: parseInt(newUser.program_duration_years) * 2,  // Auto-calculated
+  created_at: new Date().toISOString(),
+};
 
       // === Duplicate checks ===
       const { data: existingProfile, error: checkError } = await supabase
@@ -2784,7 +2783,49 @@ const handleAddUser = async () => {
       throw new Error(tableError.message);
     }
 
-    // Optional user_roles
+    // === AUTO-ENROLL NEW STUDENT AFTER SUCCESSFUL INSERT ===
+    if (newUser.role === 'student' && tableData?.id) {
+      const studentId = tableData.id; // UUID from students table
+
+      try {
+        const { data: startingCourses, error: courseError } = await supabase
+          .from('courses')
+          .select('id')
+          .eq('department_code', newUser.department_code.trim().toUpperCase())
+          .eq('year', newUser.year_of_study || 1)
+          .eq('semester', newUser.semester || 1)
+          .eq('is_active', true);
+
+        if (courseError) {
+          console.warn('Auto-enroll: Failed to fetch courses', courseError);
+        } else if (startingCourses && startingCourses.length > 0) {
+          const enrollments = startingCourses.map(course => ({
+            student_id: studentId,
+            course_id: course.id,
+            status: 'enrolled',
+            enrollment_date: new Date().toISOString().split('T')[0],
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          }));
+
+          const { error: enrollError } = await supabase
+            .from('student_courses')
+            .insert(enrollments);
+
+          if (enrollError) {
+            console.warn('Auto-enroll failed', enrollError);
+            alert('Student created successfully, but auto-enrollment failed. Please enroll courses manually if needed.');
+          } else {
+            console.log(`✅ Auto-enrolled in ${enrollments.length} courses`);
+          }
+        }
+      } catch (err) {
+        console.warn('Auto-enroll error:', err);
+      }
+    }
+    // === END AUTO-ENROLL ===
+
+    // Optional user_roles insert (keep as is)
     try {
       await supabase.from('user_roles').insert([{
         email: profileData.email,
@@ -2794,12 +2835,12 @@ const handleAddUser = async () => {
         created_at: new Date().toISOString()
       }]);
     } catch (e) {
-      // Silently fail - user_roles is optional
-      console.log('Note: Could not add to user_roles table:', e.message);
+      console.log('Note: Could not add to user_roles:', e.message);
     }
 
-    // Reset form
+    // Reset form & success message (keep your existing code)
     setShowUserModal(false);
+    // ... rest of success handling
     setNewUser({
       full_name: '', email: '', phone: '', role: 'student',
       program: '', department_code: '', department: '',
@@ -2908,93 +2949,111 @@ Department: ${profileData.department || 'Not specified'}
     }
   };
 
-  const handleAddLecture = async () => {
-    try {
-      console.log('DEBUG: Starting to add lecture');
-      console.log('DEBUG: New lecture data:', newLecture);
-      console.log('DEBUG: Profile ID:', profile?.id);
-     
-      // Validate required fields
-      if (!newLecture.course_id || !newLecture.title || !newLecture.scheduled_date ||
-          !newLecture.start_time || !newLecture.end_time) {
-        alert('Please fill in all required fields');
-        return;
-      }
-      // Calculate duration in minutes
-      const start = new Date(`${newLecture.scheduled_date}T${newLecture.start_time}`);
-      const end = new Date(`${newLecture.scheduled_date}T${newLecture.end_time}`);
-      const durationMinutes = Math.round((end - start) / (1000 * 60));
-     
-      // Get course department code
-      const { data: courseData, error: courseError } = await supabase
-        .from('courses')
-        .select('department_code, course_code, course_name')
-        .eq('id', newLecture.course_id)
-        .single();
-     
-      if (courseError) {
-        console.error('DEBUG: Error fetching course:', courseError);
-      }
-     
-      console.log('DEBUG: Course data:', courseData);
-     
-      const lectureData = {
-        lecturer_id: profile.id,
-        course_id: newLecture.course_id,
-        title: newLecture.title,
-        description: newLecture.description,
-        google_meet_link: newLecture.google_meet_link,
-        scheduled_date: newLecture.scheduled_date,
-        start_time: newLecture.start_time,
-        end_time: newLecture.end_time,
-        duration_minutes: durationMinutes,
-        lecturer_department_code: courseData?.department_code || null,
-        status: 'scheduled', // Always start as scheduled
-        materials_url: newLecture.materials_url || [],
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      };
-     
-      console.log('DEBUG: Lecture data to insert:', lectureData);
-     
-      const { data, error } = await supabase
-        .from('lectures')
-        .insert([lectureData])
-        .select();
-     
-      if (error) {
-        console.error('DEBUG: Supabase error inserting lecture:', error);
-        throw error;
-      }
-     
-      console.log('DEBUG: Lecture added successfully:', data);
-     
-      setShowLectureModal(false);
-      setNewLecture({
-        course_id: '',
-        title: '',
-        description: '',
-        google_meet_link: '',
-        scheduled_date: new Date().toISOString().slice(0, 10),
-        start_time: '09:00',
-        end_time: '11:00',
-        duration_minutes: 120,
-        materials_url: [],
-        status: 'scheduled'
-      });
-     
-      // Refresh lectures immediately
-      console.log('DEBUG: Refreshing lectures after adding...');
-      await fetchLectures();
-      await fetchDashboardStats();
-     
-      alert('Lecture scheduled successfully!');
-     
-    } catch (error) {
-      console.error('DEBUG: Error adding lecture:', error);
-      alert('Error adding lecture: ' + error.message);
+const handleAddLecture = async () => {
+  try {
+    console.log('DEBUG: Starting to add lecture');
+    console.log('DEBUG: New lecture data:', newLecture);
+    console.log('DEBUG: Profile ID:', profile?.id);
+
+    // Validate required fields
+    if (!newLecture.course_id || !newLecture.title || !newLecture.scheduled_date ||
+        !newLecture.start_time || !newLecture.end_time) {
+      alert('Please fill in all required fields');
+      return;
     }
-  };
+
+    // Calculate duration in minutes
+    const start = new Date(`${newLecture.scheduled_date}T${newLecture.start_time}`);
+    const end = new Date(`${newLecture.scheduled_date}T${newLecture.end_time}`);
+    const durationMinutes = Math.round((end - start) / (1000 * 60));
+
+    if (durationMinutes <= 0) {
+      alert('End time must be after start time');
+      return;
+    }
+
+    // Get course department code
+    const { data: courseData, error: courseError } = await supabase
+      .from('courses')
+      .select('department_code, course_code, course_name')
+      .eq('id', newLecture.course_id)
+      .single();
+
+    if (courseError) {
+      console.error('DEBUG: Error fetching course:', courseError);
+      alert('Failed to fetch course details: ' + courseError.message);
+      return;
+    }
+
+    console.log('DEBUG: Course data:', courseData);
+
+    // === IMPORTANT: Build the insert object carefully ===
+    // Only include fields that exist in the 'lectures' table
+    const lectureData = {
+      lecturer_id: profile.id,
+      course_id: newLecture.course_id,
+      title: newLecture.title.trim(),
+      description: newLecture.description?.trim() || '',
+      google_meet_link: newLecture.google_meet_link?.trim() || null,
+      scheduled_date: newLecture.scheduled_date,
+      start_time: newLecture.start_time,
+      end_time: newLecture.end_time,
+      duration_minutes: durationMinutes,
+      lecturer_department_code: courseData?.department_code || null, // ← Correct column name
+      status: 'scheduled',
+      materials_url: newLecture.materials_url || [],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    // DEBUG: Log the exact payload being sent
+    console.log('DEBUG: Lecture insert payload:', lectureData);
+
+    // Optional: Force schema cache refresh (helps avoid "column not found in schema cache" errors)
+    try {
+      await supabase.from('lectures').select('lecturer_department_code').limit(0).single();
+    } catch (_) {}
+
+    // Insert the lecture
+    const { data, error } = await supabase
+      .from('lectures')
+      .insert([lectureData])
+      .select();
+
+    if (error) {
+      console.error('DEBUG: Supabase insert error:', error);
+      alert('Error adding lecture: ' + error.message);
+      return;
+    }
+
+    console.log('DEBUG: Lecture added successfully:', data);
+
+    // Reset form
+    setShowLectureModal(false);
+    setNewLecture({
+      course_id: '',
+      title: '',
+      description: '',
+      google_meet_link: '',
+      scheduled_date: new Date().toISOString().slice(0, 10),
+      start_time: '09:00',
+      end_time: '11:00',
+      duration_minutes: 120,
+      materials_url: [],
+      status: 'scheduled'
+    });
+
+    // Refresh data
+    await fetchLectures();
+    await fetchDashboardStats();
+
+    alert('Lecture scheduled successfully!');
+
+  } catch (error) {
+    console.error('DEBUG: Unexpected error adding lecture:', error);
+    alert('Error adding lecture: ' + (error.message || 'Unknown error'));
+  }
+};
 
   const handleAddExam = async () => {
     try {
@@ -4814,121 +4873,140 @@ const handleViewSubmissions = async (assignment) => {
 )}
             {/* Students Tab */}
                        {/* Students Tab - IMPROVED WITH EDIT */}
-            {activeTab === 'students' && (
-              <div className="tab-content">
-                <div className="tab-header">
-                  <h2>👥 Student Management</h2>
-                  <div className="tab-actions">
-                    <input
-                      type="text"
-                      placeholder="Search students..."
-                      className="search-input"
-                      value={searchTerm}
-                      onChange={(e) => {
-                        setSearchTerm(e.target.value);
-                        setTimeout(() => fetchStudents(), 300);
-                      }}
-                    />
-                    {isAdmin && (
-                      <button
-                        className="add-button"
-                        onClick={() => {
-                          setNewUser({...newUser, role: 'student'});
-                          setShowUserModal(true);
-                        }}
-                      >
-                        + Add Student
+          {activeTab === 'students' && (
+  <div className="tab-content">
+    <div className="tab-header">
+      <h2>👥 Student Management</h2>
+      <div className="tab-actions">
+        <input
+          type="text"
+          placeholder="Search students..."
+          className="search-input"
+          value={searchTerm}
+          onChange={(e) => {
+            setSearchTerm(e.target.value);
+            setTimeout(() => fetchStudents(), 300);
+          }}
+        />
+        {isAdmin && (
+          <button
+            className="add-button"
+            onClick={() => {
+              setNewUser({ ...newUser, role: 'student' });
+              setShowUserModal(true);
+            }}
+          >
+            + Add Student
+          </button>
+        )}
+      </div>
+    </div>
+
+    <div className="table-container" style={{ overflowX: 'auto', maxWidth: '100%' }}>
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Student ID</th>
+            <th>Full Name</th>
+            <th>Email</th>
+            <th>Program</th> {/* This will expand to full name */}
+            <th>Department</th>
+            <th>Year</th>
+            <th>Status</th>
+            {isAdmin && <th>Actions</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {students.length === 0 ? (
+            <tr>
+              <td colSpan="8" style={{ textAlign: 'center', padding: '30px' }}>
+                No students found
+              </td>
+            </tr>
+          ) : (
+            students.map(student => (
+              <tr key={student.id}>
+                <td><strong>{student.student_id}</strong></td>
+                <td>{student.full_name}</td>
+                <td>{student.email}</td>
+
+                {/* Full Program Name - No Ellipsis */}
+                <td className="program-full">
+                  {student.program || 'N/A'}
+                </td>
+
+                <td>
+                  <span className="dept-badge">
+                    {student.department_code || 'N/A'}
+                  </span>
+                </td>
+                <td>Year {student.year_of_study || 1} - Sem {student.semester || 1}</td>
+                <td>
+                  <span className={`status-badge ${student.status || 'active'}`}>
+                    {student.status?.charAt(0).toUpperCase() + student.status?.slice(1) || 'Active'}
+                  </span>
+                </td>
+
+                {isAdmin && (
+                  <td>
+                    <div className="actions-dropdown">
+                      <button className="actions-toggle-btn">
+                        Actions <span className="dropdown-icon">▼</span>
                       </button>
-                    )}
-                  </div>
-                </div>
-              
-                <div className="table-container">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Student ID</th>
-                        <th>Full Name</th>
-                        <th>Email</th>
-                        <th>Program</th>
-                        <th>Department</th>
-                        <th>Year</th>
-                        <th>Status</th>
-                        {isAdmin && <th>Actions</th>}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {students.length === 0 ? (
-                        <tr>
-                          <td colSpan="8" style={{ textAlign: 'center', padding: '20px' }}>
-                            No students found
-                          </td>
-                        </tr>
-                      ) : (
-                        students.map(student => (
-                          <tr key={student.id}>
-                            <td><strong>{student.student_id}</strong></td>
-                            <td>{student.full_name}</td>
-                            <td>{student.email}</td>
-                            <td>{student.program || 'N/A'}</td>
-                            <td>
-                              <span className="dept-badge">
-                                {student.department_code || 'N/A'}
-                              </span>
-                            </td>
-                            <td>Year {student.year_of_study || 1} - Sem {student.semester || 1}</td>
-                            <td>
-                              <span className={`status-badge ${student.status || 'active'}`}>
-                                {student.status?.charAt(0).toUpperCase() + student.status?.slice(1) || 'Active'}
-                              </span>
-                            </td>
-                            {isAdmin && (
-                              <td>
-                                <div className="action-buttons">
-                                  <button
-                                    className="action-btn edit"
-                                   onClick={() => {
-  setEditingStudent(student);
-  // Find the matching program by code or name
-  const matchingProgram = programs.find(p => 
-    p.code === student.department_code || 
-    p.name === student.program
-  );
-  setEditStudentForm({
-    full_name: student.full_name || '',
-    email: student.email || '',
-    phone: student.phone || '',
-    program_id: matchingProgram?.id || '',
-    program: student.program || '',
-    year_of_study: student.year_of_study || 1,
-    semester: student.semester || 1,
-    department: student.department || '',
-    department_code: student.department_code || '',
-    status: student.status || 'active'
-  });
-}}
-                                  >
-                                    Edit
-                                  </button>
-                                  <button
-                                    className="action-btn delete"
-                                    onClick={() => handleUpdateStudentStatus(student.id, 
-                                      student.status === 'active' ? 'inactive' : 'active'
-                                    )}
-                                  >
-                                    {student.status === 'active' ? 'Deactivate' : 'Activate'}
-                                  </button>
-                                </div>
-                              </td>
-                            )}
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
+                      <div className="actions-menu">
+                        <button
+                          className="action-item edit"
+                          onClick={() => {
+                            setEditingStudent(student);
+                            const matchingProgram = programs.find(p =>
+                              p.code === student.department_code ||
+                              p.name === student.program
+                            );
+                            setEditStudentForm({
+                              full_name: student.full_name || '',
+                              email: student.email || '',
+                              phone: student.phone || '',
+                              program_id: matchingProgram?.id || '',
+                              program: student.program || '',
+                              year_of_study: student.year_of_study || 1,
+                              semester: student.semester || 1,
+                              department: student.department || '',
+                              department_code: student.department_code || '',
+                              status: student.status || 'active'
+                            });
+                          }}
+                        >
+                          ✏️ Edit
+                        </button>
+                        <button
+                          className="action-item enroll"
+                          onClick={() => {
+                            setEnrollStudent(student);
+                            setShowEnrollModal(true);
+                          }}
+                        >
+                          📚 Enroll
+                        </button>
+                        <button
+                          className="action-item status"
+                          onClick={() => handleUpdateStudentStatus(student.id,
+                            student.status === 'active' ? 'inactive' : 'active'
+                          )}
+                        >
+                          {student.status === 'active' ? 'Deactivate' : 'Activate'}
+                        </button>
+                      </div>
+                    </div>
+                  </td>
+                )}
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  </div>
+)}
 
             {/* Courses Tab */}
             {activeTab === 'courses' && (
@@ -5891,15 +5969,13 @@ const handleViewSubmissions = async (assignment) => {
   <div className="tab-content">
     <div className="tab-header">
       <h2>✅ Course Completion Management</h2>
-      <p>
-        Mark courses as completed for a semester OR reverse previously marked courses.
-      </p>
+      <p>Mark courses as completed for a semester OR reverse previously marked courses.</p>
     </div>
 
     {/* Toggle between Mark and Reverse modes */}
-    <div className="mode-toggle" style={{ 
-      marginBottom: '20px', 
-      display: 'flex', 
+    <div className="mode-toggle" style={{
+      marginBottom: '20px',
+      display: 'flex',
       gap: '10px',
       background: '#f8f9fa',
       padding: '15px',
@@ -5932,7 +6008,6 @@ const handleViewSubmissions = async (assignment) => {
         className={`mode-button ${showReversalMode ? 'active' : ''}`}
         onClick={() => {
           setShowReversalMode(true);
-          // Refresh completed courses when switching to reversal mode
           fetchCompletedCourses();
         }}
         style={{
@@ -5953,19 +6028,19 @@ const handleViewSubmissions = async (assignment) => {
       </button>
     </div>
 
-    {/* FILTERS SECTION - Common for both modes */}
-    <div className="filters-section" style={{ 
-      padding: '20px', 
-      background: showReversalMode ? '#fff8f8' : '#f8fff8', 
-      borderRadius: '10px', 
-      marginBottom: '20px' 
+    {/* FILTERS SECTION - Academic Year is now text input */}
+    <div className="filters-section" style={{
+      padding: '20px',
+      background: showReversalMode ? '#fff8f8' : '#f8fff8',
+      borderRadius: '10px',
+      marginBottom: '20px'
     }}>
       <div className="form-row">
         <div className="form-group">
           <label>Program (Optional)</label>
           <select
             value={showReversalMode ? reversalFilters.program_id : completionFilters.program_id}
-            onChange={(e) => showReversalMode 
+            onChange={(e) => showReversalMode
               ? setReversalFilters({ ...reversalFilters, program_id: e.target.value })
               : setCompletionFilters({ ...completionFilters, program_id: e.target.value })
             }
@@ -5978,30 +6053,28 @@ const handleViewSubmissions = async (assignment) => {
           </select>
         </div>
 
+        {/* Academic Year - Manual Text Input */}
         <div className="form-group">
-          <label>Academic Year *</label>
-          <select
+          <label>Academic Year (e.g. 2025/2029) *</label>
+          <input
+            type="text"
             value={showReversalMode ? reversalFilters.academic_year : completionFilters.academic_year}
-            onChange={(e) => showReversalMode 
-              ? setReversalFilters({ ...reversalFilters, academic_year: e.target.value })
-              : setCompletionFilters({ ...completionFilters, academic_year: e.target.value })
+            onChange={(e) => showReversalMode
+              ? setReversalFilters({ ...reversalFilters, academic_year: e.target.value.trim() })
+              : setCompletionFilters({ ...completionFilters, academic_year: e.target.value.trim() })
             }
-            className="form-select"
+            placeholder="Enter academic year (e.g. 2025/2029)"
+            className="form-input"
             required
-          >
-            <option value="">Select Academic Year</option>
-            <option value="2023/2024">2023/2024</option>
-            <option value="2024/2025">2024/2025</option>
-            <option value="2025/2026">2025/2026</option>
-            <option value="2026/2027">2026/2027</option>
-          </select>
+          />
+          <small>Admin enters full range manually</small>
         </div>
 
         <div className="form-group">
           <label>Year of Study *</label>
           <select
             value={showReversalMode ? reversalFilters.year_of_study : completionFilters.year_of_study}
-            onChange={(e) => showReversalMode 
+            onChange={(e) => showReversalMode
               ? setReversalFilters({ ...reversalFilters, year_of_study: parseInt(e.target.value) })
               : setCompletionFilters({ ...completionFilters, year_of_study: parseInt(e.target.value) })
             }
@@ -6016,7 +6089,7 @@ const handleViewSubmissions = async (assignment) => {
           <label>Semester *</label>
           <select
             value={showReversalMode ? reversalFilters.semester : completionFilters.semester}
-            onChange={(e) => showReversalMode 
+            onChange={(e) => showReversalMode
               ? setReversalFilters({ ...reversalFilters, semester: parseInt(e.target.value) })
               : setCompletionFilters({ ...completionFilters, semester: parseInt(e.target.value) })
             }
@@ -6029,23 +6102,23 @@ const handleViewSubmissions = async (assignment) => {
         </div>
       </div>
 
-      <div style={{ 
-        marginTop: '15px', 
-        padding: '10px', 
-        background: showReversalMode ? '#ffecec' : '#e3fcec', 
-        borderRadius: '6px' 
+      <div style={{
+        marginTop: '15px',
+        padding: '10px',
+        background: showReversalMode ? '#ffecec' : '#e3fcec',
+        borderRadius: '6px'
       }}>
         <strong>Cohort:</strong> {
-          showReversalMode 
-            ? reversalFilters.academic_year || '—' 
+          showReversalMode
+            ? reversalFilters.academic_year || '—'
             : completionFilters.academic_year || '—'
         } • Year {
-          showReversalMode 
-            ? reversalFilters.year_of_study || '—' 
+          showReversalMode
+            ? reversalFilters.year_of_study || '—'
             : completionFilters.year_of_study || '—'
         } • Semester {
-          showReversalMode 
-            ? reversalFilters.semester || '—' 
+          showReversalMode
+            ? reversalFilters.semester || '—'
             : completionFilters.semester || '—'
         }<br/>
         {showReversalMode ? (
@@ -6053,8 +6126,8 @@ const handleViewSubmissions = async (assignment) => {
         ) : (
           <strong>Active students found:</strong>
         )} {
-          showReversalMode 
-            ? completedCourses.length 
+          showReversalMode
+            ? completedCourses.length
             : studentsToComplete.length
         }
       </div>
@@ -6076,7 +6149,6 @@ const handleViewSubmissions = async (assignment) => {
               Select All ({selectedCoursesForReversal.length} selected)
             </label>
           </div>
-
           <div className="table-container">
             <table className="data-table">
               <thead>
@@ -6111,7 +6183,6 @@ const handleViewSubmissions = async (assignment) => {
               </tbody>
             </table>
           </div>
-
           <div style={{ textAlign: 'center', marginTop: '25px' }}>
             <button
               className="confirm-button large"
@@ -6146,7 +6217,7 @@ const handleViewSubmissions = async (assignment) => {
         </div>
       )
     ) : (
-      /* MARKING MODE (ORIGINAL) */
+      /* MARKING MODE */
       coursesForCompletion.length > 0 ? (
         <>
           <div style={{ marginBottom: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -6160,7 +6231,6 @@ const handleViewSubmissions = async (assignment) => {
               Select All ({selectedCoursesForCompletion.length} selected)
             </label>
           </div>
-
           <div className="table-container">
             <table className="data-table">
               <thead>
@@ -6191,7 +6261,6 @@ const handleViewSubmissions = async (assignment) => {
               </tbody>
             </table>
           </div>
-
           <div style={{ textAlign: 'center', marginTop: '25px' }}>
             <button
               className="confirm-button large"
@@ -6222,198 +6291,226 @@ const handleViewSubmissions = async (assignment) => {
 
       {/* =================== MODALS =================== */}
 
-            {/* Edit Student Modal */}
-      {editingStudent && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>Edit Student: {editingStudent.student_id}</h3>
-            <div className="modal-form">
-              <div className="form-group">
-                <label className="form-label">Full Name</label>
-                <input
-                  type="text"
-                  value={editStudentForm.full_name}
-                  onChange={(e) => setEditStudentForm({ ...editStudentForm, full_name: e.target.value })}
-                  className="form-input"
-                  required
-                />
-              </div>
+      {/* edit student modal */}
+{editingStudent && (
+  <div className="modal-overlay">
+    <div className="modal">
+      <h3>Edit Student: {editingStudent.student_id}</h3>
+      <div className="modal-form">
+        <div className="form-group">
+          <label>Full Name</label>
+          <input
+            type="text"
+            value={editStudentForm.full_name}
+            onChange={e => setEditStudentForm({ ...editStudentForm, full_name: e.target.value })}
+            className="form-input"
+          />
+        </div>
+        <div className="form-group">
+          <label>Email</label>
+          <input
+            type="email"
+            value={editStudentForm.email}
+            onChange={e => setEditStudentForm({ ...editStudentForm, email: e.target.value })}
+            className="form-input"
+          />
+        </div>
+        <div className="form-group">
+          <label>Phone</label>
+          <input
+            type="tel"
+            value={editStudentForm.phone}
+            onChange={e => setEditStudentForm({ ...editStudentForm, phone: e.target.value })}
+            className="form-input"
+          />
+        </div>
 
-              <div className="form-group">
-                <label className="form-label">Email</label>
-                <input
-                  type="email"
-                  value={editStudentForm.email}
-                  onChange={(e) => setEditStudentForm({ ...editStudentForm, email: e.target.value })}
-                  className="form-input"
-                  required
-                />
-              </div>
+        {/* Date of Birth */}
+        <div className="form-group">
+          <label>Date of Birth</label>
+          <input
+            type="date"
+            value={editStudentForm.date_of_birth || ''}
+            onChange={e => setEditStudentForm({ ...editStudentForm, date_of_birth: e.target.value })}
+            className="form-input"
+          />
+        </div>
 
-              <div className="form-group">
-                <label className="form-label">Phone</label>
-                <input
-                  type="tel"
-                  value={editStudentForm.phone}
-                  onChange={(e) => setEditStudentForm({ ...editStudentForm, phone: e.target.value })}
-                  className="form-input"
-                />
-              </div>
-<div className="form-group">
-  <label className="form-label">Program</label>
-  {programsLoading ? (
-    <p>Loading programs...</p>
-  ) : programs.length === 0 ? (
-    <p>No programs available</p>
-  ) : (
-    <select
-      value={editStudentForm.program_id || ''}
-      onChange={(e) => {
-        const selectedProg = programs.find(p => p.id === e.target.value);
-        if (selectedProg) {
-          setEditStudentForm({
-            ...editStudentForm,
-            program_id: selectedProg.id,
-            program: selectedProg.name,
-            department_code: selectedProg.code
-            // department left for manual edit below
-          });
-        } else {
-          setEditStudentForm({
-            ...editStudentForm,
-            program_id: '',
-            program: '',
-            department_code: ''
-          });
-        }
-      }}
-      className="form-select"
-    >
-      <option value="">Select Program</option>
-      {programs.map(prog => (
-        <option key={prog.id} value={prog.id}>
-          {prog.name} ({prog.code})
-        </option>
-      ))}
-    </select>
-  )}
-  <small>Current: {editStudentForm.program || 'None'} • Code: {editStudentForm.department_code || 'N/A'}</small>
-</div>
+        {/* Department Code - manual */}
+        <div className="form-group">
+          <label>Department Code</label>
+          <input
+            type="text"
+            value={editStudentForm.department_code || ''}
+            onChange={e => setEditStudentForm({
+              ...editStudentForm,
+              department_code: e.target.value.trim().toUpperCase()
+            })}
+            placeholder="e.g. SCT, ENG"
+            className="form-input"
+          />
+        </div>
 
-<div className="form-group">
-  <label className="form-label">Department Name</label>
-  <input
-    type="text"
-    value={editStudentForm.department}
-    onChange={(e) => setEditStudentForm({ ...editStudentForm, department: e.target.value.trim() })}
-    placeholder="e.g. Computer Science"
-    className="form-input"
-    required
-  />
-  <small>Edit the short department name if needed</small>
-</div>
-<div className="form-row">
-  <div className="form-group">
-    <label className="form-label">Year of Study</label>
-    <select
-      value={editStudentForm.year_of_study}
-      onChange={(e) => setEditStudentForm({ ...editStudentForm, year_of_study: parseInt(e.target.value) })}
-      className="form-select"
-    >
-      {[1,2,3,4,5].map(y => (
-        <option key={y} value={y}>Year {y}</option>
-      ))}
-    </select>
-  </div>
+        {/* Program Code - manual entry (now fully editable like Add Student) */}
+        <div className="form-group">
+          <label>Program Code</label>
+          <input
+            type="text"
+            value={editStudentForm.program_code || ''}
+            onChange={e => setEditStudentForm({
+              ...editStudentForm,
+              program_code: e.target.value.trim().toUpperCase()
+            })}
+            placeholder="e.g. BSCE, BSCS, BIT"
+            className="form-input"
+          />
+          <small>No spaces, uppercase only</small>
+        </div>
 
-  {/* NEW: Semester dropdown */}
-  <div className="form-group">
-    <label className="form-label">Semester</label>
-    <select
-      value={editStudentForm.semester}
-      onChange={(e) => setEditStudentForm({ ...editStudentForm, semester: parseInt(e.target.value) })}
-      className="form-select"
-    >
-      <option value={1}>Semester 1</option>
-      <option value={2}>Semester 2</option>
-    </select>
-  </div>
+        {/* Program Selection (optional - still linked to program_id) */}
+        <div className="form-group">
+          <label>Program (Optional)</label>
+          <select
+            value={editStudentForm.program_id || ''}
+            onChange={(e) => {
+              const prog = programs.find(p => p.id === e.target.value);
+              setEditStudentForm({
+                ...editStudentForm,
+                program_id: prog?.id || '',
+                program: prog?.name || '',
+                // Note: department_code is now manually edited above
+              });
+            }}
+            className="form-select"
+          >
+            <option value="">Select Program</option>
+            {programs.map(p => (
+              <option key={p.id} value={p.id}>{p.name} ({p.code})</option>
+            ))}
+          </select>
+        </div>
 
-  <div className="form-group">
-    <label className="form-label">Status</label>
-    <select
-      value={editStudentForm.status}
-      onChange={(e) => setEditStudentForm({ ...editStudentForm, status: e.target.value })}
-      className="form-select"
-    >
-      <option value="active">Active</option>
-      <option value="inactive">Inactive</option>
-      <option value="graduated">Graduated</option>
-      <option value="suspended">Suspended</option>
-    </select>
-  </div>
-</div>
+        <div className="form-group">
+          <label>Department Name</label>
+          <input
+            type="text"
+            value={editStudentForm.department}
+            onChange={e => setEditStudentForm({ ...editStudentForm, department: e.target.value })}
+            className="form-input"
+            placeholder="e.g. Science and Technology"
+          />
+        </div>
 
-              <div className="form-group">
-                <label className="form-label">Department Code </label>
-                <input
-                  type="text"
-                  value={editStudentForm.department_code}
-                  className="form-input"
-                  disabled
-                />
-               
-              </div>
+        {/* Intake */}
+        <div className="form-group">
+          <label>Intake</label>
+          <select
+            value={editStudentForm.intake || 'January'}
+            onChange={e => setEditStudentForm({ ...editStudentForm, intake: e.target.value })}
+            className="form-select"
+          >
+            <option value="January">January</option>
+            <option value="August">August</option>
+          </select>
+        </div>
 
-              <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => {
-                    setEditingStudent(null);
-                    setEditStudentForm({});
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="confirm-button"
-                  onClick={async () => {
-                    try {
-                      const { error } = await supabase
-                        .from('students')
-                       .update({
-  full_name: editStudentForm.full_name.trim(),
-  email: editStudentForm.email.trim(),
-  phone: editStudentForm.phone || null,
-  program: editStudentForm.program.trim(),
-  department: editStudentForm.department.trim(),
-  department_code: editStudentForm.department_code,
-  year_of_study: editStudentForm.year_of_study,
-  semester: editStudentForm.semester,
-  status: editStudentForm.status,
-  updated_at: new Date().toISOString()
-})
-                        .eq('id', editingStudent.id);
+        {/* Academic Year - Manual */}
+        <div className="form-group">
+          <label>Academic Year</label>
+          <input
+            type="text"
+            value={editStudentForm.academic_year || ''}
+            onChange={e => setEditStudentForm({ ...editStudentForm, academic_year: e.target.value.trim() })}
+            placeholder="e.g. 2025/2029"
+            className="form-input"
+          />
+        </div>
 
-                      if (error) throw error;
-
-                      alert('Student updated successfully!');
-                      setEditingStudent(null);
-                      fetchStudents();
-                      fetchDashboardStats();
-                    } catch (err) {
-                      console.error('Update error:', err);
-                      alert('Error updating student: ' + err.message);
-                    }
-                  }}
-                >
-                  Save Changes
-                </button>
-              </div>
-            </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Year of Study</label>
+            <select
+              value={editStudentForm.year_of_study}
+              onChange={e => setEditStudentForm({ ...editStudentForm, year_of_study: parseInt(e.target.value) })}
+              className="form-select"
+            >
+              {[1,2,3,4,5].map(y => <option key={y} value={y}>Year {y}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Semester</label>
+            <select
+              value={editStudentForm.semester}
+              onChange={e => setEditStudentForm({ ...editStudentForm, semester: parseInt(e.target.value) })}
+              className="form-select"
+            >
+              <option value={1}>1</option>
+              <option value={2}>2</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Status</label>
+            <select
+              value={editStudentForm.status}
+              onChange={e => setEditStudentForm({ ...editStudentForm, status: e.target.value })}
+              className="form-select"
+            >
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+              <option value="graduated">Graduated</option>
+              <option value="suspended">Suspended</option>
+            </select>
           </div>
         </div>
-      )}
+
+        <div className="modal-actions">
+          <button className="cancel-button" onClick={() => setEditingStudent(null)}>
+            Cancel
+          </button>
+          <button
+            className="confirm-button"
+            onClick={async () => {
+              try {
+                const { error } = await supabase
+                  .from('students')
+                  .update({
+                    full_name: editStudentForm.full_name.trim(),
+                    email: editStudentForm.email.trim(),
+                    phone: editStudentForm.phone || null,
+                    date_of_birth: editStudentForm.date_of_birth || null,
+                    program_id: editStudentForm.program_id,
+                    program: editStudentForm.program,
+                    program_code: editStudentForm.program_code.trim().toUpperCase(),
+                    department: editStudentForm.department.trim(),
+                    department_code: editStudentForm.department_code.trim().toUpperCase(),
+                    year_of_study: editStudentForm.year_of_study,
+                    semester: editStudentForm.semester,
+                    intake: editStudentForm.intake,
+                    academic_year: editStudentForm.academic_year.trim(),
+                    status: editStudentForm.status,
+                    updated_at: new Date().toISOString()
+                  })
+                  .eq('id', editingStudent.id);
+                if (error) throw error;
+                alert('Student updated successfully!');
+                setEditingStudent(null);
+                fetchStudents();
+                fetchDashboardStats();
+              } catch (err) {
+                alert('Error updating student: ' + err.message);
+              }
+            }}
+          >
+            Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
+
+      
       {/* Assignment Upload Modal */}
       {showAssignmentUploadModal && (
         <div className="modal-overlay">
@@ -6810,33 +6907,37 @@ const handleViewSubmissions = async (assignment) => {
               </div>
 {newUser.role === 'student' ? (
   <>
+    {/* Date of Birth */}
+    <div className="form-group">
+      <label className="form-label">Date of Birth</label>
+      <input
+        type="date"
+        value={newUser.date_of_birth}
+        onChange={(e) => setNewUser({ ...newUser, date_of_birth: e.target.value })}
+        className="form-input"
+      />
+      <small>Optional</small>
+    </div>
+
+    {/* Program Selection - only sets name and program_id */}
     <div className="form-group">
       <label className="form-label">Program *</label>
       {programsLoading ? (
         <p>Loading programs...</p>
       ) : programs.length === 0 ? (
-        <p>No programs found. Please add programs first.</p>
+        <p>No programs available.</p>
       ) : (
         <select
           value={newUser.program_id || ''}
-      onChange={(e) => {
-  const selectedProg = programs.find(p => p.id === e.target.value);
-  if (selectedProg) {
-    setNewUser({
-      ...newUser,
-      program_id: selectedProg.id,
-      program: selectedProg.name
-      // department_code is NOT auto-filled here - user will type it manually
-    });
-  } else {
-    setNewUser({
-      ...newUser,
-      program_id: '',
-      program: '',
-      department_code: ''
-    });
-  }
-}}
+          onChange={(e) => {
+            const selectedProg = programs.find(p => p.id === e.target.value);
+            setNewUser({
+              ...newUser,
+              program_id: selectedProg?.id || '',
+              program: selectedProg?.name || ''
+              // department_code and department are NOT set here anymore
+            });
+          }}
           className="form-select"
           required
         >
@@ -6848,36 +6949,100 @@ const handleViewSubmissions = async (assignment) => {
           ))}
         </select>
       )}
-      <small>Selected: {newUser.program || 'None'} • Code: {newUser.department_code || 'N/A'}</small>
+      <small>Selected: {newUser.program || 'None'}</small>
     </div>
-    
-    <div className="form-group">
+
+    {/* Department Name - manual */}
+<div className="form-group">
   <label className="form-label">Department Name *</label>
   <input
     type="text"
     value={newUser.department}
-    onChange={(e) => setNewUser({ ...newUser, department: e.target.value.trim() })}
-    placeholder="e.g. Computer Science, Engineering, Software Engineering"
+    onChange={(e) => setNewUser({ ...newUser, department: e.target.value })}  // ← Fixed!
+    placeholder="e.g. Science and Technology"
     className="form-input"
     required
   />
-  <small>Type the short department name exactly as it should appear</small>
+  <small>Spaces are fully allowed</small>
 </div>
 
-{/* ADD THIS NEW FIELD HERE */}
-<div className="form-group">
+    {/* Department Code - manual */}
+  <div className="form-group">
   <label className="form-label">Department Code *</label>
   <input
     type="text"
     value={newUser.department_code}
-    onChange={(e) => setNewUser({ ...newUser, department_code: e.target.value.trim() })}
-    placeholder="e.g. CS, ENG, BUS"
+    onChange={(e) => setNewUser({ 
+      ...newUser, 
+      department_code: e.target.value.trim().toUpperCase().replace(/\s+/g, '') 
+    })}
+    placeholder="e.g. SCT"
     className="form-input"
     required
   />
-  <small>Type the department code (usually 2-4 letters)</small>
+  <small>No spaces, uppercase only</small>
 </div>
 
+{/* Program Code - manual entry */}
+<div className="form-group">
+  <label className="form-label">Program Code *</label>
+  <input
+    type="text"
+    value={newUser.program_code || ''}
+    onChange={(e) => setNewUser({
+      ...newUser,
+      program_code: e.target.value.trim().toUpperCase().replace(/\s+/g, '')
+    })}
+    placeholder="e.g. BSCE, BSCS, BIT"
+    className="form-input"
+    required
+  />
+  <small>No spaces, uppercase only (e.g. BSCE)</small>
+</div>
+
+    {/* Program Duration */}
+    <div className="form-group">
+      <label className="form-label">Program Duration (Years) *</label>
+      <select
+        value={newUser.program_duration_years}
+        onChange={(e) => setNewUser({ ...newUser, program_duration_years: parseInt(e.target.value) })}
+        className="form-select"
+      >
+        <option value={3}>3 Years</option>
+        <option value={4}>4 Years</option>
+        <option value={5}>5 Years</option>
+      </select>
+      <small>Total semesters will be: {newUser.program_duration_years * 2}</small>
+    </div>
+
+    {/* Intake */}
+    <div className="form-group">
+      <label className="form-label">Intake *</label>
+      <select
+        value={newUser.intake}
+        onChange={(e) => setNewUser({ ...newUser, intake: e.target.value })}
+        className="form-select"
+      >
+        <option value="January">January</option>
+        <option value="August">August</option>
+      </select>
+    </div>
+
+    {/* Academic Year - manual */}
+    <div className="form-group">
+      <label className="form-label">Academic Year (Entry/End) *</label>
+      <input
+        type="text"
+        value={newUser.academic_year}
+        onChange={(e) => setNewUser({ ...newUser, academic_year: e.target.value.trim() })}
+        placeholder="e.g. 2025/2029"
+        className="form-input"
+        required
+      />
+      <small>Admin enters full range (e.g. 2025/2028 for 3yr, 2025/2029 for 4yr)</small>
+    </div>
+
+    {/* Year & Semester */}
     <div className="form-row">
       <div className="form-group">
         <label className="form-label">Year of Study</label>
@@ -6886,8 +7051,8 @@ const handleViewSubmissions = async (assignment) => {
           onChange={(e) => setNewUser({ ...newUser, year_of_study: parseInt(e.target.value) })}
           className="form-select"
         >
-          {[1, 2, 3, 4].map(year => (
-            <option key={year} value={year}>Year {year}</option>
+          {[1, 2, 3, 4, 5].map(y => (
+            <option key={y} value={y}>Year {y}</option>
           ))}
         </select>
       </div>
@@ -6903,9 +7068,9 @@ const handleViewSubmissions = async (assignment) => {
         </select>
       </div>
     </div>
+  </>
+) : (
 
-                </>
-              ) : (
                 <>
                   <div className="form-group">
                     <label className="form-label">Department</label>
@@ -7047,7 +7212,7 @@ const handleViewSubmissions = async (assignment) => {
                   type="text"
                   value={newCourse.department_code}
                   onChange={(e) => setNewCourse({ ...newCourse, department_code: e.target.value })}
-                  placeholder="e.g., CS, BUS, MATH"
+                  placeholder="e.g., ENG, SCT"
                   className="form-input"
                 />
               </div>
@@ -7058,7 +7223,7 @@ const handleViewSubmissions = async (assignment) => {
                   type="text"
                   value={newCourse.department}
                   onChange={(e) => setNewCourse({ ...newCourse, department: e.target.value })}
-                  placeholder="e.g., Computer Science"
+                  placeholder="e.g., Science and Technology"
                   className="form-input"
                 />
               </div>
@@ -7846,6 +8011,105 @@ const handleViewSubmissions = async (assignment) => {
                 onClick={handleLogout}
               >
                 Logout
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Enroll Courses Modal */}
+      {showEnrollModal && enrollStudent && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h3>Enroll {enrollStudent.full_name} in Courses</h3>
+            <p>
+              <strong>ID:</strong> {enrollStudent.student_id}<br/>
+              <strong>Program:</strong> {enrollStudent.program} ({enrollStudent.program_code})<br/>
+              <strong>Current:</strong> Year {enrollStudent.year_of_study}, Semester {enrollStudent.semester}
+            </p>
+
+            <div className="enrollment-options">
+              <div className="option-card">
+           <h4>Enroll in All Program Courses</h4>
+<p>
+  This will enroll the student in <strong>ALL active courses</strong> belonging to their program:
+</p>
+<ul>
+  <li>Program: <strong>{enrollStudent.program}</strong></li>
+  <li>Program Code: <strong>{enrollStudent.program_code}</strong></li>
+  <li>Total Active Courses Found: Will be shown after confirmation</li>
+</ul>
+<p><strong>Includes courses from all years and semesters.</strong></p>
+                <button
+                  className="confirm-button"
+                 onClick={async () => {
+  if (!window.confirm(
+    `Enroll ${enrollStudent.full_name} in ALL active courses for their program?\n\n` +
+    `Program: ${enrollStudent.program} (${enrollStudent.program_code})\n` +
+    `This will include courses from all years and semesters.`
+  )) return;
+
+  try {
+    const { data: courses, error: fetchError } = await supabase
+      .from('courses')
+      .select('id')
+      .eq('program_code', enrollStudent.program_code)
+      .eq('is_active', true);
+
+    if (fetchError) throw fetchError;
+    if (courses.length === 0) {
+      alert('No active courses found for this program code: ' + enrollStudent.program_code);
+      return;
+    }
+
+    const enrollments = courses.map(c => ({
+      student_id: enrollStudent.id,
+      course_id: c.id,
+      status: 'enrolled',
+      enrollment_date: new Date().toISOString().split('T')[0]
+    }));
+
+    const { error: insertError } = await supabase
+      .from('student_courses')
+      .insert(enrollments);
+
+    if (insertError) {
+      if (insertError.code === '23505') {
+        alert('Some courses were already enrolled (skipped duplicates). Others enrolled successfully.');
+      } else {
+        throw insertError;
+      }
+    } else {
+      alert(`✅ Successfully enrolled in ${courses.length} course(s) for ${enrollStudent.program_code}!`);
+    }
+
+    setShowEnrollModal(false);
+    setEnrollStudent(null);
+  } catch (err) {
+    console.error(err);
+    alert('Enrollment failed: ' + err.message);
+  }
+}}
+                >
+                 Enroll in All Courses ({enrollStudent.program_code})
+                </button>
+              </div>
+
+              <div className="option-card">
+                <h4>Custom Enrollment Later</h4>
+                <p>You can create a custom SQL query or use bulk tools if needed.</p>
+              </div>
+            </div>
+
+            <div className="modal-actions">
+              <button
+                className="cancel-button"
+                onClick={() => {
+                  setShowEnrollModal(false);
+                  setEnrollStudent(null);
+                }}
+              >
+                Close
               </button>
             </div>
           </div>

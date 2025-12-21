@@ -4802,3 +4802,154 @@ button {
   background-color: #17a2b8;
   color: white;
 }
+
+.action-btn {
+  padding: 12px 25px;
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  border: none;
+  border-radius: 12px;
+  color: white;
+  font-weight: 600;
+  transition: all 0.3s;
+  cursor: pointer;
+}
+
+/* Full Program Name - No Ellipsis */
+.program-full {
+  white-space: normal;          /* Allow wrapping if needed */
+  word-wrap: break-word;        /* Break long words */
+  max-width: 250px;             /* Optional: cap width to prevent extreme stretching */
+  overflow: visible !important; /* No clipping */
+}
+
+/* Table Container */
+.table-container {
+  overflow-x: auto;
+  max-width: 100%;
+  margin-bottom: 20px;
+}
+
+/* Table */
+.data-table {
+  width: 100%;
+  table-layout: auto;
+  border-collapse: collapse;
+}
+
+/* Prevent text truncation in Program column */
+.data-table td.program-full {
+  text-overflow: unset !important;
+  overflow: visible !important;
+}
+
+/* Ensure columns don't shrink too much */
+.data-table th, .data-table td {
+  padding: 12px 10px;
+  vertical-align: middle;
+}
+
+/* Make Program column flexible */
+.data-table th:nth-child(4), /* Program column */
+.data-table td:nth-child(4) {
+  min-width: 180px; /* Minimum space for full names */
+}
+
+/* Responsive: Allow scroll only when needed */
+@media (max-width: 1200px) {
+  .data-table {
+    min-width: 1000px; /* Forces horizontal scroll on small screens */
+  }
+}
+/* Compact Actions Dropdown - Small & Stylish */
+.actions-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.actions-toggle-btn {
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #495057;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+
+.actions-toggle-btn:hover {
+  background: #e9ecef;
+  border-color: #adb5bd;
+}
+
+.dropdown-icon {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+/* Dropdown Menu */
+.actions-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  background: white;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  min-width: 130px;
+  z-index: 100;
+  overflow: hidden;
+  padding: 4px 0;
+}
+
+.actions-dropdown:hover .actions-menu {
+  display: block;
+}
+
+/* Action Items - Small & Compact */
+.action-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: 12px;
+  color: #343a40;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.action-item:hover {
+  background: #f1f3f5;
+}
+
+.action-icon {
+  font-size: 14px;
+  opacity: 0.9;
+}
+
+/* Specific Colors */
+.action-item.edit {
+  color: #1976d2; /* Blue for Edit */
+}
+
+.action-item.enroll {
+  color: #388e3c; /* Green for Enroll */
+}
+
+.action-item.status {
+  color: #d32f2f; /* Red for Deactivate */
+}
+
+/* Optional: Make status change color based on action */
+.action-item.status.active {
+  color: #28a745; /* Green when it's "Activate" */
+}
