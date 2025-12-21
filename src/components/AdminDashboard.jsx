@@ -74,8 +74,25 @@ const [selectedCoursesForReversal, setSelectedCoursesForReversal] = useState([])
 const [reversalInProgress, setReversalInProgress] = useState(false);
 // [students, lecturers, courses, etc...]
   const [searchTerm, setSearchTerm] = useState('');
-  // === ADD TO STATE (near other states) ===
 
+  // === TUTORIALS UPLOAD STATES (FULLY UPDATED) ===
+const [showTutorialsModal, setShowTutorialsModal] = useState(false);
+const [tutorialTitle, setTutorialTitle] = useState('');
+const [tutorialDescription, setTutorialDescription] = useState('');
+const [tutorialFiles, setTutorialFiles] = useState([]);
+const [uploadingTutorial, setUploadingTutorial] = useState(false);
+const [tutorialUploadProgress, setTutorialUploadProgress] = useState(0);
+const tutorialFileInputRef = useRef(null);
+
+// NEW: Target program, course, and cohort
+const [tutorialTargetProgram, setTutorialTargetProgram] = useState('');     // program_id
+const [tutorialTargetCourse, setTutorialTargetCourse] = useState('');       // course_id
+const [tutorialTargetCohort, setTutorialTargetCohort] = useState({
+  academic_year: '',
+  year_of_study: 1,
+  semester: 1
+});
+const [tutorialCourses, setTutorialCourses] = useState([]); // courses for selected program
 
 // New state for course completion
 const [completionFilters, setCompletionFilters] = useState({
@@ -164,6 +181,48 @@ useEffect(() => {
   fetchCoursesForCompletion();
   fetchStudentsForCompletion();
 }, [completionFilters]);
+  
+  // Load courses when a program is selected for tutorial targeting
+// Load courses when a program is selected for tutorial targeting
+useEffect(() => {
+  const fetchCoursesForProgram = async () => {
+    if (!tutorialTargetProgram) {
+      setTutorialCourses([]);
+      return;
+    }
+    try {
+      // First get the selected program's code
+      const { data: selectedProgram, error: progError } = await supabase
+        .from('programs')
+        .select('code')
+        .eq('id', tutorialTargetProgram)
+        .single();
+
+      if (progError || !selectedProgram?.code) {
+        console.error('Failed to get program code:', progError);
+        setTutorialCourses([]);
+        return;
+      }
+
+      // Now filter courses by program_code (text field) and is_active
+      const { data, error } = await supabase
+        .from('courses')
+        .select('id, course_code, course_name, department_code')
+        .eq('program_code', selectedProgram.code)
+        .eq('is_active', true)
+        .order('course_code');
+
+      if (error) throw error;
+      setTutorialCourses(data || []);
+      console.log(`Found ${data?.length || 0} active courses for program code: ${selectedProgram.code}`);
+    } catch (err) {
+      console.error('Error loading courses for program:', err);
+      alert('Failed to load courses: ' + err.message);
+      setTutorialCourses([]);
+    }
+  };
+  fetchCoursesForProgram();
+}, [tutorialTargetProgram]);
 
   // Add this useEffect after your existing useEffect for completionFilters
 useEffect(() => {
@@ -647,14 +706,6 @@ useEffect(() => {
   const [assignmentFiles, setAssignmentFiles] = useState([]);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadingFiles, setUploadingFiles] = useState(false);
-  // === TUTORIALS UPLOAD STATES ===
-const [showTutorialsModal, setShowTutorialsModal] = useState(false);
-const [tutorialTitle, setTutorialTitle] = useState('');
-const [tutorialDescription, setTutorialDescription] = useState('');
-const [tutorialFiles, setTutorialFiles] = useState([]);
-const [uploadingTutorial, setUploadingTutorial] = useState(false);
-const [tutorialUploadProgress, setTutorialUploadProgress] = useState(0);
-const tutorialFileInputRef = useRef(null);
 
   const [newLecture, setNewLecture] = useState({
     course_id: '',
@@ -825,41 +876,33 @@ const tutorialFileInputRef = useRef(null);
     }
   };
   
-    // Load programs from database (only for admin)
-  useEffect(() => {
-    const loadPrograms = async () => {
-      if (!isAdmin) {
+ // Load programs from database (for both admin AND lecturer)
+useEffect(() => {
+  const loadPrograms = async () => {
+    // Always load programs — needed for tutorial uploads by lecturers
+    try {
+      setProgramsLoading(true);
+      const { data, error } = await supabase
+        .from('programs')
+        .select('id, name, code')
+        .order('name', { ascending: true });
+      if (error) {
+        console.error('Error loading programs:', error);
+        alert('Failed to load programs');
         setPrograms([]);
-        setProgramsLoading(false);
-        return;
+      } else {
+        setPrograms(data || []);
+        console.log('✅ Programs loaded:', data);
       }
-
-      try {
-        setProgramsLoading(true);
-        const { data, error } = await supabase
-          .from('programs')
-          .select('id, name, code')
-          .order('name', { ascending: true });
-
-        if (error) {
-          console.error('Error loading programs:', error);
-          alert('Failed to load programs');
-          setPrograms([]);
-        } else {
-          setPrograms(data || []);
-          console.log('✅ Programs loaded:', data);
-        }
-      } catch (err) {
-        console.error('Unexpected error:', err);
-        setPrograms([]);
-      } finally {
-        setProgramsLoading(false);
-      }
-    };
-
-    loadPrograms();
-  }, [isAdmin]);
-
+    } catch (err) {
+      console.error('Unexpected error loading programs:', err);
+      setPrograms([]);
+    } finally {
+      setProgramsLoading(false);
+    }
+  };
+  loadPrograms();
+}, []); // Run once on mount — no dependency on isAdmin
   // =================== FILE DOWNLOAD FUNCTIONS ===================
 const downloadFile = async (fileUrl, fileName, submissionId = null) => {
   try {
@@ -1753,15 +1796,37 @@ const uploadAssignmentFiles = async (files) => {
   };
   
 
-
-  // Upload tutorial files to 'tutorials' bucket
 const uploadTutorialFiles = async (files) => {
   if (!files || files.length === 0) return [];
   const uploadedPaths = [];
+
+  // Validation
+  if (!tutorialTargetProgram) {
+    alert('Please select a target program');
+    return [];
+  }
+  if (!tutorialTargetCourse) {
+    alert('Please select a target course');
+    return [];
+  }
+  if (!tutorialTargetCohort.academic_year.trim()) {
+    alert('Please enter the academic year');
+    return [];
+  }
+
   setUploadingTutorial(true);
   setTutorialUploadProgress(0);
 
   try {
+    // Get program and course codes
+    const [{ data: program }, { data: course }] = await Promise.all([
+      supabase.from('programs').select('code').eq('id', tutorialTargetProgram).single(),
+      supabase.from('courses').select('course_code').eq('id', tutorialTargetCourse).single()
+    ]);
+
+    const programCode = program?.code || 'GENERAL';
+    const courseCode = course?.course_code || 'NOCOURSE';
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const originalName = file.name;
@@ -1769,18 +1834,16 @@ const uploadTutorialFiles = async (files) => {
       const randomStr = Math.random().toString(36).substring(2, 8);
       const safeName = originalName.replace(/[^a-zA-Z0-9.]/g, '_');
       const fileName = `${timestamp}_${randomStr}_${safeName}`;
-      const filePath = `${
-        selectedCohort.academic_year || 'general'
-      }/Year${selectedCohort.year_of_study || ''}_Sem${selectedCohort.semester || ''}/${fileName}`;
+
+      // Folder: PROGRAM/COURSE/ACADEMIC_YEAR/YearX_SemY/filename
+      const folderPath = `${programCode}/${courseCode}/${tutorialTargetCohort.academic_year.trim()}/Year${tutorialTargetCohort.year_of_study}_Sem${tutorialTargetCohort.semester}`;
+      const filePath = `${folderPath}/${fileName}`;
 
       setTutorialUploadProgress(Math.round(((i + 1) / files.length) * 100));
 
-      const { data, error } = await supabase.storage
+      const { error } = await supabase.storage
         .from('Tutorials')
-        .upload(filePath, file, {
-          cacheControl: '3600',
-          upsert: false,
-        });
+        .upload(filePath, file, { upsert: false });
 
       if (error) {
         console.error(`Failed to upload ${originalName}:`, error);
@@ -1788,7 +1851,6 @@ const uploadTutorialFiles = async (files) => {
         continue;
       }
 
-      // Get public URL
       const { data: publicUrlData } = supabase.storage
         .from('Tutorials')
         .getPublicUrl(filePath);
@@ -1803,7 +1865,7 @@ const uploadTutorialFiles = async (files) => {
     alert(`✅ Successfully uploaded ${uploadedPaths.length} tutorial file(s)!`);
     return uploadedPaths;
   } catch (error) {
-    console.error('Tutorial upload error:', error);
+    console.error('Upload error:', error);
     alert('Upload failed: ' + error.message);
     return [];
   } finally {
@@ -1811,7 +1873,6 @@ const uploadTutorialFiles = async (files) => {
     setTutorialUploadProgress(0);
   }
 };
-
 const handleCreateAssignment = async () => {
   try {
     setLoading(prev => ({ ...prev, creatingAssignment: true }));
@@ -4182,15 +4243,17 @@ const handleViewSubmissions = async (assignment) => {
                     >
                       + Create Assignment
                       </button>
-                      
-                    <button
+<button
   className="action-button"
-  onClick={() => {
-    setShowTutorialsModal(true);
-    setTutorialTitle('');
-    setTutorialDescription('');
-    setTutorialFiles([]);
-  }}
+onClick={() => {
+  setShowTutorialsModal(true);
+  setTutorialTitle('');
+  setTutorialDescription('');
+  setTutorialFiles([]);
+  setTutorialTargetProgram('');
+  setTutorialTargetCourse('');
+  setTutorialTargetCohort({ academic_year: '', year_of_study: 1, semester: 1 });
+}}
 >
   <span className="action-icon">📚</span>
   <span>Upload Tutorials</span>
@@ -6460,213 +6523,203 @@ const handleViewSubmissions = async (assignment) => {
           
           
         )}
-        
-              {/* === TUTORIALS UPLOAD MODAL === */}
-      {showTutorialsModal && (
-        <div className="modal-overlay">
-          <div className="modal large-modal">
-            <h3>Upload Tutorial Materials</h3>
+{/* === TUTORIALS UPLOAD MODAL (WITH PROGRAM + COURSE + COHORT) === */}
+{showTutorialsModal && (
+  <div className="modal-overlay">
+    <div className="modal large-modal">
+      <h3>Upload Tutorial Materials</h3>
 
-            {/* Cohort Selection - REQUIRED */}
-            <div style={{
-              background: '#fff8e1',
-              padding: '20px',
-              borderRadius: '10px',
-              marginBottom: '25px',
-              border: '2px solid #ffb300'
-            }}>
-              <h4 style={{ margin: '0 0 10px 0', color: '#ff8f00' }}>
-                Target Student Cohort (REQUIRED)
-              </h4>
-              <p style={{ fontSize: '14px', marginBottom: '15px', color: '#555' }}>
-                Select the exact group of students who should see this tutorial.
-              </p>
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Academic Year *</label>
-                  <input
-                    type="text"
-                    value={selectedCohort.academic_year}
-                    onChange={(e) => setSelectedCohort({ ...selectedCohort, academic_year: e.target.value.trim() })}
-                    placeholder="e.g. 2025/2029"
-                    className="form-input"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Year *</label>
-                  <select
-                    value={selectedCohort.year_of_study}
-                    onChange={(e) => setSelectedCohort({ ...selectedCohort, year_of_study: parseInt(e.target.value) })}
-                    className="form-select"
-                  >
-                    <option value={1}>Year 1</option>
-                    <option value={2}>Year 2</option>
-                    <option value={3}>Year 3</option>
-                    <option value={4}>Year 4</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Semester *</label>
-                  <select
-                    value={selectedCohort.semester}
-                    onChange={(e) => setSelectedCohort({ ...selectedCohort, semester: parseInt(e.target.value) })}
-                    className="form-select"
-                  >
-                    <option value={1}>Semester 1</option>
-                    <option value={2}>Semester 2</option>
-                  </select>
-                </div>
-              </div>
-            </div>
+      {/* Program Selection */}
+      <div style={{ background: '#e3f2fd', padding: '20px', borderRadius: '10px', marginBottom: '20px', border: '2px solid #1976d2' }}>
+        <h4 style={{ margin: '0 0 10px 0', color: '#1976d2' }}>Target Program *</h4>
+        {programsLoading ? (
+          <p>Loading programs...</p>
+        ) : (
+          <select
+            value={tutorialTargetProgram}
+            onChange={(e) => {
+              setTutorialTargetProgram(e.target.value);
+              setTutorialTargetCourse(''); // reset course when program changes
+            }}
+            className="form-select"
+          >
+            <option value="">Select Program</option>
+            {programs.map(p => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.code})
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
 
-            <div className="modal-form">
-              <div className="form-group">
-                <label>Title *</label>
-                <input
-                  type="text"
-                  value={tutorialTitle}
-                  onChange={(e) => setTutorialTitle(e.target.value)}
-                  placeholder="e.g. Week 5 Tutorial - Database Normalization"
-                  className="form-input"
-                />
-              </div>
-
-              <div className="form-group">
-                <label>Description (Optional)</label>
-                <textarea
-                  value={tutorialDescription}
-                  onChange={(e) => setTutorialDescription(e.target.value)}
-                  placeholder="Brief description of this tutorial"
-                  rows="3"
-                  className="form-textarea"
-                />
-              </div>
-
-              <div className="form-group">
-                <label>Tutorial Files *</label>
-                <div
-                  className="file-upload-area"
-                  onClick={() => tutorialFileInputRef.current?.click()}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.classList.add('drag-over');
-                  }}
-                  onDragLeave={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.classList.remove('drag-over');
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.classList.remove('drag-over');
-                    const files = e.dataTransfer?.files;
-                    if (files) {
-                      setTutorialFiles(Array.from(files));
-                    }
-                  }}
-                >
-                  <input
-                    type="file"
-                    ref={tutorialFileInputRef}
-                    multiple
-                    onChange={(e) => {
-                      const files = e.target.files;
-                      if (files) {
-                        setTutorialFiles(Array.from(files));
-                      }
-                    }}
-                    className="file-input"
-                    style={{ display: 'none' }}
-                  />
-                  <div className="upload-icon">📤</div>
-                  <p><strong>Drop files here or click to browse</strong></p>
-                  <p className="small-text">PDF, DOC, PPT, MP4, ZIP, etc.</p>
-                </div>
-
-                {uploadingTutorial && (
-                  <div className="upload-progress">
-                    <div className="progress-bar">
-                      <div
-                        className="progress-fill"
-                        style={{ width: `${tutorialUploadProgress}%` }}
-                      ></div>
-                    </div>
-                    <p>Uploading: {tutorialUploadProgress}%</p>
-                  </div>
-                )}
-
-                {tutorialFiles.length > 0 && (
-                  <div className="file-list">
-                    <h4>Selected Files ({tutorialFiles.length})</h4>
-                    <div className="files-grid">
-                      {tutorialFiles.map((file, i) => (
-                        <div key={i} className="file-item">
-                          <div className="file-info">
-                            <span className="file-name">{file.name}</span>
-                            <span className="file-size">
-                              {(file.size / 1024 / 1024).toFixed(2)} MB
-                            </span>
-                          </div>
-                          <button
-                            onClick={() => setTutorialFiles(prev => prev.filter((_, idx) => idx !== i))}
-                            className="remove-file"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => {
-                    setShowTutorialsModal(false);
-                    setTutorialFiles([]);
-                    setTutorialTitle('');
-                    setTutorialDescription('');
-                    setSelectedCohort({ academic_year: '', year_of_study: 1, semester: 1 });
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="confirm-button"
-                  onClick={async () => {
-                    if (!tutorialTitle.trim()) {
-                      alert('Please enter a title');
-                      return;
-                    }
-                    if (tutorialFiles.length === 0) {
-                      alert('Please select at least one file');
-                      return;
-                    }
-                    if (!selectedCohort.academic_year || !selectedCohort.year_of_study || !selectedCohort.semester) {
-                      alert('Please select the target cohort');
-                      return;
-                    }
-
-                    const uploaded = await uploadTutorialFiles(tutorialFiles);
-                    if (uploaded.length > 0) {
-                      setShowTutorialsModal(false);
-                      setTutorialFiles([]);
-                      setTutorialTitle('');
-                      setTutorialDescription('');
-                      setSelectedCohort({ academic_year: '', year_of_study: 1, semester: 1 });
-                    }
-                  }}
-                  disabled={uploadingTutorial}
-                >
-                  {uploadingTutorial ? 'Uploading...' : 'Upload Tutorials'}
-                </button>
-              </div>
-            </div>
-          </div>
+      {/* Course Selection */}
+      {tutorialTargetProgram && (
+        <div style={{ background: '#fff3e0', padding: '20px', borderRadius: '10px', marginBottom: '20px', border: '2px solid #f57c00' }}>
+          <h4 style={{ margin: '0 0 10px 0', color: '#f57c00' }}>Target Course *</h4>
+          {tutorialCourses.length === 0 ? (
+            <p>No active courses found for this program.</p>
+          ) : (
+            <select
+              value={tutorialTargetCourse}
+              onChange={(e) => setTutorialTargetCourse(e.target.value)}
+              className="form-select"
+            >
+              <option value="">Select Course</option>
+              {tutorialCourses.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.course_code} - {c.course_name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       )}
-        
+
+      {/* Cohort Selection */}
+      <div style={{ background: '#e8f5e8', padding: '20px', borderRadius: '10px', marginBottom: '20px', border: '2px solid #388e3c' }}>
+        <h4 style={{ margin: '0 0 10px 0', color: '#388e3c' }}>Target Cohort *</h4>
+        <div className="form-row">
+          <div className="form-group">
+            <label>Academic Year *</label>
+            <input
+              type="text"
+              value={tutorialTargetCohort.academic_year}
+              onChange={(e) => setTutorialTargetCohort({ ...tutorialTargetCohort, academic_year: e.target.value.trim() })}
+              placeholder="e.g. 2025/2029"
+              className="form-input"
+            />
+          </div>
+          <div className="form-group">
+            <label>Year *</label>
+            <select
+              value={tutorialTargetCohort.year_of_study}
+              onChange={(e) => setTutorialTargetCohort({ ...tutorialTargetCohort, year_of_study: parseInt(e.target.value) })}
+              className="form-select"
+            >
+              {[1,2,3,4].map(y => <option key={y} value={y}>Year {y}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Semester *</label>
+            <select
+              value={tutorialTargetCohort.semester}
+              onChange={(e) => setTutorialTargetCohort({ ...tutorialTargetCohort, semester: parseInt(e.target.value) })}
+              className="form-select"
+            >
+              <option value={1}>Semester 1</option>
+              <option value={2}>Semester 2</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Title, Description, Files */}
+      <div className="modal-form">
+        <div className="form-group">
+          <label>Title *</label>
+          <input
+            type="text"
+            value={tutorialTitle}
+            onChange={(e) => setTutorialTitle(e.target.value)}
+            placeholder="e.g. Week 6 Tutorial - SQL Joins"
+            className="form-input"
+          />
+        </div>
+        <div className="form-group">
+          <label>Description (Optional)</label>
+          <textarea
+            value={tutorialDescription}
+            onChange={(e) => setTutorialDescription(e.target.value)}
+            rows="3"
+            className="form-textarea"
+          />
+        </div>
+        <div className="form-group">
+          <label>Files *</label>
+          <div
+            className="file-upload-area"
+            onClick={() => tutorialFileInputRef.current?.click()}
+            onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('drag-over'); }}
+            onDragLeave={(e) => { e.preventDefault(); e.currentTarget.classList.remove('drag-over'); }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.currentTarget.classList.remove('drag-over');
+              setTutorialFiles(Array.from(e.dataTransfer.files));
+            }}
+          >
+            <input
+              type="file"
+              ref={tutorialFileInputRef}
+              multiple
+              onChange={(e) => e.target.files && setTutorialFiles(Array.from(e.target.files))}
+              style={{ display: 'none' }}
+            />
+            <div className="upload-icon">📤</div>
+            <p><strong>Drop files or click to browse</strong></p>
+            <p className="small-text">PDF, DOC, PPT, MP4, ZIP, etc.</p>
+          </div>
+          {uploadingTutorial && (
+            <div className="upload-progress">
+              <div className="progress-bar">
+                <div className="progress-fill" style={{ width: `${tutorialUploadProgress}%` }}></div>
+              </div>
+              <p>{tutorialUploadProgress}%</p>
+            </div>
+          )}
+          {tutorialFiles.length > 0 && (
+            <div className="file-list">
+              <h4>Selected ({tutorialFiles.length})</h4>
+              <div className="files-grid">
+                {tutorialFiles.map((file, i) => (
+                  <div key={i} className="file-item">
+                    <span>{file.name} ({(file.size/1024/1024).toFixed(2)} MB)</span>
+                    <button onClick={() => setTutorialFiles(prev => prev.filter((_, idx) => idx !== i))}>×</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="modal-actions">
+          <button
+            className="cancel-button"
+            onClick={() => {
+              setShowTutorialsModal(false);
+              setTutorialTitle('');
+              setTutorialDescription('');
+              setTutorialFiles([]);
+              setTutorialTargetProgram('');
+              setTutorialTargetCourse('');
+              setTutorialTargetCohort({ academic_year: '', year_of_study: 1, semester: 1 });
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            className="confirm-button"
+            disabled={uploadingTutorial || !tutorialTargetProgram || !tutorialTargetCourse || tutorialFiles.length === 0}
+            onClick={async () => {
+              if (!tutorialTitle.trim()) return alert('Enter a title');
+              await uploadTutorialFiles(tutorialFiles);
+              // Reset everything on success
+              setShowTutorialsModal(false);
+              setTutorialTitle('');
+              setTutorialDescription('');
+              setTutorialFiles([]);
+              setTutorialTargetProgram('');
+              setTutorialTargetCourse('');
+              setTutorialTargetCohort({ academic_year: '', year_of_study: 1, semester: 1 });
+            }}
+          >
+            {uploadingTutorial ? 'Uploading...' : 'Upload Tutorials'}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
 
       </main>
 
