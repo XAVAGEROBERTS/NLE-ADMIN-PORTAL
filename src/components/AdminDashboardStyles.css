@@ -1408,7 +1408,7 @@ button {
   background: white;
   border-radius: 20px;
   padding: 40px;
-  max-width: 600px;
+  max-width: 1000px;
   width: 100%;
   max-height: 90vh;
   overflow-y: auto;
@@ -3459,7 +3459,7 @@ button {
   background: white;
   border-radius: 20px;
   padding: 40px;
-  max-width: 600px;
+  max-width: 1000px;
   width: 100%;
   max-height: 90vh;
   overflow-y: auto;
