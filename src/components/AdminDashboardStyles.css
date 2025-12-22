@@ -5111,3 +5111,35 @@ button {
     grid-template-columns: 1fr;
   }
 }
+
+.exam-status.active { background: #c62828; color: white; }
+.exam-status.upcoming { background: #1976d2; color: white; }
+.exam-status.ended { background: #9e9e9e; color: white; }
+.grading-toggle {
+  display: flex;
+  gap: 15px;
+  margin-bottom: 20px;
+  justify-content: center;
+}
+
+.toggle-btn {
+  padding: 12px 24px;
+  font-size: 16px;
+  font-weight: bold;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s;
+  background-color: #f0f0f0;
+  color: #333;
+}
+
+.toggle-btn.active {
+  background-color: #1976d2;
+  color: white;
+}
+
+.toggle-btn:hover {
+  background-color: #0056b3;
+  color: white;
+}
