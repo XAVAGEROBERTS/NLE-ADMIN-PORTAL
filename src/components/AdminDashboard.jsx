@@ -915,45 +915,59 @@ useEffect(() => {
     }
 
   };
-
-  const setupRealtimeSubscription = () => {
-    try {
-      if (subscriptionRef.current) {
-        subscriptionRef.current.unsubscribe();
-      }
-      const subscription = supabase
-        .channel('dashboard-changes')
-        .on('postgres_changes',
-          { event: '*', schema: 'public', table: 'assignment_submissions' },
-          () => {
-            if (isLecturer && selectedAssignment) {
-              fetchAssignmentSubmissions(selectedAssignment.id);
-            }
-            fetchDashboardStats();
-            if (isLecturer) {
-              fetchLecturerStatistics();
-            }
-          }
-        )
-        .on('postgres_changes',
-          { event: '*', schema: 'public', table: 'assignments' },
-          () => {
-            fetchAssignments();
-            if (isLecturer) {
-              fetchMyAssignments();
-            }
-          }
-        )
-        .subscribe((status) => {
-          setRealtimeConnected(status === 'SUBSCRIBED');
-        });
-     
-      subscriptionRef.current = subscription;
-     
-    } catch (error) {
-      console.error('Realtime subscription error:', error);
+const setupRealtimeSubscription = () => {
+  try {
+    if (subscriptionRef.current) {
+      subscriptionRef.current.unsubscribe();
     }
-  };
+
+    const subscription = supabase
+      .channel('dashboard-changes')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'assignment_submissions' }, 
+        () => {
+          if (isLecturer && selectedAssignment) {
+            fetchAssignmentSubmissions(selectedAssignment.id);
+          }
+          fetchDashboardStats();
+          if (isLecturer) {
+            fetchLecturerStatistics();
+          }
+        }
+      )
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'assignments' }, 
+        () => {
+          fetchAssignments();
+          if (isLecturer) {
+            fetchMyAssignments();
+          }
+        }
+      )
+      // ← NEW: Realtime updates for exam submissions
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'exam_submissions' }, 
+        (payload) => {
+          console.log('Realtime exam submission change:', payload);
+          if (
+            selectedExamForGrading && 
+            payload.new?.exam_id === selectedExamForGrading.exam_id
+          ) {
+            // Refetch submissions for the currently viewed exam
+            fetchExamSubmissions(selectedExamForGrading.exam_id);
+          }
+        }
+      )
+      .subscribe((status) => {
+        setRealtimeConnected(status === 'SUBSCRIBED');
+      });
+
+    subscriptionRef.current = subscription;
+
+  } catch (error) {
+    console.error('Realtime subscription error:', error);
+  }
+};
   
  // Load programs from database (for both admin AND lecturer)
 useEffect(() => {
@@ -1590,114 +1604,135 @@ const testStudentDataRetrieval = async () => {
   }
 };
 
+  
+const fetchAssignmentSubmissions = async (assignmentId) => {
+  if (!assignmentId) return;
 
+  try {
+    const { data: submissions, error } = await supabase
+      .from('assignment_submissions')
+      .select('id, assignment_id, student_id, submission_date, status, file_urls, marks_obtained, feedback, graded_at, graded_by')
+      .eq('assignment_id', assignmentId)
+      .order('submission_date', { ascending: false });
+
+    if (error) throw error;
+
+if (submissions.length > 0) {
+  const studentUuids = [...new Set(submissions.map(s => s.student_id))];
+  console.log('🔍 Looking up students with UUIDs:', studentUuids);
+
+  const { data: students, error: studentError } = await supabase
+    .from('students')
+    .select('id, full_name, email, student_id')
+    .in('id', studentUuids);
+
+  if (studentError) {
+    console.error('Error fetching students:', studentError);
+  }
+
+  console.log('✅ Found students:', students);
+const studentMap = {};
+students?.forEach(stu => {
+  studentMap[String(stu.id)] = {
+    name: stu.full_name || 'Unknown Student',
+    email: stu.email || 'No email',
+    reg: stu.student_id || 'N/A'
+  };
+});
+
+submissions.forEach(sub => {
+  const info = studentMap[String(sub.student_id)];
+  if (info) {
+    sub.student_name = info.name;
+    sub.student_email = info.email;
+    sub.registration_number = info.reg;
+  } else {
+    console.warn('No match for student UUID:', sub.student_id);
+    sub.student_name = 'Unknown Student';
+    sub.student_email = 'No email';
+    sub.registration_number = 'N/A';
+  }
+});
+}
+    setAssignmentSubmissions(submissions);
+    console.log('Loaded assignment submissions:', submissions);
+
+  } catch (err) {
+    console.error('Error:', err);
+    alert('Failed to load submissions: ' + err.message);
+  }
+};  
+  
+
+
+  
 const fetchExamSubmissions = async (examId) => {
   if (!examId) {
-    console.error('No exam ID');
     setExamSubmissions([]);
     return;
   }
-  console.log('🔍 START: Fetching exam submissions for exam_id:', examId);
+
   try {
-    // CORRECTED: Use student_id instead of student_uuid
+    // Fetch submissions
     const { data: submissions, error } = await supabase
       .from('exam_submissions')
-      .select(`
-        id,
-        exam_id,
-        student_id,
-        started_at,
-        submitted_at,
-        status,
-        total_marks_obtained,
-        feedback,
-        graded_at,
-        answer_files,
-        answer_text
-      `)
+      .select('*')
       .eq('exam_id', examId)
       .order('submitted_at', { ascending: false });
 
-    console.log('📊 Raw submissions:', { submissions, error });
-    if (error) {
-      console.error('Supabase error:', error);
-      alert('Database error: ' + error.message);
-      setExamSubmissions([]);
-      return;
-    }
-
+    if (error) throw error;
     if (!submissions || submissions.length === 0) {
-      console.log('⚠️ No submissions found');
       setExamSubmissions([]);
       return;
     }
 
-    // Extract student UUIDs from student_id
-    const studentUuids = submissions
-      .map(s => s.student_id)
-      .filter(Boolean);
+    // Get unique student UUIDs
+    const studentUuids = [...new Set(submissions.map(s => s.student_id))];
 
-    // Fetch student details in batch
-    let studentsMap = {};
-    if (studentUuids.length > 0) {
-      const { data: students, error: studentError } = await supabase
-        .from('students')
-        .select('id, full_name, email, program, department_code, student_id')
-        .in('id', studentUuids);
+    // Fetch student details: name, email, registration number
+    const { data: students } = await supabase
+      .from('students')
+      .select('id, full_name, email, student_id')
+      .in('id', studentUuids);
 
-      if (studentError) {
-        console.warn('Could not fetch some student details:', studentError);
-      } else {
-        students?.forEach(stu => {
-          studentsMap[stu.id] = stu;
-        });
-      }
-    }
-
-    // Process submissions with student info + public file URLs
-    const processed = submissions.map(sub => {
-      const student = studentsMap[sub.student_id] || {
-        full_name: 'Unknown Student',
-        email: 'N/A',
-        program: 'N/A',
-        department_code: 'N/A',
-        student_id: 'N/A'
-      };
-
-      // Generate public URLs for answer files (from 'Student exam' bucket)
-      const fileUrls = (sub.answer_files || []).map(path =>
-        supabase.storage.from('Student exam').getPublicUrl(path).data.publicUrl
-      );
-
-      return {
-        id: sub.id,
-        exam_id: sub.exam_id,
-        registration_number: student.student_id || 'Unknown',
-        student_name: student.full_name,
-        student_email: student.email,
-        program: student.program,
-        department_code: student.department_code,
-        started_at: sub.started_at,
-        submitted_at: sub.submitted_at,
-        status: sub.status || 'submitted',
-        total_marks_obtained: sub.total_marks_obtained || 0,
-        feedback: sub.feedback || '',
-        graded_at: sub.graded_at,
-        answer_files: sub.answer_files || [],
-        file_download_urls: fileUrls,
-        answer_text: sub.answer_text || ''
+    const studentMap = {};
+    students?.forEach(stu => {
+      studentMap[stu.id] = {
+        full_name: stu.full_name || 'Unknown Student',
+        email: stu.email || 'No email',
+        registration_number: stu.student_id || 'N/A'
       };
     });
 
-    console.log('✅ Final processed submissions:', processed);
+    // Process with student info
+    const processed = submissions.map(sub => {
+      const student = studentMap[sub.student_id] || {
+        full_name: 'Unknown Student',
+        email: 'No email',
+        registration_number: 'N/A'
+      };
+
+      return {
+        id: sub.id,
+        student_name: student.full_name,
+        student_email: student.email,
+        registration_number: student.registration_number,
+        submitted_at: sub.submitted_at,
+        status: sub.status || 'submitted',
+        file_download_urls: sub.answer_files || [],
+        total_marks_obtained: sub.total_marks_obtained || null,
+        feedback: sub.feedback || ''
+      };
+    });
+
     setExamSubmissions(processed);
-  } catch (error) {
-    console.error('Unexpected error fetching submissions:', error);
-    alert('Failed to load submissions: ' + error.message);
+
+  } catch (err) {
+    console.error('Error:', err);
     setExamSubmissions([]);
   }
 };
-  
+
 const fetchMyExams = async () => {
   if (!isLecturer || !profile?.id) {
     console.log('No lecturer ID or not lecturer');
@@ -2492,6 +2527,8 @@ const handleCreateAssignment = async () => {
       console.error('Error fetching assignments:', error);
     }
   };
+
+  
 
   const fetchExams = async () => {
     try {
@@ -4057,7 +4094,7 @@ const handleViewSubmissions = async (assignment) => {
   onClick={() => {
     setActiveTab('grading');
     setGradingType('exams');   // Auto-open Exams tab
-    fetchMyExams();            // Load exams immediately
+    fetchMyExams();           // Load exams immediately
   }}
 >
   📚 Grade Exams & Assignments
@@ -4724,7 +4761,7 @@ onClick={() => {
       </div>
     )}
   </div>
-)}
+
 
 {activeTab === 'grading' && isLecturer && (
   <div className="tab-content">
@@ -4826,7 +4863,7 @@ onClick={() => {
                   </thead>
                   <tbody>
                     {assignmentSubmissions.map(submission => (
-                      <tr key={submission.submission_id}>
+                     <tr key={submission.id}>
                         {bulkGrading && (
                           <td>
                             <input
@@ -4837,11 +4874,17 @@ onClick={() => {
                             />
                           </td>
                         )}
-                        <td>
-                          <strong>{submission.student_name || 'Unknown Student'}</strong>
-                          <br />
-                          <span className="small-text">{submission.student_email || 'No email'}</span>
-                        </td>
+                     <td>
+  <div>
+    <strong>{submission.student_name || 'Unknown Student'}</strong>
+  </div>
+  <div className="small-text" style={{ fontWeight: 'bold', color: '#1976d2' }}>
+    {submission.registration_number || 'N/A'}
+  </div>
+  <div className="small-text text-muted">
+    {submission.student_email || 'No email'}
+  </div>
+</td>
                         <td>
                           {submission.student_program || 'N/A'}
                           <br />
@@ -5166,11 +5209,17 @@ onClick={() => {
                   <tbody>
                     {examSubmissions.map(submission => (
                       <tr key={submission.id}>
-                        <td>
-                          <strong>{submission.student_name || 'Unknown Student'}</strong>
-                          <br />
-                          <span className="small-text">{submission.student_email || 'No email'}</span>
-                        </td>
+                     <td>
+  <div>
+    <strong>{submission.student_name || 'Unknown Student'}</strong>
+  </div>
+  <div className="small-text" style={{ fontWeight: 'bold', color: '#1976d2' }}>
+    {submission.registration_number || 'N/A'}
+  </div>
+  <div className="small-text text-muted">
+    {submission.student_email || 'No email'}
+  </div>
+</td>
                         <td>
                           {submission.submitted_at ? new Date(submission.submitted_at).toLocaleString() : 'Not submitted'}
                         </td>
@@ -5182,19 +5231,11 @@ onClick={() => {
                         <td>
                           {submission.file_download_urls?.length > 0 ? (
                             <div className="file-links">
-                              {submission.file_download_urls.map((url, idx) => (
-                                <a
-                                  key={idx}
-                                  href="#"
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    downloadFile(url, `Exam_${submission.student_name}_${idx + 1}.pdf`);
-                                  }}
-                                  className="file-link"
-                                >
-                                  📥 File {idx + 1}
-                                </a>
-                              ))}
+                          {submission.file_download_urls.map((url, i) => (
+  <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="btn btn-primary">
+    Download Answer File {i + 1}
+  </a>
+))}
                             </div>
                           ) : (
                             <span className="text-muted">No files</span>
@@ -5203,7 +5244,7 @@ onClick={() => {
                         <td>
                           {submission.status === 'graded' ? (
                             <span className="grade-display">
-                              {submission.marks_obtained || 0}/{selectedExamForGrading.total_marks}
+                              {submission.total_marks_obtained || 0}/{selectedExamForGrading.total_marks}
                             </span>
                           ) : submission.status === 'submitted' ? (
                             <input
@@ -5268,7 +5309,7 @@ onClick={() => {
                                   const { error } = await supabase
                                     .from('exam_submissions')
                                     .update({
-                                      marks_obtained: parseFloat(marks),
+                                      total_marks_obtained: parseFloat(marks),
                                       feedback,
                                       status: 'graded',
                                       graded_at: new Date().toISOString()
@@ -5331,7 +5372,7 @@ onClick={() => {
 
 
               
-            {/* Students Tab */}
+   
                        {/* Students Tab - IMPROVED WITH EDIT */}
           {activeTab === 'students' && (
   <div className="tab-content">
