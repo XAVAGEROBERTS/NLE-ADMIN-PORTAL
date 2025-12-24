@@ -1441,249 +1441,213 @@ const testStudentDataRetrieval = async () => {
   };
 
   // =================== ASSIGNMENT MANAGEMENT FUNCTIONS ===================
- const fetchMyAssignments = async () => {
-  if (!isLecturer) return;
- 
+const fetchMyAssignments = async () => {
+  if (!isLecturer || !profile?.id) return;
   console.log('DEBUG: Fetching assignments for lecturer:', profile.id);
-  
+
   try {
-    // First try the complex function
+    // === Try RPC first (your existing logic) ===
     const { data, error } = await supabase.rpc('get_lecturer_assignments', {
       p_lecturer_id: profile.id
     });
-    
-    console.log('DEBUG: RPC function result:', { data, error });
-    
-    if (error) {
-      console.error('RPC function error, trying simple version:', error);
-      
-      // Try simple function
-      const { data: simpleData, error: simpleError } = await supabase.rpc('get_lecturer_assignments_simple', {
-        p_lecturer_id: profile.id
-      });
-      
-      if (simpleError) {
-        console.error('Simple RPC also failed, using direct query:', simpleError);
-        
-        // Fallback to direct query
-        const { data: directData, error: directError } = await supabase
-          .from('assignments')
-          .select(`
-            id,
-            title,
-            description,
-            due_date,
-            total_marks,
-            status,
-            course_id,
-            courses!inner (
-              course_code,
-              course_name,
-              department_code
-            )
-          `)
-          .eq('lecturer_id', profile.id)
-          .order('due_date', { ascending: true });
-        
-        if (directError) {
-          console.error('Direct query error:', directError);
-          throw directError;
-        }
-        
-        console.log('DEBUG: Direct query result:', directData);
-        
-        // Process each assignment to get submission counts
-        const processedAssignments = await Promise.all(
-          (directData || []).map(async (assignment) => {
-            // Get submission counts
-            const { data: submissionsData, error: submissionsError } = await supabase
-              .from('assignment_submissions')
-              .select('id, status')
-              .eq('assignment_id', assignment.id);
-            
-            console.log(`DEBUG: Submissions for assignment ${assignment.id}:`, submissionsData);
-            
-            const submittedCount = submissionsData?.filter(s => s.status === 'submitted' || s.status === 'graded').length || 0;
-            const gradedCount = submissionsData?.filter(s => s.status === 'graded').length || 0;
-            
-            // Get total students in course
-            const { data: courseStudents } = await supabase
-              .from('student_courses')
-              .select('student_id')
-              .eq('course_id', assignment.course_id);
-            
-            const totalStudents = courseStudents?.length || 0;
-            
-            return {
-              assignment_id: assignment.id,
-              title: assignment.title,
-              description: assignment.description,
-              due_date: assignment.due_date,
-              total_marks: assignment.total_marks,
-              status: assignment.status,
-              course_code: assignment.courses?.course_code,
-              course_name: assignment.courses?.course_name,
-              department_code: assignment.courses?.department_code,
-              submitted_count: submittedCount,
-              not_submitted_count: totalStudents - submittedCount,
-              graded_count: gradedCount,
-              total_students: totalStudents,
-              submission_rate: totalStudents > 0 ? Math.round((submittedCount / totalStudents) * 100) : 0
-            };
-          })
-        );
-        
-        console.log('DEBUG: Processed assignments:', processedAssignments);
-        setMyAssignments(processedAssignments);
-        return;
-      }
-      
-      console.log('DEBUG: Simple RPC result:', simpleData);
-      
-      // Process simple data
-      const processedSimpleData = await Promise.all(
-        (simpleData || []).map(async (assignment) => {
-          // Get submission counts
-          const { data: submissionsData } = await supabase
+
+    let processedAssignments = [];
+
+    if (!error && data && data.length > 0) {
+      processedAssignments = data;
+    } else {
+      console.warn('RPC failed or no data, falling back to direct query');
+
+      // === Fallback: Direct query ===
+      const { data: directData, error: directError } = await supabase
+        .from('assignments')
+        .select(`
+          id,
+          title,
+          description,
+          due_date,
+          total_marks,
+          status,
+          course_id,
+          courses!inner (
+            course_code,
+            course_name,
+            department_code
+          )
+        `)
+        .eq('lecturer_id', profile.id);
+
+      if (directError) throw directError;
+
+      // Process submission stats for each assignment
+      processedAssignments = await Promise.all(
+        (directData || []).map(async (assignment) => {
+          const { data: subs } = await supabase
             .from('assignment_submissions')
             .select('id, status')
-            .eq('assignment_id', assignment.assignment_id);
-          
-          const submittedCount = submissionsData?.filter(s => s.status === 'submitted' || s.status === 'graded').length || 0;
-          const gradedCount = submissionsData?.filter(s => s.status === 'graded').length || 0;
-          
-          // Get total students in course (we need course_id - but we don't have it in simple data)
-          // We'll need to get the assignment to find course_id
-          const { data: fullAssignment } = await supabase
-            .from('assignments')
-            .select('course_id')
-            .eq('id', assignment.assignment_id)
-            .single();
-          
-          let totalStudents = 0;
-          if (fullAssignment?.course_id) {
-            const { data: courseStudents } = await supabase
-              .from('student_courses')
-              .select('student_id')
-              .eq('course_id', fullAssignment.course_id);
-            
-            totalStudents = courseStudents?.length || 0;
-          }
-          
+            .eq('assignment_id', assignment.id);
+
+          const submittedCount = subs?.filter(s => s.status === 'submitted' || s.status === 'graded').length || 0;
+          const gradedCount = subs?.filter(s => s.status === 'graded').length || 0;
+
+          const { data: enrolled } = await supabase
+            .from('student_courses')
+            .select('student_id')
+            .eq('course_id', assignment.course_id);
+
+          const totalStudents = enrolled?.length || 0;
+
           return {
-            ...assignment,
+            assignment_id: assignment.id,
+            title: assignment.title,
+            description: assignment.description,
+            due_date: assignment.due_date,
+            total_marks: assignment.total_marks,
+            status: assignment.status,
+            course_code: assignment.courses?.course_code || 'N/A',
+            course_name: assignment.courses?.course_name || 'N/A',
+            department_code: assignment.courses?.department_code || 'N/A',
             submitted_count: submittedCount,
-            not_submitted_count: totalStudents - submittedCount,
             graded_count: gradedCount,
+            not_submitted_count: totalStudents - submittedCount,
             total_students: totalStudents,
             submission_rate: totalStudents > 0 ? Math.round((submittedCount / totalStudents) * 100) : 0
           };
         })
       );
-      
-      console.log('DEBUG: Processed simple data:', processedSimpleData);
-      setMyAssignments(processedSimpleData);
-      return;
     }
-    
-    console.log('DEBUG: RPC function successful:', data);
-    setMyAssignments(data || []);
-    
+
+    // === CLIENT-SIDE SORTING: Today first, then newest → oldest ===
+    const now = new Date();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const sortedAssignments = processedAssignments.sort((a, b) => {
+      const dueA = new Date(a.due_date);
+      const dueB = new Date(b.due_date);
+
+      const isTodayA = dueA.toDateString() === today.toDateString();
+      const isTodayB = dueB.toDateString() === today.toDateString();
+
+      // Today’s assignments on top
+      if (isTodayA && !isTodayB) return -1;
+      if (!isTodayA && isTodayB) return 1;
+
+      // Otherwise: newest due date first
+      return dueB - dueA;
+    });
+
+    console.log('✅ Assignments sorted (today on top):', sortedAssignments);
+    setMyAssignments(sortedAssignments);
+
   } catch (error) {
-    console.error('Error fetching my assignments:', error);
-    
-    // Last resort: get basic assignments only
-    try {
-      const { data: basicAssignments } = await supabase
-        .from('assignments')
-        .select('id, title, due_date, total_marks, status')
-        .eq('lecturer_id', profile.id);
-      
-      console.log('DEBUG: Basic assignments fallback:', basicAssignments);
-      
-      const formattedAssignments = (basicAssignments || []).map(a => ({
-        assignment_id: a.id,
-        title: a.title,
-        due_date: a.due_date,
-        total_marks: a.total_marks,
-        status: a.status,
-        course_code: 'N/A',
-        course_name: 'N/A',
-        department_code: 'N/A',
-        submitted_count: 0,
-        not_submitted_count: 0,
-        graded_count: 0,
-        total_students: 0,
-        submission_rate: 0
-      }));
-      
-      setMyAssignments(formattedAssignments);
-    } catch (fallbackError) {
-      console.error('Complete failure:', fallbackError);
-      setMyAssignments([]);
-    }
+    console.error('Error in fetchMyAssignments:', error);
+    setMyAssignments([]);
   }
 };
 
   
 const fetchAssignmentSubmissions = async (assignmentId) => {
-  if (!assignmentId) return;
+  if (!assignmentId) {
+    console.error('No assignment ID provided');
+    setAssignmentSubmissions([]);
+    return;
+  }
+
   try {
+    console.log('Fetching submissions for assignment:', assignmentId);
+
     const { data: submissions, error } = await supabase
       .from('assignment_submissions')
       .select('id, assignment_id, student_id, submission_date, status, file_urls, marks_obtained, feedback, graded_at, graded_by')
       .eq('assignment_id', assignmentId)
       .order('submission_date', { ascending: false });
+
     if (error) throw error;
-if (submissions.length > 0) {
-  const studentUuids = [...new Set(submissions.map(s => s.student_id))];
-  console.log('🔍 Looking up students with UUIDs:', studentUuids);
-  const { data: students, error: studentError } = await supabase
-    .from('students')
-    .select('id, full_name, email, student_id')
-    .in('id', studentUuids);
-  if (studentError) {
-    console.error('Error fetching students:', studentError);
-  }
-  console.log('✅ Found students:', students);
-const studentMap = {};
-students?.forEach(stu => {
-  studentMap[String(stu.id)] = {
-    name: stu.full_name || 'Unknown Student',
-    email: stu.email || 'No email',
-    reg: stu.student_id || 'N/A'
-  };
-});
-submissions.forEach(sub => {
-  const info = studentMap[String(sub.student_id)];
-  if (info) {
-    sub.student_name = info.name;
-    sub.student_email = info.email;
-    sub.registration_number = info.reg;
-  } else {
-    console.warn('No match for student UUID:', sub.student_id);
-    sub.student_name = 'Unknown Student';
-    sub.student_email = 'No email';
-    sub.registration_number = 'N/A';
-  }
-});
-}
-    setAssignmentSubmissions(submissions);
-    console.log('Loaded assignment submissions:', submissions);
+
+    if (!submissions || submissions.length === 0) {
+      setAssignmentSubmissions([]);
+      setGradeForm({});
+      console.log('No submissions found');
+      return;
+    }
+
+    // === Fetch student details ===
+    const studentUuids = [...new Set(submissions.map(s => s.student_id))];
+    console.log('Looking up students:', studentUuids);
+
+    const { data: students, error: studentError } = await supabase
+      .from('students')
+      .select('id, full_name, email, student_id')
+      .in('id', studentUuids);
+
+    if (studentError) {
+      console.error('Error fetching students:', studentError);
+    }
+
+    const studentMap = {};
+    students?.forEach(stu => {
+      studentMap[String(stu.id)] = {
+        name: stu.full_name || 'Unknown Student',
+        email: stu.email || 'No email',
+        reg: stu.student_id || 'N/A'
+      };
+    });
+
+    // === Generate proper public download URLs ===
+    const projectRef = supabase.supabaseUrl.split('//')[1].split('.')[0];
+
+    const processedSubmissions = submissions.map(sub => {
+      const studentInfo = studentMap[String(sub.student_id)] || {
+        name: 'Unknown Student',
+        email: 'No email',
+        reg: 'N/A'
+      };
+
+      const fileDownloadUrls = (sub.file_urls || []).map(filePath => {
+        if (!filePath) return '';
+        if (filePath.startsWith('http')) return filePath;
+
+        const cleanPath = filePath.startsWith('/') ? filePath.slice(1) : filePath;
+        return `https://${projectRef}.supabase.co/storage/v1/object/public/assignments/${cleanPath}`;
+      }).filter(url => url);
+
+      return {
+        submission_id: sub.id,                    // ← Safe UUID (used everywhere)
+        student_id: sub.student_id,
+        student_name: studentInfo.name,
+        student_email: studentInfo.email,
+        registration_number: studentInfo.reg,
+        submission_date: sub.submission_date,
+        status: sub.status || 'submitted',
+        file_urls: sub.file_urls || [],
+        file_download_urls: fileDownloadUrls,     // ← Now correctly generated
+        marks_obtained: sub.marks_obtained,
+        feedback: sub.feedback,
+        graded_at: sub.graded_at
+      };
+    });
+
+    console.log('Processed submissions with download URLs:', processedSubmissions);
+    setAssignmentSubmissions(processedSubmissions);
+
+    // === Initialize grading form using safe submission_id ===
     const initialForm = {};
-    submissions.forEach(sub => {
-      initialForm[sub.id] = {
+    processedSubmissions.forEach(sub => {
+      initialForm[sub.submission_id] = {
         marks: sub.marks_obtained?.toString() || '',
         feedback: sub.feedback || ''
       };
     });
     setGradeForm(initialForm);
+
   } catch (err) {
-    console.error('Error:', err);
+    console.error('Error in fetchAssignmentSubmissions:', err);
     alert('Failed to load submissions: ' + err.message);
+    setAssignmentSubmissions([]);
+    setGradeForm({});
   }
-}; 
-  
+};
 
 const fetchExamSubmissions = async (examId) => {
   if (!examId) {
@@ -1758,50 +1722,41 @@ const fetchMyExams = async () => {
     setMyExams([]);
     return;
   }
-
   console.log('🔍 Starting fetchMyExams for lecturer:', profile.id);
 
   try {
     // === Step 1: Get course IDs ===
     let courseIds = [];
-
-    const { data: lecturerCourses, error: lecError } = await supabase
+    const { data: lecturerCourses } = await supabase
       .from('courses')
       .select('id')
       .eq('lecturer_id', profile.id);
 
-    if (lecError) {
-      console.warn('No courses found via lecturer_id, trying department fallback:', lecError);
-    } else if (lecturerCourses?.length > 0) {
+    if (lecturerCourses?.length > 0) {
       courseIds = lecturerCourses.map(c => c.id);
-      console.log('Found courses via lecturer_id:', courseIds);
     }
 
-    // Fallback to department access
     if (courseIds.length === 0 && departmentCodes?.length > 0) {
-      console.log('Using department fallback:', departmentCodes);
       const { data: deptCourses } = await supabase
         .from('courses')
         .select('id')
         .in('department_code', departmentCodes);
-
       courseIds = deptCourses?.map(c => c.id) || [];
-      console.log('Courses from department:', courseIds);
     }
 
     if (courseIds.length === 0) {
-      console.log('No courses found for this lecturer');
       setMyExams([]);
       return;
     }
 
-    // === Step 2: Fetch exams ===
+    // === Step 2: Fetch exams (no order here) ===
     const { data: exams, error: examsError } = await supabase
       .from('examinations')
       .select(`
         id,
         title,
         start_time,
+        end_time,
         total_marks,
         course_id,
         courses!inner (
@@ -1810,38 +1765,22 @@ const fetchMyExams = async () => {
           department_code
         )
       `)
-      .in('course_id', courseIds)
-      .order('start_time', { ascending: true });
+      .in('course_id', courseIds);
 
-    if (examsError) {
-      console.error('Error fetching exams:', examsError);
-      throw examsError;
-    }
-
+    if (examsError) throw examsError;
     if (!exams || exams.length === 0) {
-      console.log('No exams found');
       setMyExams([]);
       return;
     }
 
-    console.log(`Found ${exams.length} exams`);
-
     const examIds = exams.map(e => e.id);
-    console.log('Exam IDs for submission query:', examIds);
 
-    // === Step 3: Fetch submission stats (using correct column: exam_id) ===
-    const { data: submissions, error: subError } = await supabase
+    // === Step 3: Fetch submission stats ===
+    const { data: submissions } = await supabase
       .from('exam_submissions')
       .select('exam_id, status')
       .in('exam_id', examIds);
 
-    if (subError) {
-      console.error('Error fetching exam submissions:', subError);
-    }
-
-    console.log(`Fetched ${submissions?.length || 0} exam submissions`);
-
-    // === Step 4: Build stats map ===
     const statsMap = {};
     examIds.forEach(id => {
       statsMap[id] = { submitted: 0, graded: 0, pending: 0 };
@@ -1850,41 +1789,68 @@ const fetchMyExams = async () => {
     (submissions || []).forEach(sub => {
       const stats = statsMap[sub.exam_id];
       if (stats) {
-        if (sub.status === 'submitted' || sub.status === 'graded') {
-          stats.submitted++;
-        }
-        if (sub.status === 'graded') {
-          stats.graded++;
-        }
+        if (sub.status === 'submitted' || sub.status === 'graded') stats.submitted++;
+        if (sub.status === 'graded') stats.graded++;
         stats.pending = stats.submitted - stats.graded;
       }
     });
 
-    console.log('Final stats map:', statsMap);
+    // === Step 4: Process and sort client-side ===
+    const now = new Date();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
-    // === Step 5: Combine exam data with stats ===
     const processedExams = exams.map(exam => ({
       exam_id: exam.id,
       title: exam.title || 'Untitled Exam',
       course_code: exam.courses?.course_code || 'N/A',
       course_name: exam.courses?.course_name || 'N/A',
-      department_code: exam.courses?.department_code || 'ENG',
+      department_code: exam.courses?.department_code || 'N/A',
       start_time: exam.start_time,
+      end_time: exam.end_time,
       total_marks: exam.total_marks || 100,
       submitted: statsMap[exam.id]?.submitted || 0,
       graded: statsMap[exam.id]?.graded || 0,
-      pending: statsMap[exam.id]?.pending || 0
+      pending: statsMap[exam.id]?.pending || 0,
+      _startDate: new Date(exam.start_time),
+      _endDate: new Date(exam.end_time)
     }));
 
-    console.log('✅ Setting myExams with correct stats:', processedExams);
-    setMyExams(processedExams);
+    // === SMART SORTING: Active → Today → Future (soonest) → Past (most recent) ===
+    const sortedExams = processedExams.sort((a, b) => {
+      const isActiveA = now >= a._startDate && now <= a._endDate;
+      const isActiveB = now >= b._startDate && now <= b._endDate;
+
+      // Active exams always first
+      if (isActiveA && !isActiveB) return -1;
+      if (!isActiveA && isActiveB) return 1;
+
+      // Then today’s exams (even if not active yet)
+      const isTodayA = a._startDate.toDateString() === today.toDateString();
+      const isTodayB = b._startDate.toDateString() === today.toDateString();
+
+      if (isTodayA && !isTodayB) return -1;
+      if (!isTodayA && isTodayB) return 1;
+
+      // Future exams: soonest first
+      if (a._startDate > today && b._startDate > today) {
+        return a._startDate - b._startDate;
+      }
+
+      // Past exams: most recent first
+      return b._endDate - a._endDate;
+    });
+
+    console.log('✅ Exams sorted (active/today on top):', sortedExams);
+    setMyExams(sortedExams);
 
   } catch (error) {
-    console.error('Unexpected error in fetchMyExams:', error);
+    console.error('Error in fetchMyExams:', error);
     setMyExams([]);
+  } finally {
+    setLoadingAssignments(false);
   }
 };
-  
   
   useEffect(() => {
   if (activeTab === 'grade-exams' && isLecturer && profile?.id) {
@@ -4858,7 +4824,6 @@ onClick={() => {
             )}
 
            
-
 {/* ==================== GRADE ASSIGNMENTS TAB ==================== */}
 {activeTab === 'grade-assignments' && isLecturer && (
   <div className="tab-content">
@@ -4874,8 +4839,8 @@ onClick={() => {
       </div>
     </div>
 
+    {/* Selected Assignment - Full Grading View */}
     {selectedAssignment ? (
-      /* === Full Submissions View === */
       <div className="grading-content">
         <div className="assignment-header blue-theme">
           <h3>{selectedAssignment.title}</h3>
@@ -4908,7 +4873,7 @@ onClick={() => {
           </div>
         </div>
 
-        {/* Submissions Table - SAME AS BEFORE */}
+        {/* Submissions Table */}
         <div className="submissions-list">
           {assignmentSubmissions.length > 0 ? (
             <div className="table-container">
@@ -4927,7 +4892,7 @@ onClick={() => {
                 </thead>
                 <tbody>
                   {assignmentSubmissions.map(submission => (
-                    <tr key={submission.id}>
+                    <tr key={submission.submission_id}>
                       <td>
                         <div><strong>{submission.student_name || 'Unknown Student'}</strong></div>
                         <div className="small-text" style={{ fontWeight: 'bold', color: '#1976d2' }}>
@@ -4943,62 +4908,118 @@ onClick={() => {
                         {submission.submission_date ? (
                           <>
                             {new Date(submission.submission_date).toLocaleDateString()}<br/>
-                            <span className={`small-text ${submission.late_submission ? 'late' : ''}`}>
+                            <span className="small-text">
                               {new Date(submission.submission_date).toLocaleTimeString()}
                             </span>
                           </>
                         ) : <span className="text-muted">Not submitted</span>}
                       </td>
-                      <td><span className={`status-badge ${submission.status || 'not_submitted'}`}>{submission.status || 'Not Submitted'}</span></td>
+                      <td>
+                        <span className={`status-badge ${submission.status || 'not_submitted'}`}>
+                          {submission.status === 'graded' ? 'Graded' : submission.status === 'submitted' ? 'Submitted' : 'Not Submitted'}
+                        </span>
+                      </td>
                       <td>
                         {submission.file_download_urls && submission.file_download_urls.length > 0 ? (
                           <div className="file-links">
                             {submission.file_download_urls.map((url, idx) => {
-                              const originalUrl = submission.file_urls?.[idx] || url;
-                              const fileName = getFileNameFromUrl(originalUrl);
-                              const fileExt = getFileExtension(originalUrl);
+                              const fileName = getFileNameFromUrl(submission.file_urls?.[idx] || url);
+                              const fileExt = getFileExtension(submission.file_urls?.[idx] || url);
                               const displayName = `File ${idx + 1}.${fileExt}`;
                               return (
                                 <div key={idx} className="file-download-item">
-                                  <a href="#" onClick={(e) => { e.preventDefault(); downloadFile(url, `${submission.student_name}_${displayName}`, submission.submission_id); }} className="file-link">
+                                  <a
+                                    href="#"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      downloadFile(url, `${submission.student_name}_${displayName}`, submission.submission_id);
+                                    }}
+                                    className="file-link"
+                                  >
                                     📥 {displayName}
                                   </a>
                                 </div>
                               );
                             })}
-                            <button className="download-all-btn" onClick={() => downloadAllFilesForSubmission(submission)} disabled={batchDownloading}>
+                            <button
+                              className="download-all-btn"
+                              onClick={() => downloadAllFilesForSubmission(submission)}
+                              disabled={batchDownloading}
+                            >
                               📦 Download All
                             </button>
                           </div>
-                        ) : <span className="text-muted">No files</span>}
+                        ) : (
+                          <span className="text-muted">No files</span>
+                        )}
                       </td>
-                 <td>
-  {(submission.status === 'graded' || submission.status === 'submitted') ? (
-    <input type="number" min="0" max={selectedAssignment.total_marks} step="0.5"
-      value={gradeForm[submission.id]?.marks || ''}
-      onChange={(e) => setGradeForm(prev => ({ ...prev, [submission.id]: { ...prev[submission.id], marks: e.target.value } }))}
-      placeholder="Marks" className="small-input"/>
-  ) : <span className="text-muted">-</span>}
-</td>
-                   <td>
-  {(submission.status === 'graded' || submission.status === 'submitted') ? (
-    <textarea value={gradeForm[submission.id]?.feedback || ''}
-      onChange={(e) => setGradeForm(prev => ({ ...prev, [submission.id]: { ...prev[submission.id], feedback: e.target.value } }))}
-      rows="2" className="small-textarea"/>
-  ) : <span className="text-muted">-</span>}
-</td>
-                   <td>
-  {(submission.status === 'submitted' || submission.status === 'graded') && (
-    <button className="action-btn grade" onClick={async () => {
-      const marks = gradeForm[submission.id]?.marks;
-      const feedback = gradeForm[submission.id]?.feedback || '';
-      if (!marks) return alert('Enter marks');
-      const success = await handleGradeSubmission(submission.id, parseFloat(marks), feedback);
-    }}>
-      {submission.status === 'graded' ? 'Update Grade' : 'Grade'}
-    </button>
-  )}
-</td>
+                      <td>
+                        {(submission.status === 'graded' || submission.status === 'submitted') ? (
+                          <input
+                            type="number"
+                            min="0"
+                            max={selectedAssignment.total_marks}
+                            step="0.5"
+                            value={gradeForm[submission.submission_id]?.marks || ''}
+                            onChange={(e) => setGradeForm(prev => ({
+                              ...prev,
+                              [submission.submission_id]: { ...prev[submission.submission_id], marks: e.target.value }
+                            }))}
+                            placeholder="Marks"
+                            className="small-input"
+                          />
+                        ) : (
+                          <span className="text-muted">-</span>
+                        )}
+                      </td>
+                      <td>
+                        {(submission.status === 'graded' || submission.status === 'submitted') ? (
+                          <textarea
+                            value={gradeForm[submission.submission_id]?.feedback || ''}
+                            onChange={(e) => setGradeForm(prev => ({
+                              ...prev,
+                              [submission.submission_id]: { ...prev[submission.submission_id], feedback: e.target.value }
+                            }))}
+                            rows="2"
+                            className="small-textarea"
+                            placeholder="Feedback..."
+                          />
+                        ) : (
+                          <span className="text-muted">-</span>
+                        )}
+                      </td>
+                      <td>
+                        {(submission.status === 'submitted' || submission.status === 'graded') && (
+                          <button
+                            className="action-btn grade"
+                            onClick={async () => {
+                              const marksInput = gradeForm[submission.submission_id]?.marks;
+                              const feedback = gradeForm[submission.submission_id]?.feedback || '';
+
+                              if (!marksInput || marksInput.trim() === '') {
+                                alert('Please enter marks');
+                                return;
+                              }
+
+                              const success = await handleGradeSubmission(
+                                submission.submission_id,
+                                parseFloat(marksInput),
+                                feedback
+                              );
+
+                              if (success) {
+                                // Clear form after successful grading
+                                setGradeForm(prev => ({
+                                  ...prev,
+                                  [submission.submission_id]: { marks: '', feedback: '' }
+                                }));
+                              }
+                            }}
+                          >
+                            {submission.status === 'graded' ? 'Update Grade' : 'Grade'}
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -5014,46 +5035,54 @@ onClick={() => {
         {/* Export Buttons */}
         {assignmentSubmissions.length > 0 && (
           <div className="export-options">
-            <button className="export-button" onClick={downloadSubmissionsCSV}>📥 Export CSV</button>
-            <button className="export-button" onClick={downloadAllSubmissions} disabled={batchDownloading}>📦 Download All Files</button>
+            <button className="export-button" onClick={downloadSubmissionsCSV}>
+              📥 Export CSV
+            </button>
+            <button
+              className="export-button"
+              onClick={downloadAllSubmissions}
+              disabled={batchDownloading}
+            >
+              📦 Download All Files
+            </button>
           </div>
         )}
       </div>
     ) : (
-      /* === List of Assignments === */
-     <div className="assignments-grid">
-  {myAssignments.length > 0 ? (
-    myAssignments.map(assignment => (
-      <div key={assignment.assignment_id} className="assignment-card">
-        <h4>{assignment.title}</h4>
-        <p>{assignment.course_code} - {assignment.course_name}</p>
-        <p>Due: {new Date(assignment.due_date).toLocaleDateString()}</p>
-        <p>
-          Submitted: <strong>{assignment.submitted_count || 0}</strong> | 
-          Graded: <strong>{assignment.graded_count || 0}</strong> | 
-          Pending: <strong>{(assignment.submitted_count || 0) - (assignment.graded_count || 0)}</strong>
-        </p>
-        <button
-          className="action-btn view"
-          onClick={() => handleViewSubmissions({
-            id: assignment.assignment_id,
-            title: assignment.title,
-            total_marks: assignment.total_marks,
-            course_code: assignment.course_code,
-            course_name: assignment.course_name,
-            due_date: assignment.due_date
-          })}
-        >
-          View Submissions
-        </button>
+      /* List of My Assignments */
+      <div className="assignments-grid">
+        {myAssignments.length > 0 ? (
+          myAssignments.map(assignment => (
+            <div key={assignment.assignment_id} className="assignment-card">
+              <h4>{assignment.title}</h4>
+              <p>{assignment.course_code} - {assignment.course_name}</p>
+              <p>Due: {new Date(assignment.due_date).toLocaleDateString()}</p>
+              <p>
+                Submitted: <strong>{assignment.submitted_count || 0}</strong> |
+                Graded: <strong>{assignment.graded_count || 0}</strong> |
+                Pending: <strong>{(assignment.submitted_count || 0) - (assignment.graded_count || 0)}</strong>
+              </p>
+              <button
+                className="action-btn view"
+                onClick={() => handleViewSubmissions({
+                  id: assignment.assignment_id,
+                  title: assignment.title,
+                  total_marks: assignment.total_marks,
+                  course_code: assignment.course_code,
+                  course_name: assignment.course_name,
+                  due_date: assignment.due_date
+                })}
+              >
+                View Submissions
+              </button>
+            </div>
+          ))
+        ) : (
+          <div className="empty-state">
+            <p>No assignments to grade</p>
+          </div>
+        )}
       </div>
-    ))
-  ) : (
-    <div className="empty-state">
-      <p>No assignments to grade</p>
-    </div>
-  )}
-</div>
     )}
   </div>
 )}
