@@ -133,6 +133,101 @@ const [studentsToComplete, setStudentsToComplete] = useState([]);
 const [selectedCoursesForCompletion, setSelectedCoursesForCompletion] = useState([]);
 const [markingInProgress, setMarkingInProgress] = useState(false);
 
+  
+
+  // === ADD THIS STATE NEAR OTHER STATES (around line 100) ===
+const [showProgramModal, setShowProgramModal] = useState(false);
+const [editingProgram, setEditingProgram] = useState(null);
+const [newProgram, setNewProgram] = useState({
+  name: '',
+  code: ''
+});
+
+// === ADD THIS useEffect to load programs on mount and when tab opens ===
+useEffect(() => {
+  if (activeTab === 'programs' && isAdmin) {
+    fetchPrograms();
+  }
+}, [activeTab, isAdmin]);
+
+// === ADD FETCH PROGRAMS FUNCTION ===
+// const fetchPrograms = async () => {
+//   try {
+//     const { data, error } = await supabase
+//       .from('programs')
+//       .select('id, name, code')
+//       .order('name');
+//     if (error) throw error;
+//     setPrograms(data || []);
+//   } catch (err) {
+//     console.error('Error loading programs:', err);
+//     alert('Failed to load programs: ' + err.message);
+//   }
+// };
+
+// === ADD HANDLE SAVE PROGRAM FUNCTION ===
+const handleSaveProgram = async () => {
+  if (!newProgram.name.trim() || !newProgram.code.trim()) {
+    alert('Both name and code are required');
+    return;
+  }
+
+  try {
+    if (editingProgram) {
+      const { error } = await supabase
+        .from('programs')
+        .update({
+          name: newProgram.name.trim(),
+          code: newProgram.code.trim().toUpperCase()
+        })
+        .eq('id', editingProgram.id);
+      if (error) throw error;
+      alert('Program updated successfully!');
+    } else {
+      const { error } = await supabase
+        .from('programs')
+        .insert([{
+          name: newProgram.name.trim(),
+          code: newProgram.code.trim().toUpperCase()
+        }]);
+      if (error) {
+        if (error.code === '23505') {
+          alert('A program with this code already exists!');
+        } else {
+          throw error;
+        }
+        return;
+      }
+      alert('Program added successfully!');
+    }
+
+    setShowProgramModal(false);
+    setEditingProgram(null);
+    setNewProgram({ name: '', code: '' });
+    fetchPrograms(); // Refresh list
+  } catch (err) {
+    alert('Error saving program: ' + err.message);
+  }
+};
+
+// === ADD HANDLE DELETE PROGRAM ===
+const handleDeleteProgram = async (programId, programName) => {
+  if (!window.confirm(`Delete program "${programName}"?\n\nThis cannot be undone and may affect students/courses.`)) {
+    return;
+  }
+
+  try {
+    const { error } = await supabase
+      .from('programs')
+      .delete()
+      .eq('id', programId);
+    if (error) throw error;
+    alert('Program deleted successfully');
+    fetchPrograms();
+  } catch (err) {
+    alert('Failed to delete program: ' + err.message);
+  }
+};
 // === NEW FUNCTIONS ===
 const getAdminExamStatus = (exam) => {
   const now = new Date();
@@ -4249,6 +4344,16 @@ const handleViewSubmissions = async (assignment) => {
             >
               ⏰ Timetables
             </button>
+
+
+            {isAdmin && (
+  <button
+    className={`nav-item ${activeTab === 'programs' ? 'active' : ''}`}
+    onClick={() => setActiveTab('programs')}
+  >
+    🎓 Programs
+  </button>
+)}
             <button
               className={`nav-item ${activeTab === 'attendance' ? 'active' : ''}`}
               onClick={() => setActiveTab('attendance')}
@@ -6769,6 +6874,136 @@ onClick={() => {
           
           
         )}
+
+
+{/* Programs Tab - Admin Only */}
+{activeTab === 'programs' && isAdmin && (
+  <div className="tab-content">
+    <div className="tab-header">
+      <h2>🎓 Program Management</h2>
+      <button
+        className="add-button"
+        onClick={() => {
+          setEditingProgram(null);
+          setNewProgram({ name: '', code: '' });
+          setShowProgramModal(true);
+        }}
+      >
+        + Add Program
+      </button>
+    </div>
+
+    <div className="table-container">
+      {programs.length === 0 ? (
+        <div className="empty-state">
+          <p>No programs defined yet</p>
+          <button
+            className="add-button"
+            onClick={() => setShowProgramModal(true)}
+          >
+            Create First Program
+          </button>
+        </div>
+      ) : (
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Program Name</th>
+              <th>Code</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {programs.map(program => (
+              <tr key={program.id}>
+                <td><strong>{program.name}</strong></td>
+                <td>
+                  <span className="dept-badge">{program.code}</span>
+                </td>
+                <td>
+                  <div className="action-buttons flat">
+                    <button
+                      className="action-btn edit small"
+                      onClick={() => {
+                        setEditingProgram(program);
+                        setNewProgram({
+                          name: program.name,
+                          code: program.code
+                        });
+                        setShowProgramModal(true);
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="action-btn delete small"
+                      onClick={() => handleDeleteProgram(program.id, program.name)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  </div>
+        )}
+        
+        {/* Program Modal */}
+{showProgramModal && (
+  <div className="modal-overlay">
+    <div className="modal">
+      <h3>{editingProgram ? 'Edit' : 'Add New'} Program</h3>
+      <div className="modal-form">
+        <div className="form-group">
+          <label>Program Name *</label>
+          <input
+            type="text"
+            value={newProgram.name}
+            onChange={(e) => setNewProgram({ ...newProgram, name: e.target.value })}
+            placeholder="e.g. Bachelor of Science in Computer Engineering"
+            className="form-input"
+          />
+        </div>
+        <div className="form-group">
+          <label>Program Code *</label>
+          <input
+            type="text"
+            value={newProgram.code}
+            onChange={(e) => setNewProgram({
+              ...newProgram,
+              code: e.target.value.toUpperCase().replace(/\s/g, '')
+            })}
+            placeholder="e.g. BSCE"
+            className="form-input"
+          />
+          <small>No spaces, uppercase recommended</small>
+        </div>
+        <div className="modal-actions">
+          <button
+            className="cancel-button"
+            onClick={() => {
+              setShowProgramModal(false);
+              setEditingProgram(null);
+              setNewProgram({ name: '', code: '' });
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            className="confirm-button"
+            onClick={handleSaveProgram}
+          >
+            {editingProgram ? 'Update' : 'Add'} Program
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
 {/* === TUTORIALS UPLOAD MODAL (WITH PROGRAM + COURSE + COHORT) === */}
 {showTutorialsModal && (
   <div className="modal-overlay">
