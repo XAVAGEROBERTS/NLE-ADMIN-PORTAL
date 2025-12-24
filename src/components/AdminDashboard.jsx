@@ -60,9 +60,9 @@ const [selectedCohort, setSelectedCohort] = useState({
 });
   const [cohortError, setCohortError] = useState('');
 // NEW: Exam submissions states
+const [loadingAssignments, setLoadingAssignments] = useState(true);
 
-
- const [gradingType, setGradingType] = useState('assignments'); 
+ 
 const [myExams, setMyExams] = useState([]); // lecturer's scheduled exams
 const [examSubmissions, setExamSubmissions] = useState([]); // student submissions
 const [selectedExamForGrading, setSelectedExamForGrading] = useState(null); // currently viewed exam
@@ -227,10 +227,31 @@ const fetchStudentsForCompletion = async () => {
     setStudentsToComplete([]);
   }
   };
+
+
+  // 1. Load immediately when tab is activated
+useEffect(() => {
+  if (activeTab === 'grade-assignments' && isLecturer && profile?.id) {
+    console.log('→ Grade Assignments tab opened – loading assignments');
+    fetchMyAssignments();
+  }
+}, [activeTab, isLecturer, profile?.id]);
+
+// 2. Pre-load on login so it's ready instantly (optional but great)
+useEffect(() => {
+  if (isLecturer && profile?.id && myAssignments.length === 0) {
+    fetchMyAssignments();
+  }
+}, [isLecturer, profile?.id]);
+  // CRITICAL FIX: Load assignments immediately when tab becomes active
+useEffect(() => {
+  if (activeTab === 'grade-assignments' && isLecturer && profile?.id) {
+    console.log('Grade Assignments tab activated → fetching assignments NOW');
+    fetchMyAssignments();
+  }
+}, [activeTab, isLecturer, profile?.id]); // ← profile?.id ensures it runs when profile loads
+
   
-
-  // Filter courses for the selected exam program
-
   
 // Run when filters change
 useEffect(() => {
@@ -1607,29 +1628,23 @@ const testStudentDataRetrieval = async () => {
   
 const fetchAssignmentSubmissions = async (assignmentId) => {
   if (!assignmentId) return;
-
   try {
     const { data: submissions, error } = await supabase
       .from('assignment_submissions')
       .select('id, assignment_id, student_id, submission_date, status, file_urls, marks_obtained, feedback, graded_at, graded_by')
       .eq('assignment_id', assignmentId)
       .order('submission_date', { ascending: false });
-
     if (error) throw error;
-
 if (submissions.length > 0) {
   const studentUuids = [...new Set(submissions.map(s => s.student_id))];
   console.log('🔍 Looking up students with UUIDs:', studentUuids);
-
   const { data: students, error: studentError } = await supabase
     .from('students')
     .select('id, full_name, email, student_id')
     .in('id', studentUuids);
-
   if (studentError) {
     console.error('Error fetching students:', studentError);
   }
-
   console.log('✅ Found students:', students);
 const studentMap = {};
 students?.forEach(stu => {
@@ -1639,7 +1654,6 @@ students?.forEach(stu => {
     reg: stu.student_id || 'N/A'
   };
 });
-
 submissions.forEach(sub => {
   const info = studentMap[String(sub.student_id)];
   if (info) {
@@ -1656,22 +1670,26 @@ submissions.forEach(sub => {
 }
     setAssignmentSubmissions(submissions);
     console.log('Loaded assignment submissions:', submissions);
-
+    const initialForm = {};
+    submissions.forEach(sub => {
+      initialForm[sub.id] = {
+        marks: sub.marks_obtained?.toString() || '',
+        feedback: sub.feedback || ''
+      };
+    });
+    setGradeForm(initialForm);
   } catch (err) {
     console.error('Error:', err);
     alert('Failed to load submissions: ' + err.message);
   }
-};  
+}; 
   
 
-
-  
 const fetchExamSubmissions = async (examId) => {
   if (!examId) {
     setExamSubmissions([]);
     return;
   }
-
   try {
     // Fetch submissions
     const { data: submissions, error } = await supabase
@@ -1679,22 +1697,18 @@ const fetchExamSubmissions = async (examId) => {
       .select('*')
       .eq('exam_id', examId)
       .order('submitted_at', { ascending: false });
-
     if (error) throw error;
     if (!submissions || submissions.length === 0) {
       setExamSubmissions([]);
       return;
     }
-
     // Get unique student UUIDs
     const studentUuids = [...new Set(submissions.map(s => s.student_id))];
-
     // Fetch student details: name, email, registration number
     const { data: students } = await supabase
       .from('students')
       .select('id, full_name, email, student_id')
       .in('id', studentUuids);
-
     const studentMap = {};
     students?.forEach(stu => {
       studentMap[stu.id] = {
@@ -1703,7 +1717,6 @@ const fetchExamSubmissions = async (examId) => {
         registration_number: stu.student_id || 'N/A'
       };
     });
-
     // Process with student info
     const processed = submissions.map(sub => {
       const student = studentMap[sub.student_id] || {
@@ -1711,7 +1724,6 @@ const fetchExamSubmissions = async (examId) => {
         email: 'No email',
         registration_number: 'N/A'
       };
-
       return {
         id: sub.id,
         student_name: student.full_name,
@@ -1724,50 +1736,58 @@ const fetchExamSubmissions = async (examId) => {
         feedback: sub.feedback || ''
       };
     });
-
     setExamSubmissions(processed);
-
+    const initialForm = {};
+    processed.forEach(sub => {
+      initialForm[sub.id] = {
+        marks: sub.total_marks_obtained?.toString() || '',
+        feedback: sub.feedback || ''
+      };
+    });
+    setExamGradeForm(initialForm);
   } catch (err) {
     console.error('Error:', err);
     setExamSubmissions([]);
   }
-};
-
+  };
+  
+  
 const fetchMyExams = async () => {
   if (!isLecturer || !profile?.id) {
-    console.log('No lecturer ID or not lecturer');
+    console.log('fetchMyExams: Not a lecturer or no profile');
     setMyExams([]);
     return;
   }
 
-  console.log('🔍 Fetching exams for lecturer ID:', profile.id);
+  console.log('🔍 Starting fetchMyExams for lecturer:', profile.id);
 
   try {
-    // Step 1: Get courses taught by this lecturer (preferred method)
-    const { data: lecturerCourses, error: coursesError } = await supabase
+    // === Step 1: Get course IDs ===
+    let courseIds = [];
+
+    const { data: lecturerCourses, error: lecError } = await supabase
       .from('courses')
       .select('id')
       .eq('lecturer_id', profile.id);
 
-    let courseIds = [];
-
-    if (coursesError) {
-      console.warn('Could not fetch courses by lecturer_id:', coursesError);
-      // Fallback: Use department codes if lecturer_id column doesn't exist yet
-      if (departmentCodes?.length > 0) {
-        console.log('Using department fallback with codes:', departmentCodes);
-        const { data: deptCourses } = await supabase
-          .from('courses')
-          .select('id')
-          .in('department_code', departmentCodes);
-        
-        courseIds = deptCourses?.map(c => c.id) || [];
-      }
-    } else {
-      courseIds = lecturerCourses?.map(c => c.id) || [];
+    if (lecError) {
+      console.warn('No courses found via lecturer_id, trying department fallback:', lecError);
+    } else if (lecturerCourses?.length > 0) {
+      courseIds = lecturerCourses.map(c => c.id);
+      console.log('Found courses via lecturer_id:', courseIds);
     }
 
-    console.log('Available course IDs:', courseIds);
+    // Fallback to department access
+    if (courseIds.length === 0 && departmentCodes?.length > 0) {
+      console.log('Using department fallback:', departmentCodes);
+      const { data: deptCourses } = await supabase
+        .from('courses')
+        .select('id')
+        .in('department_code', departmentCodes);
+
+      courseIds = deptCourses?.map(c => c.id) || [];
+      console.log('Courses from department:', courseIds);
+    }
 
     if (courseIds.length === 0) {
       console.log('No courses found for this lecturer');
@@ -1775,19 +1795,20 @@ const fetchMyExams = async () => {
       return;
     }
 
-    // Step 2: Fetch exams for those courses
+    // === Step 2: Fetch exams ===
     const { data: exams, error: examsError } = await supabase
       .from('examinations')
       .select(`
         id,
         title,
-        description,
         start_time,
-        end_time,
         total_marks,
-        status,
         course_id,
-        courses!inner(course_code, course_name, department_code)
+        courses!inner (
+          course_code,
+          course_name,
+          department_code
+        )
       `)
       .in('course_id', courseIds)
       .order('start_time', { ascending: true });
@@ -1797,39 +1818,101 @@ const fetchMyExams = async () => {
       throw examsError;
     }
 
-    console.log('✅ Found exams:', exams?.length || 0, exams);
+    if (!exams || exams.length === 0) {
+      console.log('No exams found');
+      setMyExams([]);
+      return;
+    }
 
-    const processed = (exams || []).map(exam => ({
+    console.log(`Found ${exams.length} exams`);
+
+    const examIds = exams.map(e => e.id);
+    console.log('Exam IDs for submission query:', examIds);
+
+    // === Step 3: Fetch submission stats (using correct column: exam_id) ===
+    const { data: submissions, error: subError } = await supabase
+      .from('exam_submissions')
+      .select('exam_id, status')
+      .in('exam_id', examIds);
+
+    if (subError) {
+      console.error('Error fetching exam submissions:', subError);
+    }
+
+    console.log(`Fetched ${submissions?.length || 0} exam submissions`);
+
+    // === Step 4: Build stats map ===
+    const statsMap = {};
+    examIds.forEach(id => {
+      statsMap[id] = { submitted: 0, graded: 0, pending: 0 };
+    });
+
+    (submissions || []).forEach(sub => {
+      const stats = statsMap[sub.exam_id];
+      if (stats) {
+        if (sub.status === 'submitted' || sub.status === 'graded') {
+          stats.submitted++;
+        }
+        if (sub.status === 'graded') {
+          stats.graded++;
+        }
+        stats.pending = stats.submitted - stats.graded;
+      }
+    });
+
+    console.log('Final stats map:', statsMap);
+
+    // === Step 5: Combine exam data with stats ===
+    const processedExams = exams.map(exam => ({
       exam_id: exam.id,
       title: exam.title || 'Untitled Exam',
       course_code: exam.courses?.course_code || 'N/A',
       course_name: exam.courses?.course_name || 'N/A',
-      department_code: exam.courses?.department_code || 'N/A',
+      department_code: exam.courses?.department_code || 'ENG',
       start_time: exam.start_time,
-      end_time: exam.end_time,
       total_marks: exam.total_marks || 100,
-      status: exam.status || 'published'
+      submitted: statsMap[exam.id]?.submitted || 0,
+      graded: statsMap[exam.id]?.graded || 0,
+      pending: statsMap[exam.id]?.pending || 0
     }));
 
-    setMyExams(processed);
+    console.log('✅ Setting myExams with correct stats:', processedExams);
+    setMyExams(processedExams);
+
   } catch (error) {
-    console.error('❌ Error fetching my exams:', error);
+    console.error('Unexpected error in fetchMyExams:', error);
     setMyExams([]);
   }
 };
-
   
+  
+  useEffect(() => {
+  if (activeTab === 'grade-exams' && isLecturer && profile?.id) {
+    setLoadingAssignments(true);
+    fetchMyExams().finally(() => setLoadingAssignments(false));
+  }
+}, [activeTab, isLecturer, profile?.id]);
+
 const handleViewExamSubmissions = (exam) => {
   console.log('🎯 Viewing submissions for exam:', {
     exam_id: exam.exam_id,
     title: exam.title
   });
 
+  // Set the selected exam
   setSelectedExamForGrading(exam);
-  setGradingType('exams');        // ← ADD THIS LINE
+
+  // Switch to the grade-exams tab
+  setActiveTab('grade-exams');
+
+  // Clear old data
+  setExamSubmissions([]);
+  setExamGradeForm({});
+
+  // Immediately load submissions
   fetchExamSubmissions(exam.exam_id);
-  setActiveTab('grading');
 };
+
 const validateExamCohort = () => {
   if (!examTargetProgram) {
     setExamCohortError('Please select a Program');
@@ -1889,6 +1972,41 @@ const processSubmissionsWithoutStudents = (submissions, assignmentId) => {
     };
   });
 };
+
+
+
+const getGradeFromMarks = (marks) => {
+  if (!marks && marks !== 0) return 'N/A';
+  const numericMarks = parseFloat(marks);
+  if (isNaN(numericMarks)) return 'N/A';
+
+  if (numericMarks >= 90) return 'A+';
+  if (numericMarks >= 80) return 'A';
+  if (numericMarks >= 75) return 'B+';
+  if (numericMarks >= 70) return 'B';
+  if (numericMarks >= 65) return 'C+';
+  if (numericMarks >= 60) return 'C';
+  if (numericMarks >= 55) return 'D+';
+  if (numericMarks >= 50) return 'D';
+  return 'F';  // Below 50%
+};
+
+const getGradePoints = (grade) => {
+  if (!grade) return 0.0;
+  const gradeMap = {
+    'A+': 5.0,
+    'A': 5.0,
+    'B+': 4.5,
+    'B': 4.0,
+    'C+': 3.5,
+    'C': 3.0,
+    'D+': 2.5,
+    'D': 2.0,
+    'F': 0.0
+  };
+  return gradeMap[grade.toUpperCase()] || 0.0;
+};
+
   const fetchLecturerStatistics = async () => {
     if (!isLecturer) return;
    
@@ -2201,10 +2319,10 @@ const handleCreateAssignment = async () => {
     setLoading(prev => ({ ...prev, creatingAssignment: false }));
   }
 };
-  const handleGradeSubmission = async (submissionId, marks, feedback) => {
+const handleGradeSubmission = async (submissionId, marks, feedback) => {
     try {
       setGradingInProgress(true);
-     
+    
       const { error } = await supabase
         .from('assignment_submissions')
         .update({
@@ -2214,19 +2332,19 @@ const handleCreateAssignment = async () => {
           graded_at: new Date().toISOString()
         })
         .eq('id', submissionId);
-     
+    
       if (error) throw error;
-     
+    
       // Refresh submissions
       if (selectedAssignment) {
         fetchAssignmentSubmissions(selectedAssignment.id);
       }
-     
+    
       // Refresh stats
       fetchLecturerStatistics();
-     
+    
       return true;
-     
+    
     } catch (error) {
       console.error('Error grading submission:', error);
       alert('Error grading submission: ' + error.message);
@@ -2434,6 +2552,9 @@ const handleCreateAssignment = async () => {
     }
   };
 
+
+
+
   const fetchStudents = async () => {
     try {
       let query = supabase
@@ -2459,6 +2580,7 @@ const handleCreateAssignment = async () => {
       console.error('Error fetching students:', error);
     }
   };
+  
 
   const fetchLecturers = async () => {
     try {
@@ -3903,43 +4025,55 @@ const handleAddExam = async () => {
     );
   };
 
+  // Load assignments when tab opens
+useEffect(() => {
+  if (activeTab === 'grade-assignments' && isLecturer && profile?.id) {
+    console.log('→ Grade Assignments tab activated – fetching assignments');
+    fetchMyAssignments();
+  }
+}, [activeTab, isLecturer, profile?.id]);
+
   // ASSIGNMENT HELPER FUNCTIONS
 const handleViewSubmissions = async (assignment) => {
-  // Get the assignment ID
+  // assignment comes with: id, title, total_marks, course_code, course_name, due_date
   const assignmentId = assignment.id || assignment.assignment_id;
-  
+
   if (!assignmentId) {
-    console.error('ERROR: No assignment ID found:', assignment);
-    alert('Cannot view submissions: Assignment ID not found');
+    console.error('ERROR: No assignment ID provided');
+    alert('Cannot view submissions: Missing assignment ID');
     return;
   }
-  
-  console.log('DEBUG: Navigating to Grading tab for assignment:', {
-    id: assignmentId,
-    title: assignment.title,
-    total_marks: assignment.total_marks
-  });
-  
-  // Set the selected assignment with all needed data
+
+  console.log('→ Opening submissions for assignment:', assignmentId, assignment.title);
+
+  // 1. Set the selected assignment with full details
   setSelectedAssignment({
     id: assignmentId,
     title: assignment.title || 'Untitled Assignment',
     total_marks: assignment.total_marks || 100,
-    course_code: assignment.course_code,
-    course_name: assignment.course_name,
+    course_code: assignment.course_code || 'N/A',
+    course_name: assignment.course_name || 'N/A',
     due_date: assignment.due_date
   });
-  
-  // Navigate to Grading tab
-  setActiveTab('grading');
-  
-  // Clear any existing submissions
-  setAssignmentSubmissions([]);
-  
-  // Fetch submissions for this assignment
-  await fetchAssignmentSubmissions(assignmentId);
-};
 
+  // 2. Switch to the grading tab
+  setActiveTab('grade-assignments');
+
+  // 3. Clear old data
+  setAssignmentSubmissions([]);
+  setSelectedSubmissions([]);
+  setGradeForm({});
+
+  // 4. Immediately fetch submissions (most important!)
+  try {
+    // Optionally show loading in submissions area
+    // (we'll rely on the tab's own loading state via useEffect)
+    await fetchAssignmentSubmissions(assignmentId);
+  } catch (err) {
+    console.error('Failed to load submissions on open:', err);
+    alert('Failed to load submissions: ' + err.message);
+  }
+};
   const handleToggleSubmissionSelection = (submissionId) => {
     setSelectedSubmissions(prev => {
       if (prev.includes(submissionId)) {
@@ -4089,16 +4223,26 @@ const handleViewSubmissions = async (assignment) => {
             >
              🎓 My Lectures 
       </button>
-       <button
-  className={`nav-item ${activeTab === 'grading' ? 'active' : ''}`}
-  onClick={() => {
-    setActiveTab('grading');
-    setGradingType('exams');   // Auto-open Exams tab
-    fetchMyExams();           // Load exams immediately
-  }}
->
-  📚 Grade Exams & Assignments
-</button>
+{isLecturer && (
+  <>
+    <button
+      className={`nav-item ${activeTab === 'grade-assignments' ? 'active' : ''}`}
+      onClick={() => setActiveTab('grade-assignments')}
+    >
+      📝 Grade Assignments
+    </button>
+
+    <button
+      className={`nav-item ${activeTab === 'grade-exams' ? 'active' : ''}`}
+      onClick={() => {
+        setActiveTab('grade-exams');
+        fetchMyExams(); // Load exams when entering this tab
+      }}
+    >
+      🎯 Grade Exams
+    </button>
+  </>
+)}
           </>
         )}
         <button
@@ -4712,660 +4856,443 @@ onClick={() => {
                 </div>
               </div>
             )}
+
+           
+
+{/* ==================== GRADE ASSIGNMENTS TAB ==================== */}
+{activeTab === 'grade-assignments' && isLecturer && (
   <div className="tab-content">
     <div className="tab-header">
-      <h2>📚 Exam Submissions</h2>
+      <h2>📝 Grade Assignments</h2>
+      <div className="tab-actions">
+        <button
+          className="refresh-button"
+          onClick={() => fetchMyAssignments()}
+        >
+          🔄 Refresh Assignments
+        </button>
+      </div>
     </div>
 
-    {myExams.length > 0 ? (
-      <div className="table-container">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Title</th>
-              <th>Course</th>
-              <th>Date</th>
-              <th>Total Marks</th>
-              <th>Status</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {myExams.map(exam => (
-              <tr key={exam.exam_id}>
-                <td><strong>{exam.title}</strong></td>
-                <td>{exam.course_code} - {exam.course_name}</td>
-                <td>{new Date(exam.start_time).toLocaleDateString()}</td>
-                <td>{exam.total_marks}</td>
-                <td>
-                  <span className={`status-badge ${exam.status}`}>
-                    {exam.status}
-                  </span>
-                </td>
-                <td>
-                  <button
-                    className="action-btn view"
-                    onClick={() => handleViewExamSubmissions(exam)}
-                  >
-                    View Submissions
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    {selectedAssignment ? (
+      /* === Full Submissions View === */
+      <div className="grading-content">
+        <div className="assignment-header blue-theme">
+          <h3>{selectedAssignment.title}</h3>
+          <div className="assignment-meta">
+            <div className="counter-badge">
+              <div className="badge-icon">📊</div>
+              <div className="badge-content">
+                <span className="badge-value">{selectedAssignment.total_marks}</span>
+                <span className="badge-label">Total Marks</span>
+              </div>
+            </div>
+            <div className="counter-badge">
+              <div className="badge-icon">📝</div>
+              <div className="badge-content">
+                <span className="badge-value">{assignmentSubmissions.length}</span>
+                <span className="badge-label">Submissions</span>
+              </div>
+            </div>
+            <button
+              className="back-button"
+              onClick={() => {
+                setSelectedAssignment(null);
+                setAssignmentSubmissions([]);
+                setSelectedSubmissions([]);
+                setGradeForm({});
+              }}
+            >
+              ← Back to Assignments
+            </button>
+          </div>
+        </div>
+
+        {/* Submissions Table - SAME AS BEFORE */}
+        <div className="submissions-list">
+          {assignmentSubmissions.length > 0 ? (
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Student</th>
+                    <th>Program</th>
+                    <th>Submission Date</th>
+                    <th>Status</th>
+                    <th>Files</th>
+                    <th>Marks</th>
+                    <th>Feedback</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {assignmentSubmissions.map(submission => (
+                    <tr key={submission.id}>
+                      <td>
+                        <div><strong>{submission.student_name || 'Unknown Student'}</strong></div>
+                        <div className="small-text" style={{ fontWeight: 'bold', color: '#1976d2' }}>
+                          {submission.registration_number || 'N/A'}
+                        </div>
+                        <div className="small-text text-muted">{submission.student_email || 'No email'}</div>
+                      </td>
+                      <td>
+                        {submission.student_program || 'N/A'}<br/>
+                        <span className="dept-badge">{submission.student_department || 'N/A'}</span>
+                      </td>
+                      <td>
+                        {submission.submission_date ? (
+                          <>
+                            {new Date(submission.submission_date).toLocaleDateString()}<br/>
+                            <span className={`small-text ${submission.late_submission ? 'late' : ''}`}>
+                              {new Date(submission.submission_date).toLocaleTimeString()}
+                            </span>
+                          </>
+                        ) : <span className="text-muted">Not submitted</span>}
+                      </td>
+                      <td><span className={`status-badge ${submission.status || 'not_submitted'}`}>{submission.status || 'Not Submitted'}</span></td>
+                      <td>
+                        {submission.file_download_urls && submission.file_download_urls.length > 0 ? (
+                          <div className="file-links">
+                            {submission.file_download_urls.map((url, idx) => {
+                              const originalUrl = submission.file_urls?.[idx] || url;
+                              const fileName = getFileNameFromUrl(originalUrl);
+                              const fileExt = getFileExtension(originalUrl);
+                              const displayName = `File ${idx + 1}.${fileExt}`;
+                              return (
+                                <div key={idx} className="file-download-item">
+                                  <a href="#" onClick={(e) => { e.preventDefault(); downloadFile(url, `${submission.student_name}_${displayName}`, submission.submission_id); }} className="file-link">
+                                    📥 {displayName}
+                                  </a>
+                                </div>
+                              );
+                            })}
+                            <button className="download-all-btn" onClick={() => downloadAllFilesForSubmission(submission)} disabled={batchDownloading}>
+                              📦 Download All
+                            </button>
+                          </div>
+                        ) : <span className="text-muted">No files</span>}
+                      </td>
+                 <td>
+  {(submission.status === 'graded' || submission.status === 'submitted') ? (
+    <input type="number" min="0" max={selectedAssignment.total_marks} step="0.5"
+      value={gradeForm[submission.id]?.marks || ''}
+      onChange={(e) => setGradeForm(prev => ({ ...prev, [submission.id]: { ...prev[submission.id], marks: e.target.value } }))}
+      placeholder="Marks" className="small-input"/>
+  ) : <span className="text-muted">-</span>}
+</td>
+                   <td>
+  {(submission.status === 'graded' || submission.status === 'submitted') ? (
+    <textarea value={gradeForm[submission.id]?.feedback || ''}
+      onChange={(e) => setGradeForm(prev => ({ ...prev, [submission.id]: { ...prev[submission.id], feedback: e.target.value } }))}
+      rows="2" className="small-textarea"/>
+  ) : <span className="text-muted">-</span>}
+</td>
+                   <td>
+  {(submission.status === 'submitted' || submission.status === 'graded') && (
+    <button className="action-btn grade" onClick={async () => {
+      const marks = gradeForm[submission.id]?.marks;
+      const feedback = gradeForm[submission.id]?.feedback || '';
+      if (!marks) return alert('Enter marks');
+      const success = await handleGradeSubmission(submission.id, parseFloat(marks), feedback);
+    }}>
+      {submission.status === 'graded' ? 'Update Grade' : 'Grade'}
+    </button>
+  )}
+</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="empty-state">
+              <p>No submissions yet</p>
+            </div>
+          )}
+        </div>
+
+        {/* Export Buttons */}
+        {assignmentSubmissions.length > 0 && (
+          <div className="export-options">
+            <button className="export-button" onClick={downloadSubmissionsCSV}>📥 Export CSV</button>
+            <button className="export-button" onClick={downloadAllSubmissions} disabled={batchDownloading}>📦 Download All Files</button>
+          </div>
+        )}
       </div>
     ) : (
-      <div className="empty-state">
-        <p>No exams scheduled yet</p>
+      /* === List of Assignments === */
+     <div className="assignments-grid">
+  {myAssignments.length > 0 ? (
+    myAssignments.map(assignment => (
+      <div key={assignment.assignment_id} className="assignment-card">
+        <h4>{assignment.title}</h4>
+        <p>{assignment.course_code} - {assignment.course_name}</p>
+        <p>Due: {new Date(assignment.due_date).toLocaleDateString()}</p>
+        <p>
+          Submitted: <strong>{assignment.submitted_count || 0}</strong> | 
+          Graded: <strong>{assignment.graded_count || 0}</strong> | 
+          Pending: <strong>{(assignment.submitted_count || 0) - (assignment.graded_count || 0)}</strong>
+        </p>
+        <button
+          className="action-btn view"
+          onClick={() => handleViewSubmissions({
+            id: assignment.assignment_id,
+            title: assignment.title,
+            total_marks: assignment.total_marks,
+            course_code: assignment.course_code,
+            course_name: assignment.course_name,
+            due_date: assignment.due_date
+          })}
+        >
+          View Submissions
+        </button>
       </div>
+    ))
+  ) : (
+    <div className="empty-state">
+      <p>No assignments to grade</p>
+    </div>
+  )}
+</div>
     )}
   </div>
+)}
 
-
-{activeTab === 'grading' && isLecturer && (
+{/* ==================== GRADE EXAMS TAB ==================== */}
+{activeTab === 'grade-exams' && isLecturer && (
   <div className="tab-content">
-    {/* Grading Toggle */}
-    <div className="grading-toggle" style={{ marginBottom: '20px', display: 'flex', justifyContent: 'center', gap: '15px' }}>
-      <button
-        className={`toggle-btn ${gradingType === 'assignments' ? 'active' : ''}`}
-        onClick={() => setGradingType('assignments')}
-      >
-        Assignments
-      </button>
-      <button
-        className={`toggle-btn ${gradingType === 'exams' ? 'active' : ''}`}
-        onClick={() => {
-          setGradingType('exams');
-          fetchMyExams(); // Load exams when switching
-        }}
-      >
-        Exams
-      </button>
+    <div className="tab-header">
+      <h2>🎯 Grade Exams</h2>
+      <div className="tab-actions">
+        <button
+          className="refresh-button"
+          onClick={() => fetchMyExams()}
+          disabled={loadingAssignments}
+        >
+          🔄 {loadingAssignments ? 'Loading...' : 'Refresh Exams'}
+        </button>
+      </div>
     </div>
 
-    {gradingType === 'assignments' ? (
-      // ASSIGNMENTS GRADING
-      selectedAssignment ? (
-        <div className="grading-content">
-          <div className="assignment-header blue-theme">
-            <h3>{selectedAssignment.title}</h3>
-            <div className="assignment-meta">
-              <div className="counter-badge">
-                <div className="badge-icon">📊</div>
-                <div className="badge-content">
-                  <span className="badge-value">{selectedAssignment.total_marks}</span>
-                  <span className="badge-label">Total Marks</span>
-                </div>
+    {/* LOADING STATE */}
+    {loadingAssignments ? (
+      <div style={{ textAlign: 'center', padding: '60px 20px' }}>
+        <div className="spinner"></div>
+        <p>Loading your exams...</p>
+      </div>
+    ) : selectedExamForGrading ? (
+      /* === Full Exam Grading View - SAME STYLE AS ASSIGNMENTS === */
+      <div className="grading-content" style={{ marginTop: '40px' }}>
+        <div className="assignment-header blue-theme">
+          <h3>{selectedExamForGrading.title}</h3>
+          <p style={{ margin: '8px 0 16px 0', color: '#1976d2', fontWeight: '500', fontSize: '16px' }}>
+            {selectedExamForGrading.course_code} - {selectedExamForGrading.course_name || 'Standalone Exam'}
+          </p>
+          <div className="assignment-meta">
+            <div className="counter-badge">
+              <div className="badge-icon">📊</div>
+              <div className="badge-content">
+                <span className="badge-value">{selectedExamForGrading.total_marks}</span>
+                <span className="badge-label">Total Marks</span>
               </div>
-              <div className="counter-badge">
-                <div className="badge-icon">📝</div>
-                <div className="badge-content">
-                  <span className="badge-value">{assignmentSubmissions.length}</span>
-                  <span className="badge-label">Submissions</span>
-                </div>
-              </div>
-              <button
-                className="back-button"
-                onClick={() => {
-                  setSelectedAssignment(null);
-                  setAssignmentSubmissions([]);
-                }}
-              >
-                Back to List
-              </button>
             </div>
+            <div className="counter-badge">
+              <div className="badge-icon">📝</div>
+              <div className="badge-content">
+                <span className="badge-value">{examSubmissions.length}</span>
+                <span className="badge-label">Submissions</span>
+              </div>
+            </div>
+            <button
+              className="back-button"
+              onClick={() => {
+                setSelectedExamForGrading(null);
+                setExamSubmissions([]);
+                setExamGradeForm({});
+              }}
+            >
+              ← Back to Exams
+            </button>
           </div>
+        </div>
 
-          {/* Bulk Grading Controls */}
-          {bulkGrading && (
-            <div className="bulk-grading-controls">
-              <div className="bulk-header">
-                <h4>Bulk Grading Mode</h4>
-                <div className="bulk-actions">
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={selectedSubmissions.length === assignmentSubmissions.filter(s => s.status === 'submitted').length}
-                      onChange={handleSelectAllSubmissions}
-                    />
-                    Select All ({assignmentSubmissions.filter(s => s.status === 'submitted').length})
-                  </label>
-                  <button
-                    className="small-button"
-                    onClick={() => setSelectedSubmissions([])}
-                  >
-                    Clear Selection
-                  </button>
-                </div>
-              </div>
-              <p className="bulk-info">Selected: {selectedSubmissions.length} submission(s)</p>
-            </div>
-          )}
-
-          {/* Submissions List */}
-          <div className="submissions-list">
-            {assignmentSubmissions.length > 0 ? (
-              <div className="table-container">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      {bulkGrading && <th>Select</th>}
-                      <th>Student</th>
-                      <th>Program</th>
-                      <th>Submission Date</th>
-                      <th>Status</th>
-                      <th>Files</th>
-                      <th>Marks</th>
-                      <th>Feedback</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {assignmentSubmissions.map(submission => (
-                     <tr key={submission.id}>
-                        {bulkGrading && (
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={selectedSubmissions.includes(submission.submission_id)}
-                              onChange={() => handleToggleSubmissionSelection(submission.submission_id)}
-                              disabled={submission.status !== 'submitted'}
-                            />
-                          </td>
-                        )}
-                     <td>
-  <div>
-    <strong>{submission.student_name || 'Unknown Student'}</strong>
-  </div>
-  <div className="small-text" style={{ fontWeight: 'bold', color: '#1976d2' }}>
-    {submission.registration_number || 'N/A'}
-  </div>
-  <div className="small-text text-muted">
-    {submission.student_email || 'No email'}
-  </div>
-</td>
-                        <td>
-                          {submission.student_program || 'N/A'}
-                          <br />
-                          <span className="dept-badge">{submission.student_department || 'N/A'}</span>
-                        </td>
-                        <td>
-                          {submission.submission_date ? (
-                            <>
-                              {new Date(submission.submission_date).toLocaleDateString()}
-                              <br />
-                              <span className={`small-text ${submission.late_submission ? 'late' : ''}`}>
-                                {new Date(submission.submission_date).toLocaleTimeString()}
-                                {submission.late_submission && ` (Late: ${submission.days_late || 0} days)`}
-                              </span>
-                            </>
-                          ) : (
-                            <span className="text-muted">Not submitted</span>
-                          )}
-                        </td>
-                        <td>
-                          <span className={`status-badge ${submission.status || 'not_submitted'}`}>
-                            {submission.status || 'Not Submitted'}
-                          </span>
-                        </td>
-                        <td>
-                          {submission.file_download_urls && submission.file_download_urls.length > 0 ? (
-                            <div className="file-links">
-                              {submission.file_download_urls.map((url, idx) => {
-                                const originalUrl = submission.file_urls?.[idx] || url;
-                                const fileName = getFileNameFromUrl(originalUrl);
-                                const fileExt = getFileExtension(originalUrl);
-                                const displayName = `File ${idx + 1}.${fileExt}`;
-                                const downloadKey = `${submission.submission_id}_file${idx + 1}`;
-
-                                return (
-                                  <div key={idx} className="file-download-item">
-                                    <a
-                                      href="#"
-                                      onClick={(e) => {
-                                        e.preventDefault();
-                                        downloadFile(url, `${submission.student_name || 'Student'}_${displayName}`, submission.submission_id);
-                                      }}
-                                      className="file-link"
-                                    >
-                                      📥 {displayName}
-                                    </a>
-                                    {downloadingFile === downloadKey && (
-                                      <span className="downloading-text">Downloading...</span>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                              <button
-                                className="download-all-btn"
-                                onClick={() => downloadAllFilesForSubmission(submission)}
-                                disabled={batchDownloading}
-                              >
-                                📦 Download All Files
-                              </button>
-                            </div>
-                          ) : submission.submitted_text ? (
-                            <div className="text-submission">
-                              <span className="text-preview">
-                                {submission.submitted_text.substring(0, 50)}...
-                              </span>
-                              <button
-                                className="view-text-btn"
-                                onClick={() => {
-                                  alert(`Text Submission from ${submission.student_name}:\n\n${submission.submitted_text}`);
-                                }}
-                              >
-                                View Full Text
-                              </button>
-                            </div>
-                          ) : (
-                            <span className="text-muted">No submission</span>
-                          )}
-                        </td>
-                        <td>
-                          {submission.status === 'graded' ? (
-                            <span className="grade-display">
-                              {submission.marks_obtained || 0}/{selectedAssignment.total_marks}
-                            </span>
-                          ) : submission.status === 'submitted' ? (
-                            <div className="grade-input">
-                              <input
-                                type="number"
-                                min="0"
-                                max={selectedAssignment.total_marks}
-                                step="0.5"
-                                value={gradeForm[submission.submission_id]?.marks || ''}
-                                onChange={(e) => setGradeForm(prev => ({
-                                  ...prev,
-                                  [submission.submission_id]: {
-                                    ...prev[submission.submission_id],
-                                    marks: e.target.value
-                                  }
-                                }))}
-                                placeholder="Enter marks"
-                                className="small-input"
-                              />
-                            </div>
-                          ) : (
-                            <span className="text-muted">-</span>
-                          )}
-                        </td>
-                        <td>
-                          {submission.status === 'graded' ? (
-                            <span className="feedback-display">
-                              {submission.feedback || 'No feedback'}
-                            </span>
-                          ) : submission.status === 'submitted' ? (
-                            <div className="feedback-input">
-                              <textarea
-                                value={gradeForm[submission.submission_id]?.feedback || ''}
-                                onChange={(e) => setGradeForm(prev => ({
-                                  ...prev,
-                                  [submission.submission_id]: {
-                                    ...prev[submission.submission_id],
-                                    feedback: e.target.value
-                                  }
-                                }))}
-                                placeholder="Enter feedback"
-                                rows="2"
-                                className="small-textarea"
-                              />
-                            </div>
-                          ) : (
-                            <span className="text-muted">-</span>
-                          )}
-                        </td>
-                        <td>
-                          <div className="action-buttons">
-                            {submission.status === 'submitted' && !bulkGrading && (
-                              <button
-                                className="action-btn grade"
-                                onClick={async () => {
-                                  const marks = gradeForm[submission.submission_id]?.marks;
-                                  const feedback = gradeForm[submission.submission_id]?.feedback || '';
-
-                                  if (!marks || marks === '') {
-                                    alert('Please enter marks');
-                                    return;
-                                  }
-
-                                  if (parseFloat(marks) > selectedAssignment.total_marks) {
-                                    alert(`Marks cannot exceed ${selectedAssignment.total_marks}`);
-                                    return;
-                                  }
-
-                                  const success = await handleGradeSubmission(
-                                    submission.submission_id,
-                                    parseFloat(marks),
-                                    feedback
-                                  );
-
-                                  if (success) {
-                                    setGradeForm(prev => {
-                                      const newForm = { ...prev };
-                                      delete newForm[submission.submission_id];
-                                      return newForm;
-                                    });
-                                  }
-                                }}
-                                disabled={gradingInProgress}
-                              >
-                                {gradingInProgress ? 'Grading...' : 'Grade'}
-                              </button>
-                            )}
-                            {submission.status === 'graded' && (
-                              <button
-                                className="action-btn view"
-                                onClick={() => {
-                                  alert(`Marks: ${submission.marks_obtained || 0}/${selectedAssignment.total_marks}\n\nFeedback: ${submission.feedback || 'No feedback'}`);
-                                }}
-                              >
-                                View Grade
-                              </button>
-                            )}
+        {/* Submissions Table */}
+        <div className="submissions-list">
+          {examSubmissions.length > 0 ? (
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Student</th>
+                    <th>Submitted At</th>
+                    <th>Status</th>
+                    <th>Files</th>
+                    <th>Marks</th>
+                    <th>Feedback</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {examSubmissions.map(submission => (
+                    <tr key={submission.id}>
+                      <td>
+                        <div><strong>{submission.student_name || 'Unknown Student'}</strong></div>
+                        <div className="small-text" style={{ fontWeight: 'bold', color: '#1976d2' }}>
+                          {submission.registration_number || 'N/A'}
+                        </div>
+                        <div className="small-text text-muted">{submission.student_email || 'No email'}</div>
+                      </td>
+                      <td>
+                        {submission.submitted_at
+                          ? new Date(submission.submitted_at).toLocaleString()
+                          : <span className="text-muted">Not submitted</span>
+                        }
+                      </td>
+                      <td>
+                        <span className={`status-badge ${submission.status || 'submitted'}`}>
+                          {submission.status === 'graded' ? 'Graded' : 'Submitted'}
+                        </span>
+                      </td>
+                      <td>
+                        {submission.file_download_urls && submission.file_download_urls.length > 0 ? (
+                          <div className="file-links">
+                            {submission.file_download_urls.map((url, idx) => (
+                              <div key={idx} className="file-download-item">
+                                <a
+                                  href="#"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    downloadFile(url, `${submission.student_name}_Exam_Answer_${idx + 1}`);
+                                  }}
+                                  className="file-link"
+                                >
+                                  📥 Answer File {idx + 1}
+                                </a>
+                              </div>
+                            ))}
                           </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="empty-state">
-                <div style={{ fontSize: '48px', marginBottom: '20px', opacity: 0.5 }}>
-                  📭
-                </div>
-                <h4>No Submissions Found</h4>
-                <p className="small-text" style={{ maxWidth: '500px', margin: '0 auto' }}>
-                  No students have submitted this assignment yet.
-                  Students will appear here once they submit their work.
-                </p>
-                <button
-                  className="refresh-button"
-                  onClick={() => selectedAssignment && fetchAssignmentSubmissions(selectedAssignment.id)}
-                  style={{ marginTop: '20px' }}
-                >
-                  🔄 Refresh Submissions
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Export Options */}
-          {assignmentSubmissions.length > 0 && (
-            <div className="export-options">
-              <button className="export-button" onClick={downloadSubmissionsCSV}>
-                📥 Export to CSV
-              </button>
-              <button
-                className="export-button"
-                onClick={downloadAllSubmissions}
-                disabled={batchDownloading}
-              >
-                📦 Download All Files
-              </button>
+                        ) : (
+                          <span className="text-muted">No files uploaded</span>
+                        )}
+                      </td>
+   <td>
+  {(submission.status === 'graded' || submission.status === 'submitted') ? (
+    <input
+      type="number"
+      min="0"
+      max={selectedExamForGrading.total_marks}
+      step="0.5"
+      value={examGradeForm[submission.id]?.marks || ''}
+      onChange={(e) =>
+        setExamGradeForm(prev => ({
+          ...prev,
+          [submission.id]: { ...prev[submission.id], marks: e.target.value }
+        }))
+      }
+      placeholder="Marks"
+      className="small-input"
+    />
+  ) : (
+    <span className="text-muted">-</span>
+  )}
+</td>
+<td>
+  {(submission.status === 'graded' || submission.status === 'submitted') ? (
+    <textarea
+      value={examGradeForm[submission.id]?.feedback || ''}
+      onChange={(e) =>
+        setExamGradeForm(prev => ({
+          ...prev,
+          [submission.id]: { ...prev[submission.id], feedback: e.target.value }
+        }))
+      }
+      rows="2"
+      className="small-textarea"
+      placeholder="Enter feedback..."
+    />
+  ) : (
+    <span className="text-muted">-</span>
+  )}
+</td>
+      <td>
+  {(submission.status === 'submitted' || submission.status === 'graded') && (
+    <button
+      className="action-btn grade"
+      onClick={async () => {
+        const marksInput = examGradeForm[submission.id]?.marks;
+        const feedback = examGradeForm[submission.id]?.feedback || '';
+        if (!marksInput) return alert('Please enter marks');
+        const marks = parseFloat(marksInput);
+        const letterGrade = getGradeFromMarks(marks);
+        const gradePoints = getGradePoints(letterGrade);
+        try {
+          const { error } = await supabase
+            .from('exam_submissions')
+            .update({
+              total_marks_obtained: marks,
+              percentage: ((marks / selectedExamForGrading.total_marks) * 100).toFixed(2),
+              grade: letterGrade,
+              grade_points: gradePoints,
+              feedback: feedback,
+              status: 'graded',
+              graded_at: new Date().toISOString()
+            })
+            .eq('id', submission.id);
+          if (error) throw error;
+          fetchExamSubmissions(selectedExamForGrading.exam_id);
+          alert(`Graded! → ${letterGrade} (${gradePoints.toFixed(2)} GP)`);
+        } catch (err) {
+          alert('Grading failed: ' + err.message);
+        }
+      }}
+    >
+      {submission.status === 'graded' ? 'Update Grade' : 'Grade'}
+    </button>
+  )}
+</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="empty-state">
+              <p>No exam submissions yet</p>
+              <small>Students haven't uploaded their answers for this exam.</small>
             </div>
           )}
         </div>
-      ) : (
-        <div className="select-assignment">
-          <h3>Select an Assignment to Grade</h3>
-          <div className="assignments-grid">
-            {myAssignments.map(assignment => (
-              <div key={assignment.assignment_id} className="assignment-card">
-                <div className="assignment-header">
-                  <h4>{assignment.title}</h4>
-                  <span className={`assignment-status ${assignment.status}`}>
-                    {assignment.status || 'published'}
-                  </span>
-                </div>
-                <p className="course-info">
-                  {assignment.course_code || 'No Code'} - {assignment.course_name || 'No Name'}
-                </p>
-                <div className="assignment-details">
-                  <span>📅 Due: {new Date(assignment.due_date).toLocaleDateString()}</span>
-                  <span>📊 Total Marks: {assignment.total_marks || 100}</span>
-                  <span>🏛️ {assignment.department_code || 'N/A'}</span>
-                </div>
-                <div className="submission-stats-card">
-                  <div className="stat">
-                    <span className="stat-label">Submitted:</span>
-                    <span className="stat-value">{assignment.submitted_count}</span>
-                  </div>
-                  <div className="stat">
-                    <span className="stat-label">Graded:</span>
-                    <span className="stat-value">{assignment.graded_count}</span>
-                  </div>
-                  <div className="stat">
-                    <span className="stat-label">Pending:</span>
-                    <span className={`stat-value ${assignment.submitted_count - assignment.graded_count > 0 ? 'warning' : ''}`}>
-                      {assignment.submitted_count - assignment.graded_count}
-                    </span>
-                  </div>
-                </div>
-                <div className="assignment-actions">
-                  <button
-                    className="action-btn view"
-                    onClick={() => handleViewSubmissions(assignment)}
-                  >
-                    View Submissions
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )
+      </div>
     ) : (
-      // EXAMS GRADING
-      selectedExamForGrading ? (
-        <div className="grading-content">
-          <div className="assignment-header blue-theme">
-            <h3>{selectedExamForGrading.title}</h3>
-            <div className="assignment-meta">
-              <div className="counter-badge">
-                <div className="badge-icon">📊</div>
-                <div className="badge-content">
-                  <span className="badge-value">{selectedExamForGrading.total_marks}</span>
-                  <span className="badge-label">Total Marks</span>
-                </div>
-              </div>
-              <div className="counter-badge">
-                <div className="badge-icon">📝</div>
-                <div className="badge-content">
-                  <span className="badge-value">{examSubmissions.length}</span>
-                  <span className="badge-label">Submissions</span>
-                </div>
-              </div>
+      /* === List of Exams === */
+      <div className="assignments-grid">
+        {myExams.length > 0 ? (
+          myExams.map(exam => (
+            <div key={exam.exam_id} className="assignment-card">
+              <h4>{exam.title}</h4>
+              <p style={{ color: '#1976d2', fontWeight: '500' }}>
+                {exam.course_code} - {exam.course_name || 'Standalone Exam'}
+              </p>
+              <p>📅 {new Date(exam.start_time).toLocaleDateString()}</p>
+              <p>
+                Submitted: <strong>{exam.submitted || 0}</strong> | 
+                Graded: <strong>{exam.graded || 0}</strong> | 
+                Pending: <strong>{exam.pending || 0}</strong>
+              </p>
               <button
-                className="back-button"
-                onClick={() => {
-                  setSelectedExamForGrading(null);
-                  setExamSubmissions([]);
-                }}
+                className="action-btn view"
+                onClick={() => handleViewExamSubmissions(exam)}
               >
-                Back to List
+                View Submissions
               </button>
             </div>
+          ))
+        ) : (
+          <div className="empty-state">
+            <p>No exams to grade at the moment</p>
           </div>
-
-          {/* Exam Submissions List */}
-          <div className="submissions-list">
-            {examSubmissions.length > 0 ? (
-              <div className="table-container">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Student</th>
-                      <th>Submission Date</th>
-                      <th>Status</th>
-                      <th>Files</th>
-                      <th>Marks</th>
-                      <th>Feedback</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {examSubmissions.map(submission => (
-                      <tr key={submission.id}>
-                     <td>
-  <div>
-    <strong>{submission.student_name || 'Unknown Student'}</strong>
-  </div>
-  <div className="small-text" style={{ fontWeight: 'bold', color: '#1976d2' }}>
-    {submission.registration_number || 'N/A'}
-  </div>
-  <div className="small-text text-muted">
-    {submission.student_email || 'No email'}
-  </div>
-</td>
-                        <td>
-                          {submission.submitted_at ? new Date(submission.submitted_at).toLocaleString() : 'Not submitted'}
-                        </td>
-                        <td>
-                          <span className={`status-badge ${submission.status}`}>
-                            {submission.status || 'submitted'}
-                          </span>
-                        </td>
-                        <td>
-                          {submission.file_download_urls?.length > 0 ? (
-                            <div className="file-links">
-                          {submission.file_download_urls.map((url, i) => (
-  <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="btn btn-primary">
-    Download Answer File {i + 1}
-  </a>
-))}
-                            </div>
-                          ) : (
-                            <span className="text-muted">No files</span>
-                          )}
-                        </td>
-                        <td>
-                          {submission.status === 'graded' ? (
-                            <span className="grade-display">
-                              {submission.total_marks_obtained || 0}/{selectedExamForGrading.total_marks}
-                            </span>
-                          ) : submission.status === 'submitted' ? (
-                            <input
-                              type="number"
-                              min="0"
-                              max={selectedExamForGrading.total_marks}
-                              value={examGradeForm[submission.id]?.marks || ''}
-                              onChange={(e) => setExamGradeForm(prev => ({
-                                ...prev,
-                                [submission.id]: {
-                                  ...prev[submission.id],
-                                  marks: e.target.value
-                                }
-                              }))}
-                              className="small-input"
-                            />
-                          ) : (
-                            <span className="text-muted">-</span>
-                          )}
-                        </td>
-                        <td>
-                          {submission.status === 'graded' ? (
-                            <span className="feedback-display">
-                              {submission.feedback || 'No feedback'}
-                            </span>
-                          ) : submission.status === 'submitted' ? (
-                            <textarea
-                              value={examGradeForm[submission.id]?.feedback || ''}
-                              onChange={(e) => setExamGradeForm(prev => ({
-                                ...prev,
-                                [submission.id]: {
-                                  ...prev[submission.id],
-                                  feedback: e.target.value
-                                }
-                              }))}
-                              rows="2"
-                              className="small-textarea"
-                            />
-                          ) : (
-                            <span className="text-muted">-</span>
-                          )}
-                        </td>
-                        <td>
-                          {submission.status === 'submitted' && (
-                            <button
-                              className="action-btn grade"
-                              onClick={async () => {
-                                const marks = examGradeForm[submission.id]?.marks;
-                                const feedback = examGradeForm[submission.id]?.feedback || '';
-
-                                if (!marks || marks === '') {
-                                  alert('Please enter marks');
-                                  return;
-                                }
-
-                                if (parseFloat(marks) > selectedExamForGrading.total_marks) {
-                                  alert(`Marks cannot exceed ${selectedExamForGrading.total_marks}`);
-                                  return;
-                                }
-
-                                try {
-                                  const { error } = await supabase
-                                    .from('exam_submissions')
-                                    .update({
-                                      total_marks_obtained: parseFloat(marks),
-                                      feedback,
-                                      status: 'graded',
-                                      graded_at: new Date().toISOString()
-                                    })
-                                    .eq('id', submission.id);
-
-                                  if (error) throw error;
-
-                                  fetchExamSubmissions(selectedExamForGrading.exam_id);
-                                  alert('Exam graded successfully!');
-                                } catch (error) {
-                                  alert('Error grading exam: ' + error.message);
-                                }
-                              }}
-                            >
-                              Grade
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="empty-state">
-                <p>No submissions yet for this exam</p>
-              </div>
-            )}
-          </div>
-        </div>
-      ) : (
-        <div className="select-assignment">
-          <h3>Select an Exam to Grade</h3>
-          <div className="assignments-grid">
-            {myExams.map(exam => (
-              <div key={exam.exam_id} className="assignment-card">
-                <h4>{exam.title}</h4>
-                <p>{exam.course_code} - {exam.course_name}</p>
-                <p>
-                  <strong>Date:</strong> {new Date(exam.start_time).toLocaleDateString()}
-                </p>
-                <p>
-                  <strong>Total Marks:</strong> {exam.total_marks}
-                </p>
-                <button
-                  className="action-btn view"
-                  onClick={() => handleViewExamSubmissions(exam)}
-                >
-                  Grade Submissions
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      )
+        )}
+      </div>
     )}
   </div>
 )}
