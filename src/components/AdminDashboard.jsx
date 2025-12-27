@@ -61,7 +61,8 @@ const [selectedCohort, setSelectedCohort] = useState({
   const [cohortError, setCohortError] = useState('');
 // NEW: Exam submissions states
 const [loadingAssignments, setLoadingAssignments] = useState(true);
-
+const [attendanceRecords, setAttendanceRecords] = useState([]);
+const [attendanceError, setAttendanceError] = useState(null);
  
 const [myExams, setMyExams] = useState([]); // lecturer's scheduled exams
 const [examSubmissions, setExamSubmissions] = useState([]); // student submissions
@@ -236,6 +237,24 @@ const handleDeleteProgram = async (programId, programName) => {
   } catch (err) {
     alert('Failed to delete program: ' + err.message);
   }
+};
+
+const validateCohort = () => {
+  // Adjust field names to match your state
+  if (!selectedCohort?.academic_year?.trim()) {
+    setCohortError('Academic Year required');
+    return false;
+  }
+  if (!selectedCohort?.year_of_study) {
+    setCohortError('Year of Study required');
+    return false;
+  }
+  if (!selectedCohort?.semester) {
+    setCohortError('Semester required');
+    return false;
+  }
+  setCohortError('');
+  return true;
 };
 // === NEW FUNCTIONS ===
 const getAdminExamStatus = (exam) => {
@@ -802,7 +821,7 @@ useEffect(() => {
   const [exams, setExams] = useState([]);
   const [financialRecords, setFinancialRecords] = useState([]);
   const [lectures, setLectures] = useState([]);
-  const [attendance, setAttendance] = useState([]);
+  
   const [realtimeConnected, setRealtimeConnected] = useState(false);
 
   // ASSIGNMENT MANAGEMENT STATES
@@ -1082,17 +1101,28 @@ const setupRealtimeSubscription = () => {
             fetchExamSubmissions(selectedExamForGrading.exam_id);
           }
         }
-      )
+    )
+      .on('postgres_changes',
+  { event: '*', schema: 'public', table: 'attendance_records' },
+  (payload) => {
+    console.log('Realtime attendance change detected:', payload);
+    fetchAttendanceData();
+    fetchDashboardStats(); // Updates the rate instantly
+  }
+)
       .subscribe((status) => {
         setRealtimeConnected(status === 'SUBSCRIBED');
       });
+    
 
     subscriptionRef.current = subscription;
 
   } catch (error) {
     console.error('Realtime subscription error:', error);
   }
-};
+  };
+  
+
   
  // Load programs from database (for both admin AND lecturer)
 useEffect(() => {
@@ -1961,7 +1991,15 @@ const fetchMyExams = async () => {
     setLoadingAssignments(true);
     fetchMyExams().finally(() => setLoadingAssignments(false));
   }
-}, [activeTab, isLecturer, profile?.id]);
+  }, [activeTab, isLecturer, profile?.id]);
+  
+  useEffect(() => {
+  if (activeTab === 'attendance') {
+    console.log('Attendance tab opened → fetching fresh records');
+    fetchAttendanceData();
+    fetchDashboardStats(); // Keeps rate accurate
+  }
+}, [activeTab]);
 
 const handleViewExamSubmissions = (exam) => {
   console.log('🎯 Viewing submissions for exam:', {
@@ -3200,26 +3238,59 @@ const handleSaveTimetable = async () => {
     }
   };
 
-  const fetchAttendanceData = async () => {
+const fetchAttendanceData = async () => {
   try {
-    const { data, error } = await supabase
+    console.log('Fetching attendance records...');
+
+    const { data: records, error } = await supabase
       .from('attendance_records')
       .select(`
-        *,
-        students(full_name, student_id),
-        lecturers(full_name)
+        id,
+        date,
+        status,
+        notes,
+        check_in_time,
+        created_at,
+        student_id,
+        students!left (
+          id,
+          full_name,
+          student_id,
+          department_code,
+          program,
+          academic_year,
+          year_of_study,
+          semester
+        )
       `)
       .order('date', { ascending: false })
-      .limit(100);
+      .order('created_at', { ascending: false })
+      .limit(300);
 
     if (error) throw error;
-    setAttendance(data || []);
-  } catch (error) {
-    console.error('Error fetching attendance:', error);
-    setAttendance([]);
+
+    let filtered = records || [];
+
+    if (isLecturer && departmentCodes.length > 0) {
+      filtered = filtered.filter(r => 
+        r.students && departmentCodes.includes(r.students.department_code)
+      );
+      console.log(`Attendance loaded: ${filtered.length} records (lecturer filtered: true)`);
+    } else {
+      console.log(`Attendance loaded: ${filtered.length} records (no filter)`);
+    }
+
+    setAttendanceRecords(filtered);
+    setAttendanceError(null);
+
+  } catch (err) {
+    console.error('Error:', err);
+    setAttendanceError('Failed to load attendance records');
+    setAttendanceRecords([]);
   }
-  };
-  
+};
+
+
   const handleOpenAttendanceModal = (record = null) => {
   if (record) {
     setEditingAttendanceRecord(record);
@@ -4422,6 +4493,12 @@ const handleViewSubmissions = async (assignment) => {
         >
           🎯 Exams
         </button>
+        <button
+  className={`nav-item ${activeTab === 'attendance' ? 'active' : ''}`}
+  onClick={() => setActiveTab('attendance')}
+>
+  📅 Attendance
+</button>
         {isAdmin && (
           <>
             <button
@@ -4452,12 +4529,7 @@ const handleViewSubmissions = async (assignment) => {
     🎓 Programs
   </button>
 )}
-            <button
-              className={`nav-item ${activeTab === 'attendance' ? 'active' : ''}`}
-              onClick={() => setActiveTab('attendance')}
-            >
-              📅 Attendance
-            </button>
+         
             {isAdmin && (
   <button
     className={`nav-item ${activeTab === 'complete-courses' ? 'active' : ''}`}
@@ -6260,11 +6332,12 @@ onClick={() => {
               </div>
             )}
 
-            {/* Attendance Tab */}
-         {activeTab === 'attendance' && (
+{/* Attendance Tab */}
+{/* Attendance Tab */}
+{activeTab === 'attendance' && (
   <div className="tab-content">
     <div className="tab-header">
-      <h2>📅 Attendance Management</h2>
+      <h2>Attendance Records History</h2>
       <div className="tab-actions">
         <div className="attendance-rate large">
           Overall Attendance Rate: <strong>{stats.attendanceRate}%</strong>
@@ -6275,71 +6348,137 @@ onClick={() => {
         >
           + Record Attendance
         </button>
+        <button
+          onClick={fetchAttendanceData}
+          style={{marginLeft: '10px', padding: '8px 12px'}}
+        >
+          🔄 Force Refresh List
+        </button>
       </div>
     </div>
-
-    <div className="table-container">
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>Student</th>
-            <th>Date</th>
-            <th>Day</th>
-            <th>Status</th>
-            <th>Recorded By</th>
-            <th>Notes</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {attendance.length === 0 ? (
+    {/* Lecturer Info Banner */}
+    {isLecturer && (
+      <div style={{
+        background: '#e3f2fd',
+        padding: '12px 16px',
+        borderRadius: '8px',
+        margin: '10px 0 20px 0',
+        fontSize: '14px',
+        color: '#1976d2',
+        borderLeft: '4px solid #1976d2'
+      }}>
+        <strong>👨‍🏫 Lecturer View:</strong> Showing attendance only for students in your assigned departments:
+        <strong>{departmentCodes.join(', ')}</strong>
+      </div>
+    )}
+    <div style={{ overflowX: 'auto' }}>
+      {attendanceRecords.length === 0 ? (
+        <div style={{
+          textAlign: 'center',
+          padding: '60px 20px',
+          backgroundColor: 'white',
+          borderRadius: '12px',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+          marginTop: '20px'
+        }}>
+          <i className="fas fa-calendar-check" style={{
+            fontSize: '64px',
+            color: '#dee2e6',
+            marginBottom: '20px'
+          }}></i>
+          <h3 style={{ color: '#666', margin: '0 0 10px 0' }}>
+            No attendance records yet
+          </h3>
+          <p style={{ color: '#999', fontSize: '16px' }}>
+            Records will appear here once attendance is marked for students.
+          </p>
+        </div>
+      ) : (
+        <table className="data-table" style={{ minWidth: '800px' }}>
+          <thead>
             <tr>
-              <td colSpan="7" style={{ textAlign: 'center', padding: '40px' }}>
-                No attendance records yet
-              </td>
+              <th>Date</th>
+              <th>Day</th>
+              <th>Student</th>
+              <th>Status</th>
+              <th>Recorded By</th>
+              <th>Notes</th>
+              <th>Actions</th>
             </tr>
-          ) : (
-            attendance.map(record => {
-              const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-              return (
-                <tr key={record.id}>
-                  <td>
-                    <div><strong>{record.students?.full_name || 'Unknown'}</strong></div>
-                    <div className="small-text">ID: {record.students?.student_id || record.student_id}</div>
-                  </td>
-                  <td>{new Date(record.date).toLocaleDateString()}</td>
-                  <td>{dayNames[new Date(record.date).getDay()]}</td>
-                  <td>
-                    <span className={`status-badge ${record.status}`}>
-                      {record.status?.charAt(0).toUpperCase() + record.status?.slice(1)}
-                    </span>
-                  </td>
-                  <td>
-                    {record.lecturers?.full_name || record.recorded_by?.slice(0,8) || 'System'}
-                  </td>
-                  <td>{record.notes || '-'}</td>
-                  <td>
-                    <div className="action-buttons flat">
-                      <button
-                        className="action-btn edit small"
-                        onClick={() => handleOpenAttendanceModal(record)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        className="action-btn delete small"
-                        onClick={() => handleDeleteAttendanceRecord(record.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {attendanceRecords
+              .sort((a, b) => new Date(b.date) - new Date(a.date))
+              .map(record => {
+                const date = new Date(record.date);
+                const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                const dayName = dayNames[date.getDay()];
+                const formattedDate = date.toLocaleDateString('en-US', {
+                  year: 'numeric',
+                  month: 'short',
+                  day: 'numeric'
+                });
+                return (
+                  <tr key={record.id}>
+                    <td>
+                      <div><strong>{formattedDate}</strong></div>
+                      <div className="small-text">{dayName}</div>
+                    </td>
+                    <td>{dayName}</td>
+                    <td>
+                      <div><strong>{record.students?.full_name || 'Unknown Student'}</strong></div>
+                      <div className="small-text">
+                        ID: {record.students?.student_id || record.student_id || 'N/A'}
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`status-badge ${record.status}`}>
+                        {record.status?.charAt(0).toUpperCase() + record.status?.slice(1)}
+                      </span>
+                    </td>
+                    <td>
+                      {record.recorded_by_name ||
+                       (record.recorded_by === profile?.id ? `${profile?.full_name} (You)` : 'Admin/Lecturer')}
+                    </td>
+                    <td>
+                      {record.notes ? (
+                        <span title={record.notes} style={{
+                          display: 'block',
+                          maxWidth: '200px',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap'
+                        }}>
+                          {record.notes}
+                        </span>
+                      ) : (
+                        <span className="text-muted">—</span>
+                      )}
+                    </td>
+                    <td>
+                      <div className="action-buttons flat">
+                        <button
+                          className="action-btn edit small"
+                          onClick={() => handleOpenAttendanceModal(record)}
+                          title="Edit"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className="action-btn delete small"
+                          onClick={() => handleDeleteAttendanceRecord(record.id)}
+                          title="Delete"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+          </tbody>
+        </table>
+      )}
     </div>
   </div>
 )}
@@ -7341,19 +7480,25 @@ onClick={() => {
       <div className="modal-form">
         <div className="form-group">
           <label>Student *</label>
-          <select
-            value={attendanceForm.student_id}
-            onChange={(e) => setAttendanceForm({ ...attendanceForm, student_id: e.target.value })}
-            className="form-select"
-            required
-          >
-            <option value="">Select Student</option>
-            {students.map(s => (
-              <option key={s.id} value={s.id}>
-                {s.full_name} ({s.student_id})
-              </option>
-            ))}
-          </select>
+       <select
+  value={attendanceForm.student_id}
+  onChange={(e) => setAttendanceForm({ ...attendanceForm, student_id: e.target.value })}
+  className="form-select"
+  required
+>
+  <option value="">Select Student</option>
+  {students
+    .filter(student => 
+      isAdmin || 
+      (isLecturer && departmentCodes.includes(student.department_code))
+    )
+    .sort((a, b) => a.full_name.localeCompare(b.full_name))
+    .map(s => (
+      <option key={s.id} value={s.id}>
+        {s.full_name} ({s.student_id}) - {s.department_code}
+      </option>
+    ))}
+</select>
         </div>
 
         <div className="form-group">

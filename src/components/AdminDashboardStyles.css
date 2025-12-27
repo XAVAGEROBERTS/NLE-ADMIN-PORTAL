@@ -5143,3 +5143,32 @@ button {
   background-color: #0056b3;
   color: white;
 }
+.attendance-rate.large {
+  font-size: 18px;
+  font-weight: 600;
+  color: #2ecc71;
+  background: rgba(46, 204, 113, 0.1);
+  padding: 10px 16px;
+  border-radius: 8px;
+}
+
+.tab-content .empty-state i {
+  opacity: 0.6;
+}
+
+.table-container table th,
+.table-container table td {
+  vertical-align: middle;
+}
+
+.status-badge {
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.status-badge.present { background: rgba(46, 204, 113, 0.15); color: #27ae60; }
+.status-badge.absent { background: rgba(231, 76, 60, 0.15); color: #e74c3c; }
+.status-badge.late { background: rgba(241, 196, 15, 0.15); color: #f39c12; }
+.status-badge.excused { background: rgba(52, 152, 219, 0.15); color: #3498db; }
