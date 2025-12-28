@@ -7,6 +7,229 @@ import DepartmentAssignmentModal from './DepartmentAssignmentModal';
 import { useLecturerDepartments } from '../hooks/useLecturerDepartments';
 import './AdminDashboardStyles.css';
 
+const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
+  const [availableCourses, setAvailableCourses] = useState([]);
+  const [assignedCourses, setAssignedCourses] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedCourse, setSelectedCourse] = useState('');
+  const [selectedForUnassign, setSelectedForUnassign] = useState([]); // NEW: for bulk
+
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+
+        const { data: depts } = await supabase
+          .from('lecturer_departments')
+          .select('department_code')
+          .eq('lecturer_id', lecturer.id);
+
+        const deptCodes = depts?.map(d => d.department_code) || [];
+
+        let query = supabase
+          .from('courses')
+          .select('id, course_code, course_name, lecturer_id, department_code')
+          .eq('is_active', true)
+          .order('course_code');
+
+        if (deptCodes.length > 0) {
+          query = query.in('department_code', deptCodes);
+        }
+
+        const { data: courses, error } = await query;
+        if (error) throw error;
+
+        const assigned = courses.filter(c => c.lecturer_id === lecturer.id);
+        const available = courses.filter(c => c.lecturer_id !== lecturer.id);
+
+        setAssignedCourses(assigned);
+        setAvailableCourses(available);
+        setSelectedForUnassign([]); // reset selection
+
+      } catch (err) {
+        console.error('Error:', err);
+        alert('Failed to load courses');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchData();
+  }, [lecturer.id]);
+
+  const handleAssignCourse = async () => {
+    if (!selectedCourse) return alert('Select a course');
+
+    try {
+      const { error } = await supabase
+        .from('courses')
+        .update({ lecturer_id: lecturer.id })
+        .eq('id', selectedCourse);
+
+      if (error) throw error;
+
+      alert('Course assigned successfully!');
+
+      // Move from available to assigned
+      const course = availableCourses.find(c => c.id === selectedCourse);
+      setAssignedCourses(prev => [...prev, course]);
+      setAvailableCourses(prev => prev.filter(c => c.id !== selectedCourse));
+      setSelectedCourse('');
+
+      onAssign();
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  };
+
+  const toggleSelectForUnassign = (courseId) => {
+    setSelectedForUnassign(prev =>
+      prev.includes(courseId)
+        ? prev.filter(id => id !== courseId)
+        : [...prev, courseId]
+    );
+  };
+
+  const selectAllForUnassign = () => {
+    if (selectedForUnassign.length === assignedCourses.length) {
+      setSelectedForUnassign([]);
+    } else {
+      setSelectedForUnassign(assignedCourses.map(c => c.id));
+    }
+  };
+
+  const handleBulkUnassign = async () => {
+    if (selectedForUnassign.length === 0) return alert('Select at least one course');
+
+    if (!window.confirm(`Unassign ${selectedForUnassign.length} selected course(s)?`)) return;
+
+    try {
+      const { error } = await supabase
+        .from('courses')
+        .update({ lecturer_id: null })
+        .in('id', selectedForUnassign);
+
+      if (error) throw error;
+
+      alert(`${selectedForUnassign.length} course(s) unassigned successfully!`);
+
+      // Update UI
+      setAssignedCourses(prev => prev.filter(c => !selectedForUnassign.includes(c.id)));
+      const unassignedCourses = assignedCourses.filter(c => selectedForUnassign.includes(c.id));
+      setAvailableCourses(prev => [...prev, ...unassignedCourses.map(c => ({ ...c, lecturer_id: null }))]);
+      setSelectedForUnassign([]);
+
+      onAssign();
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  };
+
+  return (
+    <div className="modal-overlay">
+      <div className="modal large-modal">
+        <h3>Assign Courses — {lecturer.full_name}</h3>
+
+        {loading ? (
+          <p>Loading courses...</p>
+        ) : (
+          <>
+            {/* Assign new */}
+            <div className="form-group">
+              <h4>Assign New Course</h4>
+              <select
+                value={selectedCourse}
+                onChange={e => setSelectedCourse(e.target.value)}
+                className="form-select"
+              >
+                <option value="">— Select course —</option>
+                {availableCourses.map(c => (
+                  <option key={c.id} value={c.id}>
+                    {c.course_code} — {c.course_name} ({c.department_code})
+                  </option>
+                ))}
+              </select>
+              <button
+                className="confirm-button"
+                onClick={handleAssignCourse}
+                disabled={!selectedCourse}
+                style={{ marginTop: '12px' }}
+              >
+                Assign Course
+              </button>
+            </div>
+
+            {/* Assigned courses with bulk unassign */}
+            <div style={{ marginTop: '30px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                <h4>Assigned Courses ({assignedCourses.length})</h4>
+                {assignedCourses.length > 0 && (
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={selectedForUnassign.length === assignedCourses.length && assignedCourses.length > 0}
+                      onChange={selectAllForUnassign}
+                    />
+                    Select All
+                  </label>
+                )}
+              </div>
+
+              {assignedCourses.length === 0 ? (
+                <p>No courses assigned.</p>
+              ) : (
+                <>
+                  {selectedForUnassign.length > 0 && (
+                    <button
+                      className="confirm-button"
+                      onClick={handleBulkUnassign}
+                      style={{ marginBottom: '15px', background: '#dc3545' }}
+                    >
+                      Unassign Selected ({selectedForUnassign.length})
+                    </button>
+                  )}
+
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th></th>
+                        <th>Code</th>
+                        <th>Name</th>
+                        <th>Dept</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {assignedCourses.map(c => (
+                        <tr key={c.id}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={selectedForUnassign.includes(c.id)}
+                              onChange={() => toggleSelectForUnassign(c.id)}
+                            />
+                          </td>
+                          <td>{c.course_code}</td>
+                          <td>{c.course_name}</td>
+                          <td>{c.department_code}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )}
+            </div>
+          </>
+        )}
+
+        <div className="modal-actions">
+          <button className="cancel-button" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
 const AdminDashboard = () => {
   const navigate = useNavigate();
   const { profile, signOut, isAdmin, isLecturer, loading: authLoading } = useAdminAuth();
@@ -111,6 +334,11 @@ const [selectedCoursesForReversal, setSelectedCoursesForReversal] = useState([])
 const [reversalInProgress, setReversalInProgress] = useState(false);
 // [students, lecturers, courses, etc...]
   const [searchTerm, setSearchTerm] = useState('');
+
+  const [showCourseAssignmentModal, setShowCourseAssignmentModal] = useState(false);
+const [selectedLecturerForCourses, setSelectedLecturerForCourses] = useState(null);
+
+
 
   // === TUTORIALS UPLOAD STATES (FULLY UPDATED) ===
 const [showTutorialsModal, setShowTutorialsModal] = useState(false);
@@ -384,6 +612,7 @@ useEffect(() => {
   
   // Load courses when a program is selected for tutorial targeting
 // Load courses when a program is selected for tutorial targeting
+// Updated: Only fetch courses assigned to the current lecturer
 useEffect(() => {
   const fetchCoursesForProgram = async () => {
     if (!tutorialTargetProgram) {
@@ -391,39 +620,39 @@ useEffect(() => {
       return;
     }
     try {
-      // First get the selected program's code
+      // Get program code
       const { data: selectedProgram, error: progError } = await supabase
         .from('programs')
         .select('code')
         .eq('id', tutorialTargetProgram)
         .single();
-
       if (progError || !selectedProgram?.code) {
-        console.error('Failed to get program code:', progError);
         setTutorialCourses([]);
         return;
       }
 
-      // Now filter courses by program_code (text field) and is_active
+      // Fetch ONLY courses assigned to this lecturer in the selected program
       const { data, error } = await supabase
         .from('courses')
         .select('id, course_code, course_name, department_code')
         .eq('program_code', selectedProgram.code)
+        .eq('lecturer_id', profile.id)        // ← THIS LINE IS NEW & CRITICAL
         .eq('is_active', true)
         .order('course_code');
 
       if (error) throw error;
+
       setTutorialCourses(data || []);
-      console.log(`Found ${data?.length || 0} active courses for program code: ${selectedProgram.code}`);
+      console.log(`Found ${data?.length || 0} assigned courses for lecturer in program ${selectedProgram.code}`);
     } catch (err) {
-      console.error('Error loading courses for program:', err);
-      alert('Failed to load courses: ' + err.message);
+      console.error('Error loading lecturer courses:', err);
+      alert('Failed to load your courses: ' + err.message);
       setTutorialCourses([]);
     }
   };
-  fetchCoursesForProgram();
-}, [tutorialTargetProgram]);
 
+  fetchCoursesForProgram();
+}, [tutorialTargetProgram, profile.id]); // ← Added profile.id dependency
   // Add this useEffect after your existing useEffect for completionFilters
 useEffect(() => {
   if (showReversalMode) {
@@ -2705,32 +2934,34 @@ const handleGradeSubmission = async (submissionId, marks, feedback) => {
     }
   };
 
-  const fetchCourses = async () => {
-    try {
-      let query = supabase
-        .from('courses')
-        .select('*')
-        .limit(50)
-        .order('year')
-        .order('semester');
-     
-      if (searchTerm) {
-        query = query.or(`course_code.ilike.%${searchTerm}%,course_name.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%`);
-      }
-     
-      if (isLecturer && departmentCodes.length > 0) {
-        query = query.in('department_code', departmentCodes);
-      }
-     
-      const { data, error } = await query;
-     
-      if (error) throw error;
-      setCourses(data || []);
-     
-    } catch (error) {
-      console.error('Error fetching courses:', error);
+const fetchCourses = async () => {
+  try {
+    let query = supabase
+      .from('courses')
+      .select('*')
+      .limit(50)
+      .order('year')
+      .order('semester');
+    
+    if (searchTerm) {
+      query = query.or(`course_code.ilike.%${searchTerm}%,course_name.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%`);
     }
-  };
+    
+    if (isLecturer) {
+      query = query.eq('lecturer_id', profile.id);
+    } else if (isLecturer && departmentCodes.length > 0) { // Fallback if no direct assignment
+      query = query.in('department_code', departmentCodes);
+    }
+    
+    const { data, error } = await query;
+    
+    if (error) throw error;
+    setCourses(data || []);
+    
+  } catch (error) {
+    console.error('Error fetching courses:', error);
+  }
+};
 
   const fetchAssignments = async () => {
     try {
@@ -6215,25 +6446,34 @@ onClick={() => {
                               {lecturer.status || 'active'}
                             </span>
                           </td>
-                          <td>
-                            <div className="action-buttons">
-                          <button
-  className="action-btn view"
-  onClick={() => setSelectedLecturerDetails(lecturer)}
->
-  View Details
-</button>
-                              <button
-                                className="action-btn dept"
-                                onClick={() => {
-                                  setSelectedLecturerForDept(lecturer);
-                                  setShowDepartmentModal(true);
-                                }}
-                              >
-                                🏢 Depts
-                              </button>
-                            </div>
-                          </td>
+                        <td>
+  <div className="action-buttons">
+    <button
+      className="action-btn view"
+      onClick={() => setSelectedLecturerDetails(lecturer)}
+    >
+      View Details
+    </button>
+    <button
+      className="action-btn dept"
+      onClick={() => {
+        setSelectedLecturerForDept(lecturer);
+        setShowDepartmentModal(true);
+      }}
+    >
+      🏢 Depts
+    </button>
+    <button
+      className="action-btn courses"
+      onClick={() => {
+        setSelectedLecturerForCourses(lecturer);
+        setShowCourseAssignmentModal(true);
+      }}
+    >
+      📚 Courses
+    </button>
+  </div>
+</td>
                         </tr>
                       ))}
                     </tbody>
@@ -7473,6 +7713,8 @@ onClick={() => {
       {/* =================== MODALS =================== */}
 
       
+    
+      
       {showAttendanceRecordModal && (
   <div className="modal-overlay">
     <div className="modal">
@@ -7840,19 +8082,21 @@ onClick={() => {
       <div className="modal-form">
         <div className="form-group">
           <label className="form-label">Course *</label>
-          <select
-            value={newAssignment.course_id}
-            onChange={(e) => setNewAssignment({ ...newAssignment, course_id: e.target.value })}
-            className="form-select"
-            required
-          >
-            <option value="">Select a course</option>
-            {courses.map(course => (
-              <option key={course.id} value={course.id}>
-                {course.course_code} - {course.course_name} ({course.department_code})
-              </option>
-            ))}
-          </select>
+     <select
+  value={newAssignment.course_id}
+  onChange={(e) => setNewAssignment({ ...newAssignment, course_id: e.target.value })}
+  className="form-select"
+  required
+>
+  <option value="">Select a course</option>
+  {courses
+    .filter(course => course.lecturer_id === profile.id) // Only my assigned courses
+    .map(course => (
+      <option key={course.id} value={course.id}>
+        {course.course_code} - {course.course_name} ({course.department_code})
+      </option>
+    ))}
+</select>
         </div>
 
         <div className="form-group">
@@ -8018,10 +8262,29 @@ onClick={() => {
     onAssign={() => {
       fetchLecturers();
       fetchDashboardStats();
-    }}
+          }}
+          
+          
   />
 )}
+ 
+      {/* NEW: Paste RIGHT HERE */}
+      {showCourseAssignmentModal && selectedLecturerForCourses && (
+        <CourseAssignmentModal
+          lecturer={selectedLecturerForCourses}
+          onClose={() => {
+            setShowCourseAssignmentModal(false);
+            setSelectedLecturerForCourses(null);
+          }}
+          onAssign={() => {
+            fetchLecturers();
+            // Optionally refresh other data
+          }}
+        />
+      )}
 
+
+      
       {/* NEW: Lecturer Details Modal */}
       {selectedLecturerDetails && (
         <div className="modal-overlay" onClick={() => setSelectedLecturerDetails(null)}>
@@ -8572,19 +8835,21 @@ onClick={() => {
             <div className="modal-form">
               <div className="form-group">
                 <label className="form-label">Course</label>
-                <select
-                  value={newLecture.course_id}
-                  onChange={(e) => setNewLecture({ ...newLecture, course_id: e.target.value })}
-                  className="form-select"
-                  required
-                >
-                  <option value="">Select a course</option>
-                  {courses.map(course => (
-                    <option key={course.id} value={course.id}>
-                      {course.course_code} - {course.course_name}
-                    </option>
-                  ))}
-                </select>
+             <select
+  value={newLecture.course_id}
+  onChange={(e) => setNewLecture({ ...newLecture, course_id: e.target.value })}
+  className="form-select"
+  required
+>
+  <option value="">Select a course</option>
+  {courses
+    .filter(course => course.lecturer_id === profile.id)
+    .map(course => (
+      <option key={course.id} value={course.id}>
+        {course.course_code} - {course.course_name} ({course.department_code})
+      </option>
+    ))}
+</select>
               </div>
              
               <div className="form-group">
@@ -8879,11 +9144,13 @@ onClick={() => {
                 ? (examFilteredCourses.length === 0 ? 'No courses available' : 'Select Course')
                 : 'Select Program first'}
             </option>
-            {examFilteredCourses.map(course => (
-              <option key={course.id} value={course.id}>
-                {course.course_code} - {course.course_name} ({course.department_code})
-              </option>
-            ))}
+          {examFilteredCourses
+  .filter(course => course.lecturer_id === profile.id) // Only my courses
+  .map(course => (
+    <option key={course.id} value={course.id}>
+      {course.course_code} - {course.course_name} ({course.department_code})
+    </option>
+  ))}
           </select>
         </div>
 
