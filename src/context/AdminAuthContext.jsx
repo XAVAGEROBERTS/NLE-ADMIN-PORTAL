@@ -6,8 +6,8 @@ const AdminAuthContext = createContext({})
 export const AdminAuthProvider = ({ children }) => {
   const [admin, setAdmin] = useState(null)
   const [profile, setProfile] = useState(null)
-  const [role, setRole] = useState(null) // 'admin' or 'lecturer'
   const [loading, setLoading] = useState(true)
+  const [role, setRole] = useState(null) // 'admin' or 'lecturer' or 'finance'
 
   useEffect(() => {
     const checkAdminSession = async () => {
@@ -58,8 +58,10 @@ export const AdminAuthProvider = ({ children }) => {
 
         console.log('User role from database:', roleData.role)
 
-        // Only allow admin or lecturer
-        if (roleData.role === 'admin' || roleData.role === 'lecturer') {
+        // Allow admin, lecturer, or finance
+if (roleData.role === 'admin' || roleData.role === 'lecturer' || roleData.role === 'finance') {
+  setRole(roleData.role)
+  setAdmin(session.user)
           setRole(roleData.role)
           setAdmin(session.user)
           
@@ -99,7 +101,27 @@ export const AdminAuthProvider = ({ children }) => {
               localStorage.setItem('admin_user', JSON.stringify(profileData))
             }
           }
-        } else {
+        } 
+        
+      else if (roleData.role === 'finance') {
+            const { data: financeProfile } = await supabase
+              .from('finance_officers')
+              .select('*')
+              .eq('id', roleData.table_id)
+              .single()
+            
+            if (financeProfile) {
+              const profileData = {
+                ...financeProfile,
+                role: 'finance',
+                full_name: financeProfile.full_name || session.user.email,
+                table_id: financeProfile.id
+              }
+              setProfile(profileData)
+              localStorage.setItem('admin_user', JSON.stringify(profileData))
+            }
+          }
+        else {
           console.log('User is not admin/lecturer, signing out...')
           await supabase.auth.signOut()
         }
@@ -154,10 +176,10 @@ export const AdminAuthProvider = ({ children }) => {
       const user = data[0]
       console.log('Authenticated user:', user)
 
-      // Check if user is admin or lecturer
-      if (user.role !== 'admin' && user.role !== 'lecturer') {
-        throw new Error('Access denied. Admin/Lecturer account required.')
-      }
+     // Check if user is admin, lecturer, or finance
+if (!['admin', 'lecturer', 'finance'].includes(user.role)) {
+  throw new Error('Access denied. Only Admin, Lecturer, or Finance Officer accounts allowed.')
+}
 
       // Update last login
       await supabase.rpc('update_last_login', {
@@ -165,24 +187,30 @@ export const AdminAuthProvider = ({ children }) => {
         user_role: user.role
       })
 
-      // Get additional profile data
-      let profileData = {}
-      if (user.role === 'admin') {
-        const { data: adminData } = await supabase
-          .from('system_admins')
-          .select('*')
-          .eq('email', email)
-          .single()
-        profileData = adminData || {}
-      } else if (user.role === 'lecturer') {
-        const { data: lecturerData } = await supabase
-          .from('lecturers')
-          .select('*')
-          .eq('email', email)
-          .single()
-        profileData = lecturerData || {}
-      }
-
+// Get additional profile data
+let profileData = {}
+if (user.role === 'admin') {
+  const { data: adminData } = await supabase
+    .from('system_admins')
+    .select('*')
+    .eq('email', email)
+    .single()
+  profileData = adminData || {}
+} else if (user.role === 'lecturer') {
+  const { data: lecturerData } = await supabase
+    .from('lecturers')
+    .select('*')
+    .eq('email', email)
+    .single()
+  profileData = lecturerData || {}
+} else if (user.role === 'finance') {
+  const { data: financeData } = await supabase
+    .from('finance_officers')
+    .select('*')
+    .eq('email', email)
+    .single()
+  profileData = financeData || {}
+}
       // Create user profile object
       const userProfile = {
         ...profileData,
@@ -280,6 +308,7 @@ export const AdminAuthProvider = ({ children }) => {
       isAuthenticated: !!profile,
       isAdmin: role === 'admin',
       isLecturer: role === 'lecturer',
+      isFinance: role === 'finance',
       signIn,
       signOut,
       canAccess

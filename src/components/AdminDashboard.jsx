@@ -6,6 +6,7 @@ import { supabase } from '../services/supabase';
 import DepartmentAssignmentModal from './DepartmentAssignmentModal';
 import { useLecturerDepartments } from '../hooks/useLecturerDepartments';
 import './AdminDashboardStyles.css';
+import FinanceDashboard from './FinanceDashboard'; // adjust path as needed
 
 const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
   const [availableCourses, setAvailableCourses] = useState([]);
@@ -232,7 +233,14 @@ const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
 
 const AdminDashboard = () => {
   const navigate = useNavigate();
-  const { profile, signOut, isAdmin, isLecturer, loading: authLoading } = useAdminAuth();
+  const { 
+  profile, 
+  signOut, 
+  isAdmin, 
+  isLecturer, 
+  isFinance,           // ← ADD THIS
+  loading: authLoading 
+} = useAdminAuth();
  
   // Department hook
   const {
@@ -2555,103 +2563,132 @@ const uploadExamFiles = async (files) => {
     setExamUploadProgress(0);
   }
 };
+
 const handleCreateAssignment = async () => {
   try {
     setLoading(prev => ({ ...prev, creatingAssignment: true }));
-
-    console.log('🔍 Creating new assignment...');
-
-    // Upload files first (to lecturerbucket)
+    
+    // Upload files
     let fileUrls = [];
     if (assignmentFiles.length > 0) {
-      console.log('📤 Uploading files to lecturerbucket...');
       fileUrls = await uploadAssignmentFiles(assignmentFiles);
-
       if (fileUrls.length !== assignmentFiles.length) {
         alert('⚠️ Some files failed to upload. Continuing with successful ones.');
       }
-
-      console.log('✅ Files uploaded:', fileUrls);
     }
-
-    // Basic validation
-    if (!newAssignment.course_id) {
-      alert('Please select a course');
+    
+    // Validation
+    if (!newAssignment.course_id) return alert('Please select a course');
+    if (!newAssignment.title.trim()) return alert('Please enter a title');
+    
+    // === COHORT VALIDATION ===
+    if (!selectedCohort.academic_year?.trim()) {
+      alert('Please enter Academic Year (e.g. 2025/2029)');
       return;
     }
-
-    if (!newAssignment.title.trim()) {
-      alert('Please enter an assignment title');
+    if (!selectedCohort.year_of_study) {
+      alert('Please select Year of Study');
       return;
     }
-
-    // Use current logged-in user's ID as lecturer_id
+    if (!selectedCohort.semester) {
+      alert('Please select Semester');
+      return;
+    }
+    
     const lecturerId = profile?.id;
-    if (!lecturerId) {
-      alert('Error: User not authenticated. Please log in again.');
-      return;
-    }
-
-    // Prepare assignment data
+    if (!lecturerId) return alert('Authentication error – please log in again');
+    
     const assignmentData = {
       course_id: newAssignment.course_id,
       lecturer_id: lecturerId,
       title: newAssignment.title.trim(),
-      description: newAssignment.description?.trim() || '',
-      instructions: newAssignment.instructions?.trim() || '',
+      description: newAssignment.description?.trim() || null,
+      instructions: newAssignment.instructions?.trim() || null,
       due_date: newAssignment.due_date,
       total_marks: Number(newAssignment.total_marks) || 100,
       submission_type: newAssignment.submission_type || 'file',
       max_file_size: Number(newAssignment.max_file_size) || 10,
       allowed_formats: newAssignment.allowed_formats || ['pdf', 'doc', 'docx', 'zip'],
-      file_urls: fileUrls, // Array of file paths in lecturerbucket
+      file_urls: fileUrls,
       status: 'published',
+      // === ADD COHORT FIELDS ===
+      academic_year: selectedCohort.academic_year.trim(),
+      year_of_study: selectedCohort.year_of_study,
+      semester: selectedCohort.semester,
       created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     };
-
-    console.log('📝 Inserting assignment into database:', assignmentData);
-
-    // Insert into assignments table
-    const { data, error } = await supabase
+    
+    const { data: insertedAssignment, error } = await supabase
       .from('assignments')
       .insert([assignmentData])
-      .select();
-
+      .select()
+      .single();
+    
     if (error) {
-      console.error('❌ Failed to create assignment:', error);
-      alert(`Failed to create assignment: ${error.message}`);
+      console.error('Insert error:', error);
+      alert(`Failed: ${error.message}`);
       return;
     }
-
-    console.log('✅ Assignment created successfully:', data);
-
-    // Success! Reset everything
+    
+    console.log('✅ Assignment created with ID:', insertedAssignment.id);
+    
+    // Get student count for info message (optional)
+    try {
+      const { data: courseDetails } = await supabase
+        .from('courses')
+        .select('program_code')
+        .eq('id', newAssignment.course_id)
+        .single();
+      
+      if (courseDetails?.program_code) {
+        const { data: cohortStudents } = await supabase
+          .from('students')
+          .select('id')
+          .eq('program_code', courseDetails.program_code)
+          .eq('academic_year', selectedCohort.academic_year.trim())
+          .eq('year_of_study', selectedCohort.year_of_study)
+          .eq('semester', selectedCohort.semester)
+          .eq('status', 'active');
+        
+        const studentCount = cohortStudents?.length || 0;
+        alert(`✅ Assignment created successfully!\n\nTarget cohort: ${selectedCohort.academic_year}, Year ${selectedCohort.year_of_study}, Semester ${selectedCohort.semester}\n\n${studentCount} students will be able to see this assignment.`);
+      } else {
+        alert('✅ Assignment created successfully!');
+      }
+    } catch (infoErr) {
+      console.log('Info fetch error (non-critical):', infoErr);
+      alert('✅ Assignment created successfully!');
+    }
+    
+    // Reset form
     setNewAssignment({
       course_id: '',
       title: '',
       description: '',
       instructions: '',
-      due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16),
+      due_date: new Date(Date.now() + 7*24*60*60*1000).toISOString().slice(0,16),
       total_marks: 100,
       submission_type: 'file',
       max_file_size: 10,
-      allowed_formats: ['pdf', 'doc', 'docx', 'zip'],
+      allowed_formats: ['pdf','doc','docx','zip'],
       file_urls: []
     });
-
     setAssignmentFiles([]);
+    setSelectedCohort({
+      academic_year: '',
+      year_of_study: 1,
+      semester: 1
+    });
+    setCohortError('');
     setShowAssignmentUploadModal(false);
-
-    // Refresh data
+    
     await fetchMyAssignments();
     await fetchDashboardStats();
-
-    alert('✅ Assignment created successfully with attached files!');
-
-  } catch (error) {
-    console.error('❌ Unexpected error in handleCreateAssignment:', error);
-    alert('An unexpected error occurred. Please try again.');
+    
+  } catch (err) {
+    console.error('Unexpected error:', err);
+    alert('Unexpected error: ' + err.message);
   } finally {
     setLoading(prev => ({ ...prev, creatingAssignment: false }));
   }
@@ -3544,18 +3581,18 @@ const fetchAttendanceData = async () => {
 };
 
 const handleSaveAttendanceRecord = async () => {
-  if (!attendanceForm.student_id || !attendanceForm.date) {
-    alert('Please select a student and date');
+  if (!attendanceForm.student_id || !attendanceForm.date || !attendanceForm.course_id) {
+    alert('Please fill in Student, Date, and Course');
     return;
   }
-
   try {
     const recordData = {
       student_id: attendanceForm.student_id,
+      course_id: attendanceForm.course_id,
+      lecture_id: attendanceForm.lecture_id || null,
       date: attendanceForm.date,
       status: attendanceForm.status,
       notes: attendanceForm.notes || null,
-      // recorded_by: profile.id, // Admin/Lecturer who recorded it
       day_of_week: new Date(attendanceForm.date).getDay()
     };
 
@@ -3571,8 +3608,8 @@ const handleSaveAttendanceRecord = async () => {
         .from('attendance_records')
         .insert([recordData]);
       if (error) {
-        if (error.code === '23505') { // Unique violation (same student + date)
-          alert('Attendance already recorded for this student on this date. Edit the existing record.');
+        if (error.code === '23505') {
+          alert('Attendance already recorded for this student on this date and course.');
         } else {
           throw error;
         }
@@ -3582,13 +3619,21 @@ const handleSaveAttendanceRecord = async () => {
     }
 
     setShowAttendanceRecordModal(false);
+    setEditingAttendanceRecord(null);
+    setAttendanceForm({
+      student_id: '',
+      date: new Date().toISOString().split('T')[0],
+      status: 'present',
+      notes: '',
+      course_id: '',
+      lecture_id: ''
+    });
     fetchAttendanceData();
-    fetchDashboardStats(); // Update overall rate
+    fetchDashboardStats();
   } catch (err) {
     alert('Error saving attendance: ' + err.message);
   }
 };
-
 const handleDeleteAttendanceRecord = async (recordId) => {
   if (!window.confirm('Delete this attendance record?')) return;
 
@@ -3617,103 +3662,152 @@ const handleDeleteAttendanceRecord = async (recordId) => {
     return `${formattedHour}:${minutes.padStart(2, '0')} ${ampm}`;
   };
 
-  // Form handlers
 const handleAddUser = async () => {
   try {
-   // === AUTO-ENROLL NEW STUDENT IN CURRENT SEMESTER COURSES ===
-
     // Email validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(newUser.email.trim())) {
       alert('Please enter a valid email address');
       return;
     }
-
     const password = 'Default123!';
     let tableName, profileData;
-
-    const CURRENT_ACADEMIC_YEAR = '2025';
 
     if (newUser.role === 'student') {
       if (!newUser.program?.trim()) {
         alert('Please enter the Program name.');
         return;
       }
-
       if (!newUser.department_code?.trim()) {
-        alert('Please enter the Department Code (e.g., ENG, BSCS, BIT)');
+        alert('Please enter the Department Code (e.g., ENG, SCT)');
+        return;
+      }
+      if (!newUser.program_code?.trim()) {
+        alert('Please enter the Program Code (e.g., BSCE, BSCS)');
         return;
       }
 
-      const programName = newUser.program.trim();
       const departmentCode = newUser.department_code.trim().toUpperCase();
-      const academicYear = CURRENT_ACADEMIC_YEAR;
 
-// Generate the next sequence number for this department and year
-const { data: existingStudents, error: fetchError } = await supabase
-  .from('students')
-  .select('student_id')
-  .like('student_id', `${departmentCode}-${academicYear}-%`)
-  .order('student_id', { ascending: false })
-  .limit(1);
+      // === SIMPLE LOGIC: Department code + numeric sequence (NO YEAR) ===
+      // Find all student IDs for this department
+      const { data: existingStudents, error: fetchError } = await supabase
+        .from('students')
+        .select('student_id')
+        .ilike('student_id', `${departmentCode}-%`)
+        .order('student_id', { ascending: false });
 
-if (fetchError) {
-  throw new Error('Failed to check existing student IDs');
-}
+      if (fetchError) {
+        console.error('Error fetching existing student IDs:', fetchError);
+        throw new Error('Failed to check existing student IDs');
+      }
 
-let sequenceNumber = 1; // Start from 1 if no existing
+      // Find the highest numeric sequence (ignore hex and year formats)
+      let maxSequence = 0;
+      
+      if (existingStudents && existingStudents.length > 0) {
+        existingStudents.forEach(student => {
+          const studentId = student.student_id;
+          if (studentId && studentId.startsWith(`${departmentCode}-`)) {
+            const parts = studentId.split('-');
+            
+            // Check different formats:
+            // Format 1: ENG-249719 (department-sequence)
+            if (parts.length === 2) {
+              const sequencePart = parts[1];
+              if (/^\d+$/.test(sequencePart)) {
+                const sequenceNum = parseInt(sequencePart, 10);
+                if (!isNaN(sequenceNum) && sequenceNum > maxSequence) {
+                  maxSequence = sequenceNum;
+                }
+              }
+            }
+            // Format 2: ENG-2025-249719 (department-year-sequence) - extract just the sequence
+            else if (parts.length === 3) {
+              const sequencePart = parts[2];
+              if (/^\d+$/.test(sequencePart)) {
+                const sequenceNum = parseInt(sequencePart, 10);
+                if (!isNaN(sequenceNum) && sequenceNum > maxSequence) {
+                  maxSequence = sequenceNum;
+                }
+              }
+            }
+          }
+        });
+      }
 
-if (existingStudents && existingStudents.length > 0) {
-  const latestId = existingStudents[0].student_id;
-  const idParts = latestId.split('-');
-  if (idParts.length === 3) {
-    const lastSequence = parseInt(idParts[2], 10); // Base 10, not hex!
-    if (!isNaN(lastSequence)) {
-      sequenceNumber = lastSequence + 1;
-    }
-  }
-}
+      // Start new sequence from the highest found + 1
+      const nextSequenceNumber = maxSequence + 1;
+      
+      // Generate ID: ENG-249720 (NO YEAR)
+      const studentId = `${departmentCode}-${nextSequenceNumber}`;
 
-// Use real sequential decimal number, padded to 6 digits
-const sequencePadded = sequenceNumber.toString().padStart(6, '0');
+      console.log(`Generated Student ID: ${studentId} (next sequence: ${nextSequenceNumber})`);
 
-// Final Student ID: e.g., SCT-2025-000042
-const studentId = `${departmentCode}-${academicYear}-${sequencePadded}`;
+      // Double-check if this ID already exists
+      const { data: duplicateCheck, error: duplicateError } = await supabase
+        .from('students')
+        .select('id')
+        .eq('student_id', studentId)
+        .maybeSingle();
+
+      if (duplicateError && duplicateError.code !== 'PGRST116') {
+        throw new Error('Error checking for duplicate ID');
+      }
+
+      if (duplicateCheck) {
+        // If ID exists, try next number
+        const fallbackSequence = nextSequenceNumber + 1;
+        const fallbackStudentId = `${departmentCode}-${fallbackSequence}`;
+        
+        const { data: fallbackCheck } = await supabase
+          .from('students')
+          .select('id')
+          .eq('student_id', fallbackStudentId)
+          .maybeSingle();
+        
+        if (fallbackCheck) {
+          throw new Error(`Student ID generation conflict. Please try again or contact admin.`);
+        }
+        
+        // Use fallback ID
+        studentId = fallbackStudentId;
+      }
+
       tableName = 'students';
-profileData = {
-  student_id: studentId,
-  full_name: newUser.full_name.trim(),
-  email: newUser.email.toLowerCase().trim(),
-  password_hash: password,
-  phone: newUser.phone?.trim() || null,
-  date_of_birth: newUser.date_of_birth || null,
-  program: newUser.program,
-  year_of_study: parseInt(newUser.year_of_study),
-  semester: parseInt(newUser.semester),
-  intake: newUser.intake,
-  academic_year: newUser.academic_year.trim(),
-  status: 'active',
-  program_id: newUser.program_id,
-  program_code: newUser.program_code.trim().toUpperCase(),
-department: newUser.department.trim(),
-department_code: newUser.department_code.trim().toUpperCase(),
-  program_duration_years: parseInt(newUser.program_duration_years),
-  program_total_semesters: parseInt(newUser.program_duration_years) * 2,  // Auto-calculated
-  created_at: new Date().toISOString(),
-  
-};
+      profileData = {
+        student_id: studentId,
+        registration_number: studentId, // Same as student_id
+        full_name: newUser.full_name.trim(),
+        email: newUser.email.toLowerCase().trim(),
+        password_hash: password,
+        phone: newUser.phone?.trim() || null,
+        date_of_birth: newUser.date_of_birth || null,
+        program: newUser.program,
+        year_of_study: parseInt(newUser.year_of_study),
+        semester: parseInt(newUser.semester),
+        intake: newUser.intake,
+        academic_year: newUser.academic_year.trim(),
+        status: 'active',
+        program_id: newUser.program_id,
+        program_code: newUser.program_code.trim().toUpperCase(),
+        department: newUser.department.trim(),
+        department_code: departmentCode,
+        program_duration_years: parseInt(newUser.program_duration_years),
+        program_total_semesters: parseInt(newUser.program_duration_years) * 2,
+        created_at: new Date().toISOString(),
+      };
 
-      // === Duplicate checks ===
+      // Duplicate checks
       const { data: existingProfile, error: checkError } = await supabase
         .from(tableName)
         .select('id, email, student_id')
         .or(`email.eq.${profileData.email},student_id.eq.${studentId}`)
         .maybeSingle();
 
-      if (checkError && checkError.code !== 'PGRST116') { // PGRST116 means no rows found
+      if (checkError && checkError.code !== 'PGRST116') {
         throw new Error('Error checking for existing records');
       }
-
       if (existingProfile) {
         if (existingProfile.email === profileData.email) {
           throw new Error('This email already exists as a student');
@@ -3722,10 +3816,8 @@ department_code: newUser.department_code.trim().toUpperCase(),
           throw new Error('This Student ID already exists');
         }
       }
-
     } else {
-      // ========== LECTURER LOGIC ==========
-      // Generate the next lecturer sequence number
+      // ========== LECTURER LOGIC (unchanged) ==========
       const { data: existingLecturers, error: fetchLecturersError } = await supabase
         .from('lecturers')
         .select('lecturer_id')
@@ -3738,7 +3830,6 @@ department_code: newUser.department_code.trim().toUpperCase(),
       }
 
       let lecturerSequence = 1;
-      
       if (existingLecturers && existingLecturers.length > 0) {
         const latestId = existingLecturers[0].lecturer_id;
         const idParts = latestId.split('-');
@@ -3765,7 +3856,6 @@ department_code: newUser.department_code.trim().toUpperCase(),
         created_at: new Date().toISOString(),
       };
 
-      // === Duplicate checks for lecturers ===
       const { data: existingLecturer, error: checkLecturerError } = await supabase
         .from(tableName)
         .select('id, email, lecturer_id')
@@ -3775,7 +3865,6 @@ department_code: newUser.department_code.trim().toUpperCase(),
       if (checkLecturerError && checkLecturerError.code !== 'PGRST116') {
         throw new Error('Error checking for existing lecturer records');
       }
-
       if (existingLecturer) {
         if (existingLecturer.email === profileData.email) {
           throw new Error('This email already exists as a lecturer');
@@ -3786,7 +3875,7 @@ department_code: newUser.department_code.trim().toUpperCase(),
       }
     }
 
-    // Cross-check email in the other table (student vs lecturer)
+    // Cross-check email in the other table
     const otherTableName = newUser.role === 'student' ? 'lecturers' : 'students';
     const { data: crossCheck } = await supabase
       .from(otherTableName)
@@ -3812,35 +3901,39 @@ department_code: newUser.department_code.trim().toUpperCase(),
       throw new Error(tableError.message);
     }
 
-    // === AUTO-ENROLL NEW STUDENT AFTER SUCCESSFUL INSERT ===
+    // === AUTO-ENROLL NEW STUDENT ===
     if (newUser.role === 'student' && tableData?.id) {
-      const studentId = tableData.id; // UUID from students table
-
+      const studentId = tableData.id;
       try {
         const { data: startingCourses, error: courseError } = await supabase
           .from('courses')
           .select('id')
           .eq('department_code', newUser.department_code.trim().toUpperCase())
+          .eq('program_code', newUser.program_code.trim().toUpperCase())
           .eq('year', newUser.year_of_study || 1)
           .eq('semester', newUser.semester || 1)
           .eq('is_active', true);
-
+        
         if (courseError) {
           console.warn('Auto-enroll: Failed to fetch courses', courseError);
         } else if (startingCourses && startingCourses.length > 0) {
           const enrollments = startingCourses.map(course => ({
             student_id: studentId,
             course_id: course.id,
+            program_code: newUser.program_code.trim().toUpperCase(),
             status: 'enrolled',
             enrollment_date: new Date().toISOString().split('T')[0],
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
           }));
-
+          
           const { error: enrollError } = await supabase
             .from('student_courses')
-            .insert(enrollments);
-
+            .upsert(enrollments, {
+              onConflict: 'student_id,course_id',
+              ignoreDuplicates: true
+            });
+          
           if (enrollError) {
             console.warn('Auto-enroll failed', enrollError);
             alert('Student created successfully, but auto-enrollment failed. Please enroll courses manually if needed.');
@@ -3852,9 +3945,8 @@ department_code: newUser.department_code.trim().toUpperCase(),
         console.warn('Auto-enroll error:', err);
       }
     }
-    // === END AUTO-ENROLL ===
 
-    // Optional user_roles insert (keep as is)
+    // Optional user_roles insert
     try {
       await supabase.from('user_roles').insert([{
         email: profileData.email,
@@ -3867,27 +3959,24 @@ department_code: newUser.department_code.trim().toUpperCase(),
       console.log('Note: Could not add to user_roles:', e.message);
     }
 
-    // Reset form & success message (keep your existing code)
+    // Reset form
     setShowUserModal(false);
-    // ... rest of success handling
     setNewUser({
       full_name: '', email: '', phone: '', role: 'student',
       program: '', department_code: '', department: '',
       year_of_study: 1, semester: 1, intake: 'January',
-      specialization: '', google_meet_link: ''
+      specialization: '', google_meet_link: '', program_code: '',
+      program_duration_years: 4, academic_year: '', date_of_birth: ''
     });
 
     // Success message
     const successMessage = newUser.role === 'student' ? `
 ✅ Student Successfully Added!
 
-Student ID: ${profileData.student_id}
-
-Format: ${newUser.department_code.trim().toUpperCase()}-${CURRENT_ACADEMIC_YEAR}-[SEQUENCE]
-
+Student ID / Registration Number: ${profileData.student_id}
 Full Name: ${profileData.full_name}
 Email: ${profileData.email}
-Program: ${profileData.program}
+Program: ${profileData.program} (${profileData.program_code})
 Academic Year: ${profileData.academic_year}
 
 Share this Student ID with the student!
@@ -3897,7 +3986,6 @@ Share this Student ID with the student!
 Lecturer ID: ${profileData.lecturer_id}
 Full Name: ${profileData.full_name}
 Email: ${profileData.email}
-Department: ${profileData.department || 'Not specified'}
     `;
 
     alert(successMessage);
@@ -4600,7 +4688,11 @@ const handleViewSubmissions = async (assignment) => {
           </button>
         </div>
       </div>
+
     );
+  }
+  if (isFinance) {
+    return <FinanceDashboard profile={profile} signOut={signOut} />;
   }
 
   return (
@@ -7713,36 +7805,37 @@ onClick={() => {
       {/* =================== MODALS =================== */}
 
       
-    
-      
-      {showAttendanceRecordModal && (
+{showAttendanceRecordModal && (
   <div className="modal-overlay">
     <div className="modal">
       <h3>{editingAttendanceRecord ? 'Edit' : 'Record'} Attendance</h3>
       <div className="modal-form">
+
+        {/* Student Selection */}
         <div className="form-group">
           <label>Student *</label>
-       <select
-  value={attendanceForm.student_id}
-  onChange={(e) => setAttendanceForm({ ...attendanceForm, student_id: e.target.value })}
-  className="form-select"
-  required
->
-  <option value="">Select Student</option>
-  {students
-    .filter(student => 
-      isAdmin || 
-      (isLecturer && departmentCodes.includes(student.department_code))
-    )
-    .sort((a, b) => a.full_name.localeCompare(b.full_name))
-    .map(s => (
-      <option key={s.id} value={s.id}>
-        {s.full_name} ({s.student_id}) - {s.department_code}
-      </option>
-    ))}
-</select>
+          <select
+            value={attendanceForm.student_id}
+            onChange={(e) => setAttendanceForm({ ...attendanceForm, student_id: e.target.value })}
+            className="form-select"
+            required
+          >
+            <option value="">Select Student</option>
+            {students
+              .filter(student =>
+                isAdmin ||
+                (isLecturer && departmentCodes.includes(student.department_code))
+              )
+              .sort((a, b) => a.full_name.localeCompare(b.full_name))
+              .map(s => (
+                <option key={s.id} value={s.id}>
+                  {s.full_name} ({s.student_id}) - {s.program} ({s.department_code})
+                </option>
+              ))}
+          </select>
         </div>
 
+        {/* Date */}
         <div className="form-group">
           <label>Date *</label>
           <input
@@ -7754,6 +7847,51 @@ onClick={() => {
           />
         </div>
 
+        {/* NEW: Course Selection (filtered by student's program if possible) */}
+        <div className="form-group">
+          <label>Course *</label>
+          <select
+            value={attendanceForm.course_id || ''}
+            onChange={(e) => setAttendanceForm({ ...attendanceForm, course_id: e.target.value })}
+            className="form-select"
+            required
+          >
+            <option value="">Select Course</option>
+            {courses
+              .filter(c => c.is_active)
+              .sort((a, b) => a.course_code.localeCompare(b.course_code))
+              .map(course => (
+                <option key={course.id} value={course.id}>
+                  {course.course_code} - {course.course_name} ({course.department_code})
+                </option>
+              ))}
+          </select>
+        </div>
+
+        {/* NEW: Lecture Selection (optional - filtered by date + course) */}
+        <div className="form-group">
+          <label>Lecture (Optional)</label>
+          <select
+            value={attendanceForm.lecture_id || ''}
+            onChange={(e) => setAttendanceForm({ ...attendanceForm, lecture_id: e.target.value || null })}
+            className="form-select"
+          >
+            <option value="">No specific lecture</option>
+            {lectures
+              .filter(l =>
+                l.scheduled_date === attendanceForm.date &&
+                l.course_id === attendanceForm.course_id
+              )
+              .map(lecture => (
+                <option key={lecture.id} value={lecture.id}>
+                  {lecture.title} ({lecture.start_time} - {lecture.end_time})
+                </option>
+              ))}
+          </select>
+          <small>Only shows lectures scheduled for selected date & course</small>
+        </div>
+
+        {/* Status & Notes */}
         <div className="form-group">
           <label>Status *</label>
           <select
@@ -7776,20 +7914,32 @@ onClick={() => {
             onChange={(e) => setAttendanceForm({ ...attendanceForm, notes: e.target.value })}
             rows="3"
             className="form-textarea"
-            placeholder="e.g. Arrived 15 minutes late"
+            placeholder="e.g. Arrived 20 minutes late"
           />
         </div>
 
         <div className="modal-actions">
           <button
             className="cancel-button"
-            onClick={() => setShowAttendanceRecordModal(false)}
+            onClick={() => {
+              setShowAttendanceRecordModal(false);
+              setEditingAttendanceRecord(null);
+              setAttendanceForm({
+                student_id: '',
+                date: new Date().toISOString().split('T')[0],
+                status: 'present',
+                notes: '',
+                course_id: '',
+                lecture_id: ''
+              });
+            }}
           >
             Cancel
           </button>
           <button
             className="confirm-button"
             onClick={handleSaveAttendanceRecord}
+            disabled={!attendanceForm.student_id || !attendanceForm.date || !attendanceForm.course_id}
           >
             {editingAttendanceRecord ? 'Update' : 'Save'} Record
           </button>
@@ -8016,89 +8166,101 @@ onClick={() => {
   </div>
       )}
       
-    
-      
-   {showAssignmentUploadModal && (
+{showAssignmentUploadModal && (
   <div className="modal-overlay">
     <div className="modal large-modal">
-      <h3>Create New Assignment</h3>
-
-      {/* REQUIRED COHORT SELECTION */}
-      <div style={{
-        background: '#f0f8ff',
-        padding: '20px',
-        borderRadius: '10px',
-        marginBottom: '25px',
-        border: '2px solid #1976d2'
-      }}>
-        <h4 style={{ margin: '0 0 10px 0', color: '#1976d2' }}>Target Student Cohort (REQUIRED)</h4>
-        <p style={{ fontSize: '14px', marginBottom: '15px', color: '#555' }}>
-          Select the exact group of students who should receive this assignment.
-        </p>
-        <div className="form-row">
-          <div className="form-group">
-            <label>Academic Year *</label>
-            <input
-              type="text"
-              value={selectedCohort.academic_year}
-              onChange={(e) => setSelectedCohort({ ...selectedCohort, academic_year: e.target.value.trim() })}
-              placeholder="e.g. 2025/2029"
-              className="form-input"
-              style={{ borderColor: cohortError ? '#d32f2f' : '' }}
-            />
+            <h3>Create New Assignment</h3>
+               {/* === TARGET COHORT SELECTION === */}
+        <div style={{
+          background: '#f0fff4',
+          padding: '20px',
+          borderRadius: '10px',
+          marginBottom: '25px',
+          border: '2px solid #388e3c'
+        }}>
+          <h4 style={{ margin: '0 0 10px 0', color: '#388e3c' }}>
+            🎯 Target Student Cohort (REQUIRED)
+          </h4>
+          <p style={{ fontSize: '14px', marginBottom: '15px', color: '#555' }}>
+            Select the exact group of students who should see this assignment.
+          </p>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Academic Year *</label>
+              <input
+                type="text"
+                value={selectedCohort.academic_year}
+                onChange={(e) => setSelectedCohort({ ...selectedCohort, academic_year: e.target.value.trim() })}
+                placeholder="e.g. 2025/2029"
+                className="form-input"
+                style={{ borderColor: cohortError ? '#d32f2f' : '' }}
+              />
+            </div>
+            <div className="form-group">
+              <label>Year of Study *</label>
+              <select
+                value={selectedCohort.year_of_study}
+                onChange={(e) => setSelectedCohort({ ...selectedCohort, year_of_study: parseInt(e.target.value) })}
+                className="form-select"
+              >
+                <option value={1}>Year 1</option>
+                <option value={2}>Year 2</option>
+                <option value={3}>Year 3</option>
+                <option value={4}>Year 4</option>
+              </select>
+            </div>
+            <div className="form-group">
+              <label>Semester *</label>
+              <select
+                value={selectedCohort.semester}
+                onChange={(e) => setSelectedCohort({ ...selectedCohort, semester: parseInt(e.target.value) })}
+                className="form-select"
+              >
+                <option value={1}>Semester 1</option>
+                <option value={2}>Semester 2</option>
+              </select>
+            </div>
           </div>
-          <div className="form-group">
-            <label>Year of Study *</label>
-            <select
-              value={selectedCohort.year_of_study}
-              onChange={(e) => setSelectedCohort({ ...selectedCohort, year_of_study: parseInt(e.target.value) })}
-              className="form-select"
-            >
-              <option value={1}>Year 1</option>
-              <option value={2}>Year 2</option>
-              <option value={3}>Year 3</option>
-              <option value={4}>Year 4</option>
-            </select>
-          </div>
-          <div className="form-group">
-            <label>Semester *</label>
-            <select
-              value={selectedCohort.semester}
-              onChange={(e) => setSelectedCohort({ ...selectedCohort, semester: parseInt(e.target.value) })}
-              className="form-select"
-            >
-              <option value={1}>Semester 1</option>
-              <option value={2}>Semester 2</option>
-            </select>
+          {cohortError && (
+            <p style={{ color: '#d32f2f', fontWeight: 'bold', marginTop: '10px' }}>
+              ⚠️ {cohortError}
+            </p>
+          )}
+          <div style={{
+            marginTop: '10px',
+            padding: '10px',
+            background: '#e3fcec',
+            borderRadius: '6px',
+            fontSize: '14px'
+          }}>
+            <strong>Targeting:</strong> {selectedCohort.academic_year || '—'} • 
+            Year {selectedCohort.year_of_study || '—'} • 
+            Semester {selectedCohort.semester || '—'}
           </div>
         </div>
-        {cohortError && (
-          <p style={{ color: '#d32f2f', fontWeight: 'bold', marginTop: '10px' }}>
-            ⚠️ {cohortError}
-          </p>
-        )}
-      </div>
 
       <div className="modal-form">
+        {/* Course Selection */}
         <div className="form-group">
           <label className="form-label">Course *</label>
-     <select
-  value={newAssignment.course_id}
-  onChange={(e) => setNewAssignment({ ...newAssignment, course_id: e.target.value })}
-  className="form-select"
-  required
->
-  <option value="">Select a course</option>
-  {courses
-    .filter(course => course.lecturer_id === profile.id) // Only my assigned courses
-    .map(course => (
-      <option key={course.id} value={course.id}>
-        {course.course_code} - {course.course_name} ({course.department_code})
-      </option>
-    ))}
-</select>
+          <select
+            value={newAssignment.course_id}
+            onChange={(e) => setNewAssignment({ ...newAssignment, course_id: e.target.value })}
+            className="form-select"
+            required
+          >
+            <option value="">Select a course</option>
+            {courses
+              .filter(course => course.lecturer_id === profile.id)
+              .map(course => (
+                <option key={course.id} value={course.id}>
+                  {course.course_code} - {course.course_name} ({course.department_code})
+                </option>
+              ))}
+          </select>
         </div>
 
+        {/* Title */}
         <div className="form-group">
           <label className="form-label">Title *</label>
           <input
@@ -8111,6 +8273,7 @@ onClick={() => {
           />
         </div>
 
+        {/* Due Date & Total Marks */}
         <div className="form-row">
           <div className="form-group">
             <label className="form-label">Due Date & Time *</label>
@@ -8127,7 +8290,7 @@ onClick={() => {
             <input
               type="number"
               value={newAssignment.total_marks}
-              onChange={(e) => setNewAssignment({ ...newAssignment, total_marks: parseInt(e.target.value) })}
+              onChange={(e) => setNewAssignment({ ...newAssignment, total_marks: parseInt(e.target.value) || 100 })}
               min="1"
               className="form-input"
               required
@@ -8135,6 +8298,7 @@ onClick={() => {
           </div>
         </div>
 
+        {/* Description */}
         <div className="form-group">
           <label className="form-label">Description</label>
           <textarea
@@ -8146,6 +8310,7 @@ onClick={() => {
           />
         </div>
 
+        {/* Instructions */}
         <div className="form-group">
           <label className="form-label">Instructions</label>
           <textarea
@@ -8157,11 +8322,13 @@ onClick={() => {
           />
         </div>
 
-        {/* File upload section remains exactly as before */}
+     
+
+        {/* === FILE UPLOAD SECTION === */}
         <div className="form-group">
           <label className="form-label">Assignment Files (Optional)</label>
           <p className="small-text" style={{ color: '#3b82f6', marginBottom: '10px' }}>
-            📦 Files will be uploaded to <strong>public lecturerbucket</strong>
+            📦 Files will be uploaded to public lecturerbucket
           </p>
           <div
             className="file-upload-area"
@@ -8180,10 +8347,10 @@ onClick={() => {
               ref={fileInputRef}
               multiple
               onChange={(e) => {
-                const files = Array.from(e.target.files);
+                const files = Array.from(e.target.files || []);
                 setAssignmentFiles(prev => [...prev, ...files]);
               }}
-              className="file-input"
+              style={{ display: 'none' }}
             />
             <div className="upload-icon">📤</div>
             <p><strong>Drag & drop files here or click to browse</strong></p>
@@ -8214,7 +8381,9 @@ onClick={() => {
                       <button
                         className="remove-file"
                         onClick={() => setAssignmentFiles(prev => prev.filter((_, i) => i !== index))}
-                      >×</button>
+                      >
+                        ×
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -8223,13 +8392,67 @@ onClick={() => {
           )}
         </div>
 
+        {/* Submission Type & Settings */}
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">Submission Type</label>
+            <select
+              value={newAssignment.submission_type}
+              onChange={(e) => setNewAssignment({ ...newAssignment, submission_type: e.target.value })}
+              className="form-select"
+            >
+              <option value="file">File Upload</option>
+              <option value="text">Text Submission</option>
+              <option value="both">Both File & Text</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Max File Size (MB)</label>
+            <input
+              type="number"
+              value={newAssignment.max_file_size}
+              onChange={(e) => setNewAssignment({ ...newAssignment, max_file_size: parseInt(e.target.value) })}
+              min="1"
+              max="100"
+              className="form-input"
+            />
+          </div>
+        </div>
+
+        {/* Allowed Formats */}
+        <div className="form-group">
+          <label className="form-label">Allowed File Formats</label>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '5px' }}>
+            {['pdf', 'doc', 'docx', 'zip', 'jpg', 'png', 'txt'].map(format => (
+              <label key={format} style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                <input
+                  type="checkbox"
+                  checked={newAssignment.allowed_formats?.includes(format) || false}
+                  onChange={(e) => {
+                    const newFormats = e.target.checked
+                      ? [...(newAssignment.allowed_formats || []), format]
+                      : (newAssignment.allowed_formats || []).filter(f => f !== format);
+                    setNewAssignment({ ...newAssignment, allowed_formats: newFormats });
+                  }}
+                />
+                <span style={{ fontSize: '14px' }}>.{format.toUpperCase()}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Buttons */}
         <div className="modal-actions">
           <button
             className="cancel-button"
             onClick={() => {
               setShowAssignmentUploadModal(false);
               setAssignmentFiles([]);
-              setSelectedCohort({ academic_year: '', year_of_study: 1, semester: 1 });
+              setSelectedCohort({
+                academic_year: '',
+                year_of_study: 1,
+                semester: 1
+              });
               setCohortError('');
             }}
           >
@@ -8237,10 +8460,7 @@ onClick={() => {
           </button>
           <button
             className="confirm-button"
-            onClick={() => {
-              if (!validateCohort()) return;
-              handleCreateAssignment();
-            }}
+            onClick={handleCreateAssignment}
             disabled={loading.creatingAssignment || uploadingFiles}
           >
             {loading.creatingAssignment ? 'Creating...' : 'Create Assignment'}
@@ -8375,14 +8595,13 @@ onClick={() => {
             <div className="modal-form">
               <div className="form-group">
                 <label className="form-label">Role</label>
-                <select
-                  value={newUser.role}
-                  onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
-                  className="form-select"
-                >
-                  <option value="student">Student</option>
-                  <option value="lecturer">Lecturer</option>
-                </select>
+<select
+  value={newUser.role}
+  onChange={(e) => setNewUser({ ...newUser, role: e.target.value })}
+>
+  <option value="student">Student</option>
+  <option value="lecturer">Lecturer</option>
+</select>
               </div>
              
               <div className="form-group">
@@ -9795,59 +10014,65 @@ onClick={() => {
   <li>Total Active Courses Found: Will be shown after confirmation</li>
 </ul>
 <p><strong>Includes courses from all years and semesters.</strong></p>
-                <button
-                  className="confirm-button"
-                 onClick={async () => {
-  if (!window.confirm(
-    `Enroll ${enrollStudent.full_name} in ALL active courses for their program?\n\n` +
-    `Program: ${enrollStudent.program} (${enrollStudent.program_code})\n` +
-    `This will include courses from all years and semesters.`
-  )) return;
+             <button
+  className="confirm-button"
+  onClick={async () => {
+    if (!window.confirm(
+      `Enroll ${enrollStudent.full_name} in ALL active courses for program ${enrollStudent.program_code}?\n\n` +
+      `This includes courses from all years and semesters.\n` +
+      `Already enrolled courses will be skipped safely.`
+    )) return;
 
-  try {
-    const { data: courses, error: fetchError } = await supabase
-      .from('courses')
-      .select('id')
-      .eq('program_code', enrollStudent.program_code)
-      .eq('is_active', true);
+    try {
+      // Fetch all active courses for this program code
+      const { data: courses, error: fetchError } = await supabase
+        .from('courses')
+        .select('id')
+        .eq('program_code', enrollStudent.program_code)
+        .eq('is_active', true);
 
-    if (fetchError) throw fetchError;
-    if (courses.length === 0) {
-      alert('No active courses found for this program code: ' + enrollStudent.program_code);
-      return;
-    }
+      if (fetchError) throw fetchError;
 
-    const enrollments = courses.map(c => ({
-      student_id: enrollStudent.id,
-      course_id: c.id,
-      status: 'enrolled',
-      enrollment_date: new Date().toISOString().split('T')[0]
-    }));
-
-    const { error: insertError } = await supabase
-      .from('student_courses')
-      .insert(enrollments);
-
-    if (insertError) {
-      if (insertError.code === '23505') {
-        alert('Some courses were already enrolled (skipped duplicates). Others enrolled successfully.');
-      } else {
-        throw insertError;
+      if (courses.length === 0) {
+        alert(`No active courses found for program code: ${enrollStudent.program_code}`);
+        return;
       }
-    } else {
-      alert(`✅ Successfully enrolled in ${courses.length} course(s) for ${enrollStudent.program_code}!`);
-    }
 
-    setShowEnrollModal(false);
-    setEnrollStudent(null);
-  } catch (err) {
-    console.error(err);
-    alert('Enrollment failed: ' + err.message);
-  }
-}}
-                >
-                 Enroll in All Courses ({enrollStudent.program_code})
-                </button>
+   const enrollments = courses.map(c => ({
+  student_id: enrollStudent.id,
+  course_id: c.id,
+  program_code: enrollStudent.program_code.trim().toUpperCase(), // ← ADD THIS LINE
+  status: 'enrolled',
+  enrollment_date: new Date().toISOString().split('T')[0],
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString()
+}));
+
+const { error: insertError } = await supabase
+  .from('student_courses')
+  .upsert(enrollments, {
+    onConflict: 'student_id,course_id',  // ← Only these two columns
+    ignoreDuplicates: true
+  });
+
+if (insertError) {
+  console.error('Upsert error:', insertError);
+  alert('Some enrollments may have failed: ' + insertError.message);
+} else {
+  alert(`✅ Successfully enrolled in ${enrollments.length} course(s)! (Duplicates skipped safely)`);
+}
+
+      setShowEnrollModal(false);
+      setEnrollStudent(null);
+
+    } catch (err) {
+      console.error('Enrollment failed:', err);
+      alert('Enrollment failed: ' + err.message);
+    }
+  }}
+>
+  Enroll in All Courses ({enrollStudent.program_code})
+</button>
               </div>
 
               <div className="option-card">
