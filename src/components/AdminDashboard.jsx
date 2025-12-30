@@ -6676,7 +6676,7 @@ onClick={() => {
                         <th>Lecturer ID</th>
                         <th>Name</th>
                         <th>Email</th>
-                        <th>Google Meet</th>
+                        
                         <th>Department</th>
                         <th>Specialization</th>
                         <th>Status</th>
@@ -6689,20 +6689,6 @@ onClick={() => {
                           <td>{lecturer.lecturer_id}</td>
                           <td>{lecturer.full_name}</td>
                           <td>{lecturer.email}</td>
-                          <td>
-                            {lecturer.google_meet_link ? (
-                              <a
-                                href={lecturer.google_meet_link}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="meet-link small"
-                              >
-                                🔗 Link
-                              </a>
-                            ) : (
-                              <span className="text-muted">No link</span>
-                            )}
-                          </td>
                           <td>
                             {renderLecturerDepartments(lecturer)}
                           </td>
@@ -9256,17 +9242,7 @@ onClick={() => {
                       className="form-input"
                     />
                   </div>
-                 
-                  <div className="form-group">
-                    <label className="form-label">Google Meet Link (Optional)</label>
-                    <input
-                      type="url"
-                      value={newUser.google_meet_link}
-                      onChange={(e) => setNewUser({ ...newUser, google_meet_link: e.target.value })}
-                      placeholder="https://meet.google.com/xxx-xxxx-xxx"
-                      className="form-input"
-                    />
-                  </div>
+            
                 </>
               )}
              
