@@ -295,6 +295,25 @@ const [loadingAssignments, setLoadingAssignments] = useState(true);
 const [attendanceRecords, setAttendanceRecords] = useState([]);
 const [attendanceError, setAttendanceError] = useState(null);
  
+// === FINANCE TAB STATES (for Admin viewing Finance like FinanceDashboard) ===
+const [financeStudents, setFinanceStudents] = useState([]);
+const [selectedFinanceStudent, setSelectedFinanceStudent] = useState(null);
+const [financeRecords, setFinanceRecords] = useState([]);
+const [financeSearch, setFinanceSearch] = useState('');
+const [financeLoading, setFinanceLoading] = useState(false);  
+const [totalBilled, setTotalBilled] = useState(0);
+const [totalPaid, setTotalBilledPaid] = useState(0);
+const [totalOutstanding, setTotalOutstanding] = useState(0);
+const [summaryLoading, setSummaryLoading] = useState(true); 
+
+  // Bypass tool states
+const [bypassSearch, setBypassSearch] = useState('');
+const [bypassStudent, setBypassStudent] = useState(null);
+const [bypassLoading, setBypassLoading] = useState(false);
+const [bypassError, setBypassError] = useState('');
+  
+  
+  
 const [myExams, setMyExams] = useState([]); // lecturer's scheduled exams
 const [examSubmissions, setExamSubmissions] = useState([]); // student submissions
 const [selectedExamForGrading, setSelectedExamForGrading] = useState(null); // currently viewed exam
@@ -396,6 +415,178 @@ useEffect(() => {
   }
 }, [activeTab, isAdmin]);
 
+  
+  
+  // Load overall finance summary when entering Finance tab
+useEffect(() => {
+  if (activeTab !== 'finance' || !isAdmin) return;
+
+  const loadFinanceSummary = async () => {
+    setSummaryLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('financial_records')
+        .select('amount, status');
+
+      if (error) throw error;
+
+      const billed = data.reduce((sum, r) => sum + r.amount, 0);
+      const paid = data
+        .filter(r => r.status === 'paid')
+        .reduce((sum, r) => sum + r.amount, 0);
+      const outstanding = billed - paid;
+
+      setTotalBilled(billed);
+      setTotalBilledPaid(paid);
+      setTotalOutstanding(outstanding);
+    } catch (err) {
+      console.error('Error loading finance summary:', err);
+      alert('Failed to load revenue summary');
+    } finally {
+      setSummaryLoading(false);
+    }
+  };
+
+  loadFinanceSummary();
+}, [activeTab, isAdmin]);
+ // Load finance students when search changes or tab opens
+useEffect(() => {
+  if (activeTab !== 'finance' || !isAdmin) return;
+
+  const loadStudents = async () => {
+    setFinanceLoading(true);
+    let query = supabase
+      .from('students')
+      .select('id, student_id, full_name, email, program, academic_year')
+      .order('full_name', { ascending: true });
+
+    if (financeSearch.trim()) {
+      query = query.or(
+        `full_name.ilike.%${financeSearch}%,student_id.ilike.%${financeSearch}%,email.ilike.%${financeSearch}%`
+      );
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      console.error('Error loading students:', error);
+      alert('Failed to load students');
+      setFinanceStudents([]);
+    } else {
+      setFinanceStudents(data || []);
+    }
+    setFinanceLoading(false);
+  };
+
+  loadStudents();
+}, [activeTab, isAdmin, financeSearch]); 
+  
+  
+  
+  const searchStudentForBypass = async () => {
+  if (!bypassSearch.trim()) {
+    setBypassError('Enter a student ID or name');
+    return;
+  }
+
+  setBypassLoading(true);
+  setBypassError('');
+  setBypassStudent(null);
+
+  try {
+    let query = supabase
+      .from('students')
+      .select('id, student_id, full_name, program, fees_clearance_bypassed, attendance_clearance_bypassed, exam_clearance_bypassed');
+
+    if (bypassSearch.includes('-')) {
+      // Likely student ID
+      query = query.eq('student_id', bypassSearch.trim());
+    } else {
+      // Name search
+      query = query.ilike('full_name', `%${bypassSearch.trim()}%`);
+    }
+
+    const { data, error } = await query.limit(1).single();
+
+    if (error || !data) {
+      setBypassError('Student not found');
+    } else {
+      setBypassStudent(data);
+    }
+  } catch (err) {
+    setBypassError('Search failed');
+  } finally {
+    setBypassLoading(false);
+  }
+};
+
+const handleToggleBypass = async (field) => {
+  if (!bypassStudent) return;
+
+  setBypassLoading(true);
+
+  const newValue = !bypassStudent[field];
+
+  const { error } = await supabase
+    .from('students')
+    .update({ [field]: newValue })
+    .eq('id', bypassStudent.id);
+
+  if (error) {
+    alert('Failed to update: ' + error.message);
+  } else {
+    alert(`${field.replace('_', ' ')} ${newValue ? 'enabled' : 'disabled'} successfully`);
+    setBypassStudent({ ...bypassStudent, [field]: newValue });
+  }
+
+  setBypassLoading(false);
+};
+  
+  const loadStudentFinance = async (studentId) => {
+  setFinanceLoading(true);
+  const { data, error } = await supabase
+    .from('financial_records')
+    .select('*')
+    .eq('student_id', studentId)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('Error:', error);
+    alert('Failed to load records');
+    setFinanceRecords([]);
+  } else {
+    setFinanceRecords(data || []);
+  }
+  setFinanceLoading(false);
+};
+
+const handleViewStudentFinance = (student) => {
+  setSelectedFinanceStudent(student);
+  loadStudentFinance(student.id);
+};
+
+const handleUpdateFinanceStatus = async (recordId, newStatus) => {
+  if (!window.confirm(`Mark as ${newStatus}?`)) return;
+
+  const updates = { status: newStatus };
+  if (newStatus === 'paid') {
+    updates.payment_date = new Date().toISOString().split('T')[0];
+  }
+
+  const { error } = await supabase
+    .from('financial_records')
+    .update(updates)
+    .eq('id', recordId);
+
+  if (error) {
+    alert('Error: ' + error.message);
+  } else {
+    alert('Updated successfully!');
+    if (selectedFinanceStudent) {
+      loadStudentFinance(selectedFinanceStudent.id);
+    }
+  }
+};
+  
 // === ADD FETCH PROGRAMS FUNCTION ===
 // const fetchPrograms = async () => {
 //   try {
@@ -4502,24 +4693,7 @@ const handleAddExam = async () => {
     }
   };
 
-  // Finance management
-  const handleUpdateFinanceStatus = async (recordId, status) => {
-    try {
-      const { error } = await supabase
-        .from('financial_records')
-        .update({ status })
-        .eq('id', recordId);
-     
-      if (error) throw error;
-     
-      fetchFinancialRecords();
-      alert(`Payment marked as ${status}!`);
-     
-    } catch (error) {
-      console.error('Error updating finance record:', error);
-      alert('Error updating finance record: ' + error.message);
-    }
-  };
+
 
   const handleLogout = async () => {
     try {
@@ -6575,95 +6749,351 @@ onClick={() => {
             )}
 
             {/* Finance Tab - Admin Only */}
-            {activeTab === 'finance' && isAdmin && (
-              <div className="tab-content">
-                <div className="tab-header">
-                  <h2>💰 Financial Management</h2>
-                  <button
-                    className="add-button"
-                    onClick={() => setShowFinanceModal(true)}
-                  >
-                    + Add Record
-                  </button>
-                </div>
-               
-                <div className="financial-overview">
-                  <div className="financial-card">
-                    <h3>Total Revenue</h3>
-                    <p className="financial-amount positive">
-                      ${(stats.totalFinancialRecords * 1000).toLocaleString()}
-                    </p>
-                    <small>This academic year</small>
-                  </div>
-                  <div className="financial-card">
-                    <h3>Pending Payments</h3>
-                    <p className="financial-amount negative">
-                      ${(stats.pendingPayments * 500).toLocaleString()}
-                    </p>
-                    <small>Awaiting clearance</small>
-                  </div>
-                  <div className="financial-card">
-                    <h3>Cleared Payments</h3>
-                    <p className="financial-amount neutral">
-                      ${((stats.totalFinancialRecords - stats.pendingPayments) * 1000).toLocaleString()}
-                    </p>
-                    <small>Successfully processed</small>
-                  </div>
-                </div>
-               
-                <div className="table-container">
-                  <h3>Recent Transactions</h3>
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Receipt No</th>
-                        <th>Student ID</th>
-                        <th>Description</th>
-                        <th>Amount</th>
-                        <th>Date</th>
-                        <th>Status</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {financialRecords.slice(0, 10).map(record => (
-                        <tr key={record.id}>
-                          <td>{record.receipt_number || 'N/A'}</td>
-                          <td>{record.student_id?.slice(0, 8) || 'Unknown'}</td>
-                          <td>{record.description}</td>
-                          <td>${record.amount}</td>
-                          <td>{new Date(record.payment_date || record.created_at).toLocaleDateString()}</td>
-                          <td>
-                            <span className={`status-badge ${record.status}`}>
-                              {record.status}
-                            </span>
-                          </td>
-                          <td>
-                            <div className="action-buttons">
-                              <button
-                                className="action-btn view"
-                                onClick={() => setSelectedFinanceRecord(record)}
-                              >
-                                View
-                              </button>
-                              <button
-                                className="action-btn edit"
-                                onClick={() => handleUpdateFinanceStatus(record.id,
-                                  record.status === 'pending' ? 'paid' : 'pending'
-                                )}
-                              >
-                                {record.status === 'pending' ? 'Mark Paid' : 'Mark Pending'}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
+{activeTab === 'finance' && isAdmin && (
+  <div className="tab-content">
+    <div className="tab-header">
+      <h2>Finance Dashboard — University Revenue Overview</h2>
+      <p>Complete financial summary and student transaction management</p>
+    </div>
 
+    {/* ==================== OVERALL REVENUE SUMMARY ==================== */}
+    <div style={{
+      background: '#f8f9fa',
+      padding: '25px',
+      borderRadius: '12px',
+      marginBottom: '30px',
+      border: '1px solid #dee2e6'
+    }}>
+      <h3 style={{ margin: '0 0 20px 0', color: '#495057' }}>University Revenue Summary</h3>
+
+      {summaryLoading ? (
+        <div style={{ textAlign: 'center', padding: '20px' }}>
+          <div className="spinner"></div>
+          <p>Loading revenue data...</p>
+        </div>
+      ) : (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
+          gap: '20px'
+        }}>
+          <div className="stat-card large" style={{
+            background: '#e3f2fd',
+            borderLeft: '5px solid #2196f3',
+            padding: '20px',
+            borderRadius: '8px'
+          }}>
+            <h4 style={{ margin: '0 0 10px 0', color: '#1976d2' }}>Total Billed</h4>
+            <p style={{ fontSize: '32px', fontWeight: 'bold', color: '#1976d2', margin: '10px 0' }}>
+              ${totalBilled.toFixed(2)}
+            </p>
+            <small>All fees charged to students</small>
+          </div>
+
+          <div className="stat-card large success" style={{
+            background: '#e8f5e8',
+            borderLeft: '5px solid #4caf50',
+            padding: '20px',
+            borderRadius: '8px'
+          }}>
+            <h4 style={{ margin: '0 0 10px 0', color: '#2e7d32' }}>Total Paid</h4>
+            <p style={{ fontSize: '32px', fontWeight: 'bold', color: '#2e7d32', margin: '10px 0' }}>
+              ${totalPaid.toFixed(2)}
+            </p>
+            <small>Successfully collected</small>
+          </div>
+
+          <div className={`stat-card large ${totalOutstanding > 0 ? 'warning' : 'success'}`} style={{
+            background: totalOutstanding > 0 ? '#fff3e0' : '#e8f5e8',
+            borderLeft: `5px solid ${totalOutstanding > 0 ? '#ff9800' : '#4caf50'}`,
+            padding: '20px',
+            borderRadius: '8px'
+          }}>
+            <h4 style={{ margin: '0 0 10px 0', color: totalOutstanding > 0 ? '#ef6c00' : '#2e7d32' }}>
+              Outstanding Balance
+            </h4>
+            <p style={{
+              fontSize: '32px',
+              fontWeight: 'bold',
+              color: totalOutstanding > 0 ? '#ef6c00' : '#2e7d32',
+              margin: '10px 0'
+            }}>
+              ${totalOutstanding.toFixed(2)}
+            </p>
+            <small>
+              {totalOutstanding > 0 ? 'Still owed by students' : 'All fees collected!'}
+            </small>
+          </div>
+        </div>
+      )}
+    </div>
+
+    {/* ==================== ADMIN OVERRIDE TOOL (Fees + Attendance + Exam Clearance) ==================== */}
+    <div style={{
+      background: '#fff3e0',
+      padding: '20px',
+      borderRadius: '12px',
+      marginBottom: '30px',
+      border: '2px dashed #ff9800'
+    }}>
+      <h3 style={{ margin: '0 0 15px 0', color: '#ef6c00' }}>
+        🔓 Admin Override: Bypass Fees, Attendance & Exam Clearance
+      </h3>
+      <p style={{ marginBottom: '15px', color: '#666' }}>
+        Allow a student to access lectures and take exams even if fees or attendance requirements are not met.
+      </p>
+
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'end' }}>
+        <div style={{ flex: 1, minWidth: '300px' }}>
+          <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+            Search Student (by ID or Name)
+          </label>
+          <input
+            type="text"
+            placeholder="e.g. SCT-249726 or Alice"
+            value={bypassSearch}
+            onChange={(e) => setBypassSearch(e.target.value)}
+            className="search-input"
+            style={{ width: '100%', padding: '10px' }}
+          />
+        </div>
+        <button
+          className="action-btn warning"
+          onClick={searchStudentForBypass}
+          disabled={bypassLoading}
+        >
+          {bypassLoading ? 'Searching...' : 'Search'}
+        </button>
+      </div>
+
+      {bypassStudent && (
+        <div style={{
+          marginTop: '20px',
+          padding: '15px',
+          background: '#fff8e1',
+          borderRadius: '8px',
+          border: '1px solid #ffb74d'
+        }}>
+          <strong>Found:</strong> {bypassStudent.full_name} ({bypassStudent.student_id}) — {bypassStudent.program}
+          <br /><br />
+
+          {/* Current status display */}
+          <div style={{ marginBottom: '15px', fontSize: '14px' }}>
+            <strong>Current Override Status:</strong><br/>
+            Fees Bypass: {bypassStudent.fees_clearance_bypassed ? <span style={{ color: '#28a745' }}>✓ Enabled</span> : <span style={{ color: '#dc3545' }}>✗ Disabled</span>}<br/>
+            Attendance Bypass: {bypassStudent.attendance_clearance_bypassed ? <span style={{ color: '#28a745' }}>✓ Enabled</span> : <span style={{ color: '#dc3545' }}>✗ Disabled</span>}<br/>
+            Exam Bypass: {bypassStudent.exam_clearance_bypassed ? <span style={{ color: '#28a745' }}>✓ Enabled</span> : <span style={{ color: '#dc3545' }}>✗ Disabled</span>}
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button
+              className="action-btn success small"
+              onClick={() => handleToggleBypass('fees_clearance_bypassed')}
+              disabled={bypassLoading}
+            >
+              {bypassStudent.fees_clearance_bypassed ? 'Disable' : 'Enable'} Fees Bypass
+            </button>
+
+            <button
+              className="action-btn success small"
+              onClick={() => handleToggleBypass('attendance_clearance_bypassed')}
+              disabled={bypassLoading}
+            >
+              {bypassStudent.attendance_clearance_bypassed ? 'Disable' : 'Enable'} Attendance Bypass
+            </button>
+
+            <button
+              className="action-btn danger"
+              onClick={() => handleToggleBypass('exam_clearance_bypassed')}
+              disabled={bypassLoading}
+            >
+              {bypassStudent.exam_clearance_bypassed ? 'Disable' : 'Enable'} Exam Bypass
+            </button>
+          </div>
+
+          <p style={{ fontSize: '12px', color: '#d32f2f', marginTop: '15px' }}>
+            Warning: These overrides allow access to lectures and exams regardless of actual fees or attendance.
+          </p>
+        </div>
+      )}
+
+      {bypassError && (
+        <p style={{ color: '#d32f2f', marginTop: '10px' }}>{bypassError}</p>
+      )}
+    </div>
+
+    {/* ==================== STUDENT SEARCH & INDIVIDUAL VIEW ==================== */}
+    {!selectedFinanceStudent ? (
+      <>
+        <div style={{ marginBottom: '20px' }}>
+          <input
+            type="text"
+            placeholder="Search students by name, ID, or email..."
+            value={financeSearch}
+            onChange={(e) => setFinanceSearch(e.target.value)}
+            className="search-input"
+            style={{ width: '500px', padding: '12px', fontSize: '16px' }}
+          />
+        </div>
+
+        {financeLoading ? (
+          <div style={{ textAlign: 'center', padding: '40px' }}>
+            <div className="spinner"></div>
+            <p>Loading student list...</p>
+          </div>
+        ) : financeStudents.length === 0 ? (
+          <div className="empty-state">
+            <p>No students found matching your search.</p>
+          </div>
+        ) : (
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Student ID</th>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Program</th>
+                  <th>Academic Year</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {financeStudents.map((s) => (
+                  <tr key={s.id}>
+                    <td><strong>{s.student_id}</strong></td>
+                    <td>{s.full_name}</td>
+                    <td>{s.email}</td>
+                    <td>{s.program || 'N/A'}</td>
+                    <td>{s.academic_year || 'N/A'}</td>
+                    <td>
+                      <button
+                        className="action-btn view"
+                        onClick={() => handleViewStudentFinance(s)}
+                      >
+                        View Finance
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </>
+    ) : (
+      <>
+        <div style={{ marginBottom: '20px' }}>
+          <button
+            className="back-button"
+            onClick={() => {
+              setSelectedFinanceStudent(null);
+              setFinanceRecords([]);
+            }}
+          >
+            ← Back to Student List
+          </button>
+        </div>
+
+        <h3>
+          Financial Records — {selectedFinanceStudent.full_name}{' '}
+          <span style={{ fontWeight: 'normal', color: '#666' }}>
+            ({selectedFinanceStudent.student_id})
+          </span>
+        </h3>
+
+        {/* Individual Student Summary */}
+        {(() => {
+          const totalBilled = financeRecords.reduce((sum, r) => sum + r.amount, 0);
+          const totalPaid = financeRecords
+            .filter((r) => r.status === 'paid')
+            .reduce((sum, r) => sum + r.amount, 0);
+          const balance = totalBilled - totalPaid;
+
+          return (
+            <div style={{ display: 'flex', gap: '20px', margin: '30px 0', flexWrap: 'wrap' }}>
+              <div className="stat-card" style={{ flex: 1, minWidth: '200px' }}>
+                <h4>Total Billed</h4>
+                <p style={{ fontSize: '28px', fontWeight: 'bold' }}>${totalBilled.toFixed(2)}</p>
+              </div>
+              <div className="stat-card success" style={{ flex: 1, minWidth: '200px' }}>
+                <h4>Total Paid</h4>
+                <p style={{ fontSize: '28px', fontWeight: 'bold', color: '#28a745' }}>${totalPaid.toFixed(2)}</p>
+              </div>
+              <div className={`stat-card ${balance > 0 ? 'warning' : 'success'}`} style={{ flex: 1, minWidth: '200px' }}>
+                <h4>Outstanding</h4>
+                <p style={{ fontSize: '28px', fontWeight: 'bold', color: balance > 0 ? '#dc3545' : '#28a745' }}>
+                  ${balance.toFixed(2)}
+                </p>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Individual Student Records Table */}
+        <div className="table-container">
+          {financeLoading ? (
+            <p>Loading records...</p>
+          ) : financeRecords.length === 0 ? (
+            <div className="empty-state">
+              <p>No financial records found for this student.</p>
+            </div>
+          ) : (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Description</th>
+                  <th>Amount</th>
+                  <th>Status</th>
+                  <th>Receipt #</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {financeRecords.map((r) => (
+                  <tr key={r.id}>
+                    <td>
+                      {r.payment_date
+                        ? new Date(r.payment_date).toLocaleDateString()
+                        : new Date(r.created_at).toLocaleDateString()}
+                    </td>
+                    <td>{r.description}</td>
+                    <td>${r.amount.toFixed(2)}</td>
+                    <td>
+                      <span className={`status-badge ${r.status}`}>
+                        {r.status.toUpperCase()}
+                      </span>
+                    </td>
+                    <td>{r.receipt_number || '—'}</td>
+                    <td>
+                      {r.status === 'pending' && (
+                        <button
+                          className="action-btn success small"
+                          onClick={() => handleUpdateFinanceStatus(r.id, 'paid')}
+                        >
+                          Mark Paid
+                        </button>
+                      )}
+                      {r.status === 'paid' && (
+                        <button
+                          className="action-btn warning small"
+                          onClick={() => handleUpdateFinanceStatus(r.id, 'pending')}
+                        >
+                          Revert
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </>
+    )}
+  </div>
+)}
 {/* Attendance Tab */}
 {/* Attendance Tab */}
 {activeTab === 'attendance' && (
