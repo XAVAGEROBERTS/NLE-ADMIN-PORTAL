@@ -58,8 +58,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
     amount: '',
     description: '',
     due_date: '',
-    category: 'tuition',
-    fee_type: 'tuition',
+    category: '',
     academic_year: new Date().getFullYear().toString(),
     semester: 1,
     receipt_number: '',
@@ -145,7 +144,12 @@ const FinanceDashboard = ({ profile, signOut }) => {
         .order('priority');
       
       if (categoriesError) throw categoriesError;
-      if (categoriesData) setFeeCategories(categoriesData);
+      if (categoriesData) {
+        setFeeCategories(categoriesData);
+        if (categoriesData.length > 0 && !newPayment.category) {
+          setNewPayment(prev => ({ ...prev, category: categoriesData[0].category_code }));
+        }
+      }
       
     } catch (error) {
       console.error('Error fetching initial data:', error);
@@ -179,7 +183,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
         .from('financial_records')
         .select(`
           *,
-          students (student_id, full_name, program)
+          students (student_id, full_name, program, program_code)
         `)
         .order('created_at', { ascending: false })
         .limit(50);
@@ -285,7 +289,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
         .from('financial_records')
         .select(`
           *,
-          students (student_id, full_name, program, academic_year)
+          students (student_id, full_name, program, program_code, academic_year)
         `);
       
       // Apply date filter
@@ -355,7 +359,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
         .select(`
           amount,
           status,
-          students!inner (program)
+          students!inner (program, program_code)
         `)
         .eq('status', 'paid');
       
@@ -482,8 +486,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
         amount: '',
         description: '',
         due_date: '',
-        category: 'tuition',
-        fee_type: 'tuition',
+        category: feeCategories.length > 0 ? feeCategories[0].category_code : '',
         academic_year: new Date().getFullYear().toString(),
         semester: 1,
         receipt_number: '',
@@ -515,7 +518,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
             .from('financial_records')
             .select(`
               *,
-              students (full_name, student_id, program)
+              students (full_name, student_id, program, program_code)
             `)
             .order('created_at', { ascending: false });
           
@@ -530,10 +533,10 @@ const FinanceDashboard = ({ profile, signOut }) => {
             'Date': format(new Date(item.created_at), 'yyyy-MM-dd HH:mm'),
             'Student ID': item.students?.student_id || 'N/A',
             'Student Name': item.students?.full_name || 'Unknown',
+            'Program Code': item.students?.program_code || 'N/A',
             'Program': item.students?.program || 'N/A',
             'Description': item.description,
             'Amount': item.amount,
-            'Fee Type': item.fee_type || 'N/A',
             'Category': item.category || 'N/A',
             'Status': item.status,
             'Payment Method': item.payment_method || 'N/A',
@@ -549,7 +552,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
             .from('financial_records')
             .select(`
               *,
-              students (full_name, student_id, program, email, phone)
+              students (full_name, student_id, program, program_code, email, phone)
             `)
             .eq('status', 'overdue')
             .order('due_date');
@@ -566,6 +569,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
             'Student Name': item.students?.full_name || 'Unknown',
             'Email': item.students?.email || 'N/A',
             'Phone': item.students?.phone || 'N/A',
+            'Program Code': item.students?.program_code || 'N/A',
             'Program': item.students?.program || 'N/A',
             'Description': item.description,
             'Amount': item.amount,
@@ -595,6 +599,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
             'Full Name': item.full_name,
             'Email': item.email,
             'Phone': item.phone || 'N/A',
+            'Program Code': item.program_code || 'N/A',
             'Program': item.program || 'N/A',
             'Academic Year': item.academic_year || 'N/A',
             'Year of Study': item.year_of_study || 'N/A',
@@ -640,7 +645,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
         .from('financial_records')
         .select(`
           *,
-          students (full_name, student_id, program)
+          students (full_name, student_id, program, program_code)
         `)
         .eq('id', recordId)
         .single();
@@ -715,7 +720,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
               </div>
               <div class="detail-item">
                 <span class="detail-label">Program:</span>
-                <span class="detail-value">${record.students?.program || 'N/A'}</span>
+                <span class="detail-value">${record.students?.program || 'N/A'} (${record.students?.program_code || 'N/A'})</span>
               </div>
               <div class="detail-item">
                 <span class="detail-label">Academic Year:</span>
@@ -730,10 +735,6 @@ const FinanceDashboard = ({ profile, signOut }) => {
               <div class="detail-item">
                 <span class="detail-label">Description:</span>
                 <span class="detail-value">${record.description}</span>
-              </div>
-              <div class="detail-item">
-                <span class="detail-label">Fee Type:</span>
-                <span class="detail-value">${record.fee_type || 'N/A'}</span>
               </div>
               <div class="detail-item">
                 <span class="detail-label">Category:</span>
@@ -851,7 +852,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
     alert('Data refreshed successfully!');
   };
 
-  // Analytics Calculations - FIXED: Added proper data validation
+  // Analytics Calculations
   const analytics = useMemo(() => {
     // Monthly revenue data
     const monthlyData = Array.from({ length: 6 }, (_, i) => {
@@ -877,45 +878,116 @@ const FinanceDashboard = ({ profile, signOut }) => {
       };
     });
 
-    // Revenue by program - FIXED: Added null checks
+    // Revenue by program - USING PROGRAM CODE INSTEAD OF FULL NAME
     const revenueByProgram = (allTransactions || [])
       .filter(t => t && t.status === 'paid')
       .reduce((acc, t) => {
-        const program = t.students?.program || 'Unknown';
-        if (!acc[program]) {
-          acc[program] = 0;
+        // Use program_code if available, otherwise use program name
+        const programCode = t.students?.program_code || t.students?.program || 'Unknown';
+        if (!acc[programCode]) {
+          acc[programCode] = 0;
         }
-        acc[program] += t.amount || 0;
+        acc[programCode] += t.amount || 0;
         return acc;
       }, {});
 
     const programData = Object.entries(revenueByProgram || {})
-      .map(([name, value]) => ({ name, value }))
+      .map(([code, value]) => ({ 
+        name: code, // Using program code for display
+        value,
+        programName: programs.find(p => p.code === code)?.name || code // Store full name for tooltip
+      }))
       .sort((a, b) => (b.value || 0) - (a.value || 0))
       .slice(0, 5);
 
-    // Payment status distribution - FIXED: Added null checks
+    // Payment status distribution
     const statusData = [
       { name: 'Paid', value: (allTransactions || []).filter(t => t && t.status === 'paid').length },
       { name: 'Pending', value: (allTransactions || []).filter(t => t && t.status === 'pending').length },
       { name: 'Overdue', value: (allTransactions || []).filter(t => t && t.status === 'overdue').length },
       { name: 'Cancelled', value: (allTransactions || []).filter(t => t && t.status === 'cancelled').length }
     ];
+// Fee category distribution
+const categoryDistribution = {};
 
-    // Fee category distribution - FIXED: Added null checks
-    const categoryData = Object.entries(
-      (allTransactions || []).reduce((acc, t) => {
-        if (!t) return acc;
-        const category = t.category || t.fee_type || 'other';
-        if (!acc[category]) {
-          acc[category] = 0;
+(allTransactions || []).forEach((t) => {
+  if (!t || !t.category) return;
+  
+  // Clean the category code by converting to lowercase and trimming
+  const categoryCode = t.category.toLowerCase().trim();
+  
+  if (!categoryDistribution[categoryCode]) {
+    categoryDistribution[categoryCode] = 0;
+  }
+  categoryDistribution[categoryCode] += t.amount || 0;
+});
+
+const categoryData = Object.entries(categoryDistribution)
+  .map(([categoryCode, value]) => {
+    // Find the category info - match by category_code in lowercase
+    const categoryInfo = feeCategories.find(cat => 
+      cat.category_code.toLowerCase() === categoryCode.toLowerCase()
+    );
+    
+    let displayName = categoryCode;
+    
+    // First check if we have an exact match in feeCategories
+    if (categoryInfo) {
+      displayName = categoryInfo.category_name || categoryInfo.category_code;
+    } 
+    // If not found exactly, check for partial matches (like "reg" matching "registration")
+    else {
+      // Try to find a category that contains this code or vice versa
+      const partialMatch = feeCategories.find(cat => 
+        categoryCode.includes(cat.category_code.toLowerCase()) ||
+        cat.category_code.toLowerCase().includes(categoryCode)
+      );
+      
+      if (partialMatch) {
+        displayName = partialMatch.category_name || partialMatch.category_code;
+      } else {
+        // Common category mapping for known abbreviations
+        const commonCategoryMapping = {
+          'reg': 'Registration Fees',
+          'registration': 'Registration Fees',
+          'tuition': 'Tuition Fees',
+          'tuiton': 'Tuition Fees', // Common typo
+          'functional': 'Functional Fees',
+          'func': 'Functional Fees',
+          'guild': 'Guild Fees',
+          'nche': 'NCHE Fees',
+          'semester': 'Semester Fees',
+          'fee': 'Miscellaneous Fees'
+        };
+        
+        if (commonCategoryMapping[categoryCode]) {
+          displayName = commonCategoryMapping[categoryCode];
+        } else {
+          // Format to title case with "Fees" suffix if it's likely a fee category
+          const isLikelyFee = categoryCode.includes('fee') || 
+                              categoryCode.includes('payment') || 
+                              categoryCode.includes('charge');
+          
+          displayName = categoryCode
+            .split('_')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(' ');
+            
+          if (isLikelyFee && !displayName.toLowerCase().includes('fee')) {
+            displayName += ' Fees';
+          }
         }
-        acc[category] += t.amount || 0;
-        return acc;
-      }, {})
-    ).map(([name, value]) => ({ name, value }));
-
-    // Top students by revenue - FIXED: Added null checks
+      }
+    }
+    
+    return {
+      name: displayName,
+      value: value,
+      code: categoryCode
+    };
+  })
+  .sort((a, b) => (b.value || 0) - (a.value || 0));
+    // Top students by revenue
     const topStudents = (allTransactions || [])
       .filter(t => t && t.status === 'paid')
       .reduce((acc, t) => {
@@ -935,7 +1007,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
     const topStudentsData = Object.values(topStudents || {})
       .sort((a, b) => (b.total || 0) - (a.total || 0))
       .slice(0, 5);
-
+    
     return {
       monthlyData,
       programData,
@@ -947,9 +1019,8 @@ const FinanceDashboard = ({ profile, signOut }) => {
         ? (allTransactions || []).reduce((sum, t) => sum + (t.amount || 0), 0) / (allTransactions || []).length 
         : 0
     };
-  }, [allTransactions]);
+  }, [allTransactions, feeCategories, programs]);
 
-  // New function to handle report preview
   const handleReportPreview = (reportType) => {
     let previewWindow = window.open('', '_blank');
     const reportTitle = {
@@ -1309,9 +1380,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
                   <div className="finance-chart-header">
                     <h3><LineChartIcon size={20} /> Monthly Revenue Trend</h3>
                     <select className="finance-chart-filter" onChange={(e) => {
-                      // Handle chart filter change
                       const value = e.target.value;
-                      // You can implement filtering logic here
                     }}>
                       <option>Last 6 Months</option>
                       <option>Last Year</option>
@@ -1361,6 +1430,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
                             cx="50%"
                             cy="50%"
                             labelLine={false}
+                            // Display program codes in the pie chart labels
                             label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(1)}%`}
                             outerRadius={80}
                             fill="#8884d8"
@@ -1370,7 +1440,17 @@ const FinanceDashboard = ({ profile, signOut }) => {
                               <Cell key={`cell-${index}`} fill={['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'][index % 5]} />
                             ))}
                           </Pie>
-                          <Tooltip formatter={(value) => [`$${value.toLocaleString()}`, 'Amount']} />
+                          <Tooltip 
+                            formatter={(value, name, props) => [
+                              `$${value.toLocaleString()}`, 
+                              'Amount'
+                            ]}
+                            labelFormatter={(label, payload) => {
+                              // Show full program name in tooltip
+                              const fullName = payload[0]?.payload?.programName || label;
+                              return `${fullName} (${label})`;
+                            }}
+                          />
                           <Legend />
                         </PieChart>
                       </ResponsiveContainer>
@@ -1422,17 +1502,21 @@ const FinanceDashboard = ({ profile, signOut }) => {
                             data={analytics.categoryData}
                             cx="50%"
                             cy="50%"
-                            labelLine={false}
+                            labelLine={true}
                             label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(1)}%`}
                             outerRadius={80}
                             fill="#8884d8"
                             dataKey="value"
                           >
                             {analytics.categoryData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'][index % 5]} />
+                              <Cell key={`cell-${index}`} fill={['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8', '#FF6B6B', '#4ECDC4'][index % 7]} />
                             ))}
                           </Pie>
-                          <Tooltip formatter={(value) => [`$${value.toLocaleString()}`, 'Amount']} />
+                          <Tooltip 
+                            formatter={(value) => [`$${Number(value).toLocaleString()}`, 'Amount']}
+                            labelFormatter={(label) => `Category: ${label}`}
+                          />
+                          <Legend />
                         </PieChart>
                       </ResponsiveContainer>
                     ) : (
@@ -1466,6 +1550,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
                           <th>Date</th>
                           <th>Student</th>
                           <th>Amount</th>
+                          <th>Category</th>
                           <th>Status</th>
                           <th>Actions</th>
                         </tr>
@@ -1488,6 +1573,11 @@ const FinanceDashboard = ({ profile, signOut }) => {
                             <td>
                               <span className="finance-amount-cell">
                                 ${record.amount.toFixed(2)}
+                              </span>
+                            </td>
+                            <td>
+                              <span className="finance-category-badge">
+                                {record.category || 'N/A'}
                               </span>
                             </td>
                             <td>
@@ -1536,9 +1626,9 @@ const FinanceDashboard = ({ profile, signOut }) => {
                         </div>
                       ))
                     ) : (
-                      <div className="finance-empty-state" style={{padding: '2rem'}}>
+                      <div className="finance-empty-state" style={{padding: '2rem', textAlign: 'center'}}>
                         <Award size={32} />
-                        <p style={{marginTop: '1rem'}}>No top paying student data available</p>
+                        <p style={{marginTop: '1rem', color: '#666'}}>No top paying student data available</p>
                       </div>
                     )}
                   </div>
@@ -1868,7 +1958,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
                         <td>{record.description}</td>
                         <td>
                           <span className="finance-category-badge">
-                            {record.category || record.fee_type || 'N/A'}
+                            {record.category || 'N/A'}
                           </span>
                         </td>
                         <td>
@@ -2072,7 +2162,6 @@ const FinanceDashboard = ({ profile, signOut }) => {
                       <th>Invoice #</th>
                       <th>Description</th>
                       <th>Category</th>
-                      <th>Fee Type</th>
                       <th>Amount</th>
                       <th>Issue Date</th>
                       <th>Due Date</th>
@@ -2093,11 +2182,6 @@ const FinanceDashboard = ({ profile, signOut }) => {
                         <td>
                           <span className="finance-category-badge">
                             {record.category || 'N/A'}
-                          </span>
-                        </td>
-                        <td>
-                          <span className="finance-fee-type">
-                            {record.fee_type || 'N/A'}
                           </span>
                         </td>
                         <td>
@@ -2529,7 +2613,16 @@ const FinanceDashboard = ({ profile, signOut }) => {
                         <PolarAngleAxis dataKey="name" />
                         <PolarRadiusAxis />
                         <Radar name="Revenue" dataKey="value" stroke="#8884d8" fill="#8884d8" fillOpacity={0.6} />
-                        <Tooltip formatter={(value) => [`$${value.toLocaleString()}`, 'Revenue']} />
+                        <Tooltip 
+                          formatter={(value, name, props) => [
+                            `$${value.toLocaleString()}`, 
+                            'Revenue'
+                          ]}
+                          labelFormatter={(label, payload) => {
+                            const fullName = payload[0]?.payload?.programName || label;
+                            return `${fullName} (${label})`;
+                          }}
+                        />
                       </RadarChart>
                     </ResponsiveContainer>
                   ) : (
@@ -2603,67 +2696,25 @@ const FinanceDashboard = ({ profile, signOut }) => {
                   
                   <div className="finance-form-group">
                     <label>
-                      <Package size={14} /> Category
+                      <Package size={14} /> Category *
                     </label>
                     <select
                       value={newPayment.category}
                       onChange={(e) => setNewPayment(prev => ({ ...prev, category: e.target.value }))}
+                      required
                       className="finance-form-select"
                     >
-                      <option value="tuition">Tuition</option>
-                      <option value="registration">Registration</option>
-                      <option value="library">Library</option>
-                      <option value="hostel">Hostel</option>
-                      <option value="examination">Examination</option>
-                      <option value="sports">Sports</option>
-                      <option value="other">Other</option>
+                      <option value="">Select a category</option>
+                      {feeCategories.map(category => (
+                        <option key={category.id} value={category.category_code}>
+                          {category.category_name} ({category.category_code})
+                        </option>
+                      ))}
                     </select>
+                    <small className="finance-form-help">
+                      Select category code, not description
+                    </small>
                   </div>
-                </div>
-                
-                <div className="finance-form-row">
-                  <div className="finance-form-group">
-                    <label>
-                      <CreditCard size={14} /> Fee Type
-                    </label>
-                    <select
-                      value={newPayment.fee_type}
-                      onChange={(e) => setNewPayment(prev => ({ ...prev, fee_type: e.target.value }))}
-                      className="finance-form-select"
-                    >
-                      <option value="tuition">Tuition</option>
-                      <option value="functional">Functional</option>
-                      <option value="guild">Guild</option>
-                      <option value="nche">NCHE</option>
-                    </select>
-                  </div>
-                  
-                  <div className="finance-form-group">
-                    <label>
-                      <Calendar size={14} /> Due Date
-                    </label>
-                    <input
-                      type="date"
-                      value={newPayment.due_date}
-                      onChange={(e) => setNewPayment(prev => ({ ...prev, due_date: e.target.value }))}
-                      className="finance-form-input"
-                      min={format(new Date(), 'yyyy-MM-dd')}
-                    />
-                  </div>
-                </div>
-                
-                <div className="finance-form-group">
-                  <label>
-                    <FileText size={14} /> Description *
-                  </label>
-                  <input
-                    type="text"
-                    value={newPayment.description}
-                    onChange={(e) => setNewPayment(prev => ({ ...prev, description: e.target.value }))}
-                    required
-                    placeholder="Enter payment description"
-                    className="finance-form-input"
-                  />
                 </div>
                 
                 <div className="finance-form-row">
@@ -2696,17 +2747,34 @@ const FinanceDashboard = ({ profile, signOut }) => {
                   </div>
                 </div>
                 
+                <div className="finance-form-group">
+                  <label>
+                    <FileText size={14} /> Description *
+                  </label>
+                  <input
+                    type="text"
+                    value={newPayment.description}
+                    onChange={(e) => setNewPayment(prev => ({ ...prev, description: e.target.value }))}
+                    required
+                    placeholder="Enter payment description (e.g., Tuition Fees Semester 1)"
+                    className="finance-form-input"
+                  />
+                  <small className="finance-form-help">
+                    Enter description here. Category should be selected from dropdown above.
+                  </small>
+                </div>
+                
                 <div className="finance-form-row">
                   <div className="finance-form-group">
                     <label>
-                      <Receipt size={14} /> Receipt Number
+                      <Calendar size={14} /> Due Date
                     </label>
                     <input
-                      type="text"
-                      value={newPayment.receipt_number}
-                      onChange={(e) => setNewPayment(prev => ({ ...prev, receipt_number: e.target.value }))}
-                      placeholder="Auto-generate if empty"
+                      type="date"
+                      value={newPayment.due_date}
+                      onChange={(e) => setNewPayment(prev => ({ ...prev, due_date: e.target.value }))}
                       className="finance-form-input"
+                      min={format(new Date(), 'yyyy-MM-dd')}
                     />
                   </div>
                   
@@ -2727,6 +2795,19 @@ const FinanceDashboard = ({ profile, signOut }) => {
                     </select>
                   </div>
                 </div>
+                
+                <div className="finance-form-group">
+                  <label>
+                    <Receipt size={14} /> Receipt Number
+                  </label>
+                  <input
+                    type="text"
+                    value={newPayment.receipt_number}
+                    onChange={(e) => setNewPayment(prev => ({ ...prev, receipt_number: e.target.value }))}
+                    placeholder="Auto-generate if empty"
+                    className="finance-form-input"
+                  />
+                </div>
               </div>
               
               <div className="finance-modal-footer">
@@ -2740,7 +2821,7 @@ const FinanceDashboard = ({ profile, signOut }) => {
                 <button 
                   type="submit" 
                   className="finance-action-btn primary"
-                  disabled={!newPayment.student_id || !newPayment.amount || !newPayment.description}
+                  disabled={!newPayment.student_id || !newPayment.amount || !newPayment.description || !newPayment.category}
                 >
                   <Check size={16} /> Create Invoice
                 </button>
@@ -2868,7 +2949,6 @@ const FinanceDashboard = ({ profile, signOut }) => {
                 className="finance-action-btn primary"
                 onClick={() => {
                   setShowFiltersModal(false);
-                  // Refresh data with new filters
                   if (activeTab === 'transactions') {
                     fetchAllTransactions();
                   } else if (activeTab === 'students') {

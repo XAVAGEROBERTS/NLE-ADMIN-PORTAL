@@ -1157,6 +1157,7 @@
   font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
   color: var(--finance-success);
   font-size: 1.125rem;
+  display: none;
 }
 
 /* Student Stats */
@@ -2273,4 +2274,206 @@ html {
 ::selection {
   background: rgba(59, 130, 246, 0.2);
   color: var(--finance-text-dark);
+}
+
+/* Payment Modal - FIXED: 修复模态框显示问题 */
+.finance-payment-modal {
+  width: 600px;
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.finance-modal {
+  background: var(--finance-white);
+  border-radius: 20px;
+  box-shadow: var(--finance-shadow-xl);
+  animation: finance-slideUp 0.3s ease;
+  max-width: 90vw;
+  max-height: 90vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.finance-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.5rem 2rem;
+  border-bottom: 1px solid var(--finance-light-border);
+  background: var(--finance-white);
+  flex-shrink: 0; /* 防止头部被压缩 */
+}
+
+.finance-modal-body {
+  padding: 2rem;
+  overflow-y: auto;
+  flex: 1;
+  max-height: calc(90vh - 160px); /* 确保有足够的滚动空间 */
+}
+
+.finance-modal-footer {
+  padding: 1.5rem 2rem;
+  border-top: 1px solid var(--finance-light-border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 1rem;
+  flex-shrink: 0; /* 防止底部被压缩 */
+  background: var(--finance-white);
+  border-bottom-left-radius: 20px;
+  border-bottom-right-radius: 20px;
+}
+
+/* 确保表单输入框在移动设备上正常显示 */
+@media (max-width: 768px) {
+  .finance-payment-modal {
+    width: 95vw !important;
+    max-height: 85vh;
+  }
+  
+  .finance-modal-body {
+    padding: 1.5rem;
+    max-height: calc(85vh - 140px);
+  }
+  
+  .finance-modal-header,
+  .finance-modal-footer {
+    padding: 1rem 1.5rem;
+  }
+  
+  .finance-form-row {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* 修复表单滚动区域 */
+.finance-form-section {
+  margin-bottom: 2rem;
+}
+
+.finance-form-group {
+  margin-bottom: 1.5rem;
+}
+
+.finance-form-group:last-child {
+  margin-bottom: 0;
+}
+
+.finance-form-section:last-child {
+  margin-bottom: 1rem;
+}
+
+/* 确保下拉菜单不被遮挡 */
+.finance-form-select {
+  z-index: 1;
+  position: relative;
+}
+
+/* 按钮样式修复 */
+.finance-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  border: 1px solid var(--finance-light-border);
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: var(--finance-transition);
+  background: var(--finance-white);
+  color: var(--finance-text-dark);
+  white-space: nowrap; /* 防止按钮文字换行 */
+}
+
+.finance-action-btn.primary {
+  background: var(--finance-gradient-primary);
+  color: var(--finance-white);
+  border-color: var(--finance-primary);
+  min-width: 120px; /* 确保按钮有最小宽度 */
+  justify-content: center;
+}
+
+.finance-action-btn.secondary {
+  background: var(--finance-light-bg);
+  color: var(--finance-text-dark);
+  border-color: var(--finance-medium-border);
+  min-width: 100px;
+  justify-content: center;
+}
+
+/* 模态框滚动条美化 */
+.finance-modal-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.finance-modal-body::-webkit-scrollbar-track {
+  background: var(--finance-light-bg);
+  border-radius: 3px;
+}
+
+.finance-modal-body::-webkit-scrollbar-thumb {
+  background: var(--finance-primary-light);
+  border-radius: 3px;
+}
+
+.finance-modal-body::-webkit-scrollbar-thumb:hover {
+  background: var(--finance-primary);
+}
+
+/* 确保日期选择器不被遮挡 */
+.finance-form-input[type="date"] {
+  position: relative;
+  z-index: 1;
+}
+
+/* 修复模态框在移动设备上的定位 */
+@media (max-height: 700px) {
+  .finance-payment-modal {
+    max-height: 80vh;
+  }
+  
+  .finance-modal-body {
+    max-height: calc(80vh - 140px);
+  }
+}
+
+/* 修复选择框下拉菜单的z-index问题 */
+.finance-form-select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 1rem center;
+  background-size: 16px;
+  padding-right: 2.5rem;
+}
+
+/* 确保模态框在所有情况下都能完整显示 */
+.finance-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: finance-fadeIn 0.3s ease;
+  padding: 1rem; /* 添加内边距防止在小屏幕上被截断 */
+}
+
+/* 高对比度模式下的修复 */
+@media (prefers-contrast: high) {
+  .finance-modal {
+    border: 2px solid var(--finance-text-dark);
+  }
+  
+  .finance-action-btn {
+    border-width: 2px;
+  }
 }

@@ -295,6 +295,37 @@ const [loadingAssignments, setLoadingAssignments] = useState(true);
 const [attendanceRecords, setAttendanceRecords] = useState([]);
 const [attendanceError, setAttendanceError] = useState(null);
  
+
+// === ADD THESE STATES NEAR OTHER STATES (around line 150) ===
+const [activeBucketTab, setActiveBucketTab] = useState('lecturerbucket'); // lecturerbucket | Tutorials | Lecturer exam
+const [bucketFiles, setBucketFiles] = useState({
+  lecturerbucket: [],
+  Tutorials: [],
+  'Lecturer exam': []
+});
+const [bucketLoading, setBucketLoading] = useState(false);
+  const [deletingFile, setDeletingFile] = useState(null);  
+      // ADD THESE STATES (around line 150 with other bucket states)
+const [adminBuckets, setAdminBuckets] = useState([
+  'assignments',        // Student submissions
+  'Student exam',
+  'Lecturer exam',
+  'Tutorials',
+  'lecturerbucket'
+]);
+  
+  
+const [adminBucketFiles, setAdminBucketFiles] = useState({
+  assignments: [],
+  'Student exam': [],
+  'Lecturer exam': [],
+  Tutorials: [],
+  lecturerbucket: []
+});
+const [activeAdminBucket, setActiveAdminBucket] = useState('assignments');
+const [adminBucketLoading, setAdminBucketLoading] = useState(false);
+
+  
 // === FINANCE TAB STATES (for Admin viewing Finance like FinanceDashboard) ===
 const [financeStudents, setFinanceStudents] = useState([]);
 const [selectedFinanceStudent, setSelectedFinanceStudent] = useState(null);
@@ -415,7 +446,18 @@ useEffect(() => {
   }
 }, [activeTab, isAdmin]);
 
+  useEffect(() => {
+  if (activeTab === 'all-files' && isAdmin) {
+    fetchAllBucketFiles();
+  }
+}, [activeTab, isAdmin, activeAdminBucket]);
   
+  // === ADD THIS useEffect to load files when tab opens ===
+useEffect(() => {
+  if (activeTab === 'my-files' && isLecturer && profile?.id) {
+    fetchBucketFiles();
+  }
+}, [activeTab, isLecturer, profile?.id, activeBucketTab]);
   
   // Load overall finance summary when entering Finance tab
 useEffect(() => {
@@ -584,6 +626,240 @@ const handleUpdateFinanceStatus = async (recordId, newStatus) => {
     if (selectedFinanceStudent) {
       loadStudentFinance(selectedFinanceStudent.id);
     }
+  }
+  };
+
+
+
+  
+  // === NEW: Delete file from bucket ===
+const handleDeleteFile = async (bucket, filePath) => {
+  if (!window.confirm(`Delete "${filePath.split('/').pop()}" permanently?\nThis cannot be undone.`)) return;
+
+  setDeletingFile(`${bucket}-${filePath}`);
+  try {
+    const { error } = await supabase.storage
+      .from(bucket)
+      .remove([filePath]);
+
+    if (error) throw error;
+
+    alert('File deleted successfully!');
+    fetchBucketFiles(); // Refresh
+  } catch (err) {
+    console.error('Delete error:', err);
+    alert('Failed to delete file: ' + err.message);
+  } finally {
+    setDeletingFile(null);
+  }
+  };
+  
+const fetchBucketFiles = async () => {
+  if (!profile?.id) {
+    console.warn('No profile.id - skipping file fetch');
+    return;
+  }
+
+  setBucketLoading(true);
+  try {
+    const results = {
+      lecturerbucket: [],
+      Tutorials: [],
+      'Lecturer exam': []
+    };
+
+    console.log('Starting private file fetch for lecturer:', profile.id);
+
+    // ================================================
+    // 1. Assignment Files - Private per lecturer
+    // ================================================
+    {
+      const prefix = `assignments/${profile.id}`;
+      console.log('Fetching Assignment Files from:', prefix);
+
+      const { data, error } = await supabase.storage
+        .from('lecturerbucket')
+        .list(prefix, { limit: 1000 });
+
+      if (error) {
+        console.error('Assignment Files error:', error);
+      } else if (data) {
+        results.lecturerbucket = data
+          .filter(f => f.name && f.name !== '.emptyFolderPlaceholder')
+          .map(f => {
+            const fullPath = `${prefix}/${f.name}`;
+            const { data: urlData } = supabase.storage
+              .from('lecturerbucket')
+              .getPublicUrl(fullPath);
+            return {
+              ...f,
+              fullPath,
+              publicUrl: urlData.publicUrl,
+              size: f.metadata?.size || 0,
+              bucket: 'lecturerbucket'
+            };
+          });
+        console.log(`Found ${results.lecturerbucket.length} private assignment files`);
+      }
+    }
+
+    // ================================================
+    // 2. Tutorials - Private per lecturer + Recursive
+    // ================================================
+    {
+      const allFiles = [];
+      const lecturerPrefix = `tutorials/${profile.id}`;
+      console.log('Fetching Tutorials from private folder:', lecturerPrefix);
+
+      const recurse = async (path = lecturerPrefix) => {
+        const { data: items, error } = await supabase.storage
+          .from('Tutorials')
+          .list(path, { limit: 1000 });
+
+        if (error) {
+          console.error(`Tutorials list error at "${path}":`, error);
+          return;
+        }
+
+        if (!items || items.length === 0) return;
+
+        for (const item of items) {
+          const fullPath = path === lecturerPrefix 
+            ? `${path}/${item.name}` 
+            : `${path}/${item.name}`;
+
+          if (item.name && item.name !== '.emptyFolderPlaceholder') {
+            if (item.id) { // It's a real file
+              const { data: urlData } = supabase.storage
+                .from('Tutorials')
+                .getPublicUrl(fullPath);
+              allFiles.push({
+                ...item,
+                fullPath,
+                publicUrl: urlData.publicUrl,
+                size: item.metadata?.size || 0,
+                bucket: 'Tutorials'
+              });
+            } else { // It's a folder → go deeper
+              await recurse(fullPath);
+            }
+          }
+        }
+      };
+
+      await recurse();
+      results.Tutorials = allFiles;
+      console.log(`Found ${results.Tutorials.length} private tutorial files`);
+    }
+
+    // ================================================
+    // 3. Exam Papers - Already private (unchanged)
+    // ================================================
+    {
+      const prefix = `exams/${profile.id}`;
+      console.log('Fetching Exam Papers from:', prefix);
+
+      const { data, error } = await supabase.storage
+        .from('Lecturer exam')
+        .list(prefix, { limit: 1000 });
+
+      if (error) {
+        console.error('Exam Papers error:', error);
+      } else if (data) {
+        results['Lecturer exam'] = data
+          .filter(f => f.name && f.name !== '.emptyFolderPlaceholder')
+          .map(f => {
+            const fullPath = `${prefix}/${f.name}`;
+            const { data: urlData } = supabase.storage
+              .from('Lecturer exam')
+              .getPublicUrl(fullPath);
+            return {
+              ...f,
+              fullPath,
+              publicUrl: urlData.publicUrl,
+              size: f.metadata?.size || 0,
+              bucket: 'Lecturer exam'
+            };
+          });
+        console.log(`Found ${results['Lecturer exam'].length} private exam papers`);
+      }
+    }
+
+    // Update state
+    setBucketFiles(results);
+
+    console.log('✅ SUCCESS - PRIVATE FILE COUNTS:', {
+      'Assignment Files': results.lecturerbucket.length,
+      'Tutorials': results.Tutorials.length,
+      'Exam Papers': results['Lecturer exam'].length
+    });
+
+  } catch (err) {
+    console.error('Unexpected error in fetchBucketFiles:', err);
+  } finally {
+    setBucketLoading(false);
+  }
+  };
+  
+
+  const fetchAllBucketFiles = async () => {
+  if (!isAdmin) return;
+
+  setAdminBucketLoading(true);
+  try {
+    const results = {};
+    
+    for (const bucket of adminBuckets) {
+      console.log(`🔍 Admin fetching ALL files from bucket: ${bucket}`);
+      
+      const allFiles = [];
+      const recurse = async (path = '') => {
+        const { data: items, error } = await supabase.storage
+          .from(bucket)
+          .list(path, { limit: 1000 });
+
+        if (error) {
+          console.error(`Error listing ${bucket}/${path}:`, error);
+          return;
+        }
+
+        if (!items || items.length === 0) return;
+
+        for (const item of items) {
+          const fullPath = path ? `${path}/${item.name}` : item.name;
+
+          if (item.name && item.name !== '.emptyFolderPlaceholder') {
+            if (item.id) { // Real file
+              const { data: urlData } = supabase.storage
+                .from(bucket)
+                .getPublicUrl(fullPath);
+
+              allFiles.push({
+                name: item.name,
+                fullPath,
+                publicUrl: urlData.publicUrl,
+                size: item.metadata?.size || 0,
+                created_at: item.created_at,
+                bucket
+              });
+            } else { // Folder
+              await recurse(fullPath);
+            }
+          }
+        }
+      };
+
+      await recurse();
+      results[bucket] = allFiles;
+      console.log(`Found ${allFiles.length} files in ${bucket}`);
+    }
+
+    setAdminBucketFiles(results);
+  } catch (err) {
+    console.error('Admin fetch error:', err);
+    alert('Failed to load files: ' + err.message);
+  } finally {
+    setAdminBucketLoading(false);
   }
 };
   
@@ -2570,83 +2846,61 @@ const getGradePoints = (grade) => {
       console.error('Error fetching lecturer stats:', error);
     }
   };
-
 const uploadAssignmentFiles = async (files) => {
   if (!files || files.length === 0) return [];
-
   const uploadedPaths = [];
   setUploadingFiles(true);
   setUploadProgress(0);
-
   try {
-    console.log('📤 Starting easy upload to lecturerbucket...', files.length, 'files');
+    const lecturerFolder = `assignments/${profile.id}`;
+    console.log('📤 Uploading to private folder:', lecturerFolder);
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const originalName = file.name;
-
-      // Create a clean, unique filename
       const timestamp = Date.now();
       const randomStr = Math.random().toString(36).substring(2, 8);
       const safeName = originalName.replace(/[^a-zA-Z0-9.]/g, '_');
       const fileName = `${timestamp}_${randomStr}_${safeName}`;
-      const filePath = fileName; // Store just the filename (no folders needed)
+      const filePath = `${lecturerFolder}/${fileName}`; // ← PRIVATE PATH
 
-      // Update progress
       setUploadProgress(Math.round(((i + 1) / files.length) * 100));
 
-      console.log(`📤 Uploading ${i + 1}/${files.length}: ${originalName} → ${filePath}`);
-
-      // Simple, clean upload using authenticated Supabase client
       const { data, error } = await supabase.storage
         .from('lecturerbucket')
         .upload(filePath, file, {
           cacheControl: '3600',
-          upsert: false, // Set to true if you want to allow overwriting same name
-          contentType: file.type || 'application/octet-stream'
+          upsert: false
         });
 
       if (error) {
         console.error(`❌ Failed to upload ${originalName}:`, error.message);
         alert(`Failed to upload "${originalName}": ${error.message}`);
-        continue; // Skip this file, continue with others
+        continue;
       }
 
-      console.log(`✅ Uploaded: ${originalName} → ${filePath}`);
       uploadedPaths.push(filePath);
     }
 
-    console.log('🎉 All files uploaded successfully!', uploadedPaths);
-    alert(`✅ Successfully uploaded ${uploadedPaths.length} file(s)!`);
-
+    alert(`✅ Successfully uploaded ${uploadedPaths.length} assignment file(s)!`);
     return uploadedPaths;
-
   } catch (error) {
-    console.error('❌ Unexpected upload error:', error);
+    console.error('❌ Upload error:', error);
     alert('Upload failed: ' + error.message);
     return [];
   } finally {
     setUploadingFiles(false);
     setUploadProgress(0);
   }
-  };
+};
   
 
 const uploadTutorialFiles = async (files) => {
   if (!files || files.length === 0) return [];
   const uploadedPaths = [];
 
-  // Validation
-  if (!tutorialTargetProgram) {
-    alert('Please select a target program');
-    return [];
-  }
-  if (!tutorialTargetCourse) {
-    alert('Please select a target course');
-    return [];
-  }
-  if (!tutorialTargetCohort.academic_year.trim()) {
-    alert('Please enter the academic year');
+  if (!tutorialTargetProgram || !tutorialTargetCourse) {
+    alert('Please select program and course');
     return [];
   }
 
@@ -2654,7 +2908,6 @@ const uploadTutorialFiles = async (files) => {
   setTutorialUploadProgress(0);
 
   try {
-    // Get program and course codes
     const [{ data: program }, { data: course }] = await Promise.all([
       supabase.from('programs').select('code').eq('id', tutorialTargetProgram).single(),
       supabase.from('courses').select('course_code').eq('id', tutorialTargetCourse).single()
@@ -2663,17 +2916,16 @@ const uploadTutorialFiles = async (files) => {
     const programCode = program?.code || 'GENERAL';
     const courseCode = course?.course_code || 'NOCOURSE';
 
+    const lecturerFolder = `tutorials/${profile.id}`;
+    const baseFolder = `${lecturerFolder}/${programCode}/${courseCode}/${tutorialTargetCohort.academic_year.trim()}/Year${tutorialTargetCohort.year_of_study}_Sem${tutorialTargetCohort.semester}`;
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      const originalName = file.name;
       const timestamp = Date.now();
       const randomStr = Math.random().toString(36).substring(2, 8);
-      const safeName = originalName.replace(/[^a-zA-Z0-9.]/g, '_');
+      const safeName = file.name.replace(/[^a-zA-Z0-9.]/g, '_');
       const fileName = `${timestamp}_${randomStr}_${safeName}`;
-
-      // Folder: PROGRAM/COURSE/ACADEMIC_YEAR/YearX_SemY/filename
-      const folderPath = `${programCode}/${courseCode}/${tutorialTargetCohort.academic_year.trim()}/Year${tutorialTargetCohort.year_of_study}_Sem${tutorialTargetCohort.semester}`;
-      const filePath = `${folderPath}/${fileName}`;
+      const filePath = `${baseFolder}/${fileName}`;
 
       setTutorialUploadProgress(Math.round(((i + 1) / files.length) * 100));
 
@@ -2682,8 +2934,8 @@ const uploadTutorialFiles = async (files) => {
         .upload(filePath, file, { upsert: false });
 
       if (error) {
-        console.error(`Failed to upload ${originalName}:`, error);
-        alert(`Failed to upload "${originalName}"`);
+        console.error(`Failed to upload ${file.name}:`, error);
+        alert(`Failed to upload "${file.name}"`);
         continue;
       }
 
@@ -2694,7 +2946,7 @@ const uploadTutorialFiles = async (files) => {
       uploadedPaths.push({
         path: filePath,
         url: publicUrlData.publicUrl,
-        name: originalName,
+        name: file.name,
       });
     }
 
@@ -2709,7 +2961,6 @@ const uploadTutorialFiles = async (files) => {
     setTutorialUploadProgress(0);
   }
 };
-
 // NEW: Upload exam files to 'Lecturer exam' bucket
 const uploadExamFiles = async (files) => {
   if (!files || files.length === 0) return [];
@@ -4939,6 +5190,12 @@ const handleViewSubmissions = async (assignment) => {
         {isLecturer && (
           <>
             <button
+    className={`nav-item ${activeTab === 'my-files' ? 'active' : ''}`}
+    onClick={() => setActiveTab('my-files')}
+  >
+    📁 My Files
+  </button>
+            <button
               className={`nav-item ${activeTab === 'my-assignments' ? 'active' : ''}`}
               onClick={() => setActiveTab('my-assignments')}
             >
@@ -4998,6 +5255,12 @@ const handleViewSubmissions = async (assignment) => {
 </button>
         {isAdmin && (
           <>
+            <button
+  className={`nav-item ${activeTab === 'all-files' ? 'active' : ''}`}
+  onClick={() => setActiveTab('all-files')}
+>
+  🗂️ All Files Manager
+</button>
             <button
               className={`nav-item ${activeTab === 'lecturers' ? 'active' : ''}`}
               onClick={() => setActiveTab('lecturers')}
@@ -6096,9 +6359,202 @@ onClick={() => {
       </div>
     )}
   </div>
+              )}
+              
+{/* ==================== MY FILES TAB - LECTURER ONLY ==================== */}
+{activeTab === 'my-files' && isLecturer && (
+  <div className="tab-content">
+    <div className="tab-header">
+      <h2>📁 My Uploaded Files</h2>
+      <div className="tab-actions">
+        <button
+          className="refresh-button"
+          onClick={fetchBucketFiles}
+          disabled={bucketLoading}
+        >
+          🔄 {bucketLoading ? 'Refreshing...' : 'Refresh Files'}
+        </button>
+      </div>
+    </div>
+
+    {/* Bucket Tabs - Beautiful & Responsive */}
+    <div className="bucket-tabs" style={{
+      display: 'flex',
+      gap: '0',
+      marginBottom: '30px',
+      borderBottom: '3px solid #e3e6ea',
+      overflowX: 'auto',
+      paddingBottom: '4px',
+      scrollbarWidth: 'thin'
+    }}>
+      {[
+        { key: 'lecturerbucket', label: 'Assignment Files' },
+        { key: 'Tutorials', label: 'Tutorials' },
+        { key: 'Lecturer exam', label: 'Exam Papers' }
+      ].map(({ key, label }) => {
+        const count = bucketFiles[key]?.length || 0;
+        const isActive = activeBucketTab === key;
+
+        return (
+          <button
+            key={key}
+            onClick={() => setActiveBucketTab(key)}
+            style={{
+              flex: '1 1 0',
+              minWidth: '180px',
+              padding: '16px 24px',
+              border: 'none',
+              borderBottom: isActive ? '5px solid #1976d2' : '5px solid transparent',
+              backgroundColor: isActive ? '#e3f2fd' : 'transparent',
+              color: isActive ? '#1976d2' : '#555',
+              fontWeight: isActive ? '700' : '600',
+              fontSize: '16px',
+              cursor: 'pointer',
+              transition: 'all 0.3s ease',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            {label}
+            <span style={{
+              marginLeft: '12px',
+              padding: '6px 14px',
+              backgroundColor: isActive ? '#1976d2' : '#e0e0e0',
+              color: isActive ? 'white' : '#333',
+              borderRadius: '20px',
+              fontSize: '14px',
+              fontWeight: 'bold',
+              minWidth: '44px',
+              display: 'inline-block',
+              textAlign: 'center'
+            }}>
+              {bucketLoading && isActive ? '...' : count}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+
+    {/* Loading State */}
+    {bucketLoading ? (
+      <div style={{
+        textAlign: 'center',
+        padding: '100px 20px',
+        backgroundColor: '#f9f9f9',
+        borderRadius: '12px'
+      }}>
+        <div className="spinner"></div>
+        <p style={{ marginTop: '24px', fontSize: '18px', color: '#666' }}>
+          Loading your {activeBucketTab === 'lecturerbucket' ? 'assignment files' :
+            activeBucketTab === 'Tutorials' ? 'tutorials' : 'exam papers'}...
+        </p>
+      </div>
+    ) : bucketFiles[activeBucketTab]?.length === 0 ? (
+      <div className="empty-state" style={{
+        textAlign: 'center',
+        padding: '100px 20px',
+        backgroundColor: '#f9f9f9',
+        borderRadius: '12px'
+      }}>
+        <div style={{ fontSize: '80px', marginBottom: '24px', opacity: 0.4 }}>
+          📂
+        </div>
+        <h3>No files uploaded yet</h3>
+        <p style={{ color: '#777', maxWidth: '600px', margin: '20px auto' }}>
+          You haven't uploaded any files to <strong>
+            {activeBucketTab === 'lecturerbucket' ? 'Assignment Files' :
+             activeBucketTab === 'Tutorials' ? 'Tutorials' : 'Exam Papers'}
+          </strong> yet.
+        </p>
+      </div>
+    ) : (
+      /* Responsive Table - No Overflow */
+      <div className="table-container" style={{ overflowX: 'auto', marginTop: '10px' }}>
+        <table className="data-table" style={{ minWidth: '900px', width: '100%' }}>
+          <thead>
+            <tr>
+              <th style={{ width: '32%', minWidth: '220px' }}>File Name</th>
+              <th style={{ width: '12%' }}>Size</th>
+              <th style={{ width: '16%' }}>Uploaded</th>
+              <th style={{ width: '30%', minWidth: '250px' }}>Full Path</th>
+              <th style={{ width: '10%' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bucketFiles[activeBucketTab].map((file, index) => (
+              <tr key={file.id || file.fullPath || index}>
+                <td style={{ wordBreak: 'break-word' }}>
+                  <strong>{file.name}</strong>
+                </td>
+                <td>
+                  {file.metadata?.size
+                    ? `${(file.metadata.size / 1024 / 1024).toFixed(2)} MB`
+                    : '—'}
+                </td>
+                <td>
+                  {file.created_at
+                    ? new Date(file.created_at).toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric'
+                      })
+                    : '—'}
+                </td>
+                <td style={{
+                  fontSize: '13px',
+                  color: '#666',
+                  wordBreak: 'break-all',
+                  maxWidth: '300px'
+                }}>
+                  📁 {file.fullPath}
+                </td>
+                <td>
+                  <div className="action-buttons flat" style={{ gap: '10px', justifyContent: 'center' }}>
+                    <a
+                      href={file.publicUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="action-btn view small"
+                      title="View / Download"
+                    >
+                      👁️ View
+                    </a>
+                    <button
+                      className="action-btn delete small"
+                      onClick={() => handleDeleteFile(activeBucketTab, file.fullPath)}
+                      disabled={deletingFile === `${activeBucketTab}-${file.fullPath}`}
+                      title="Delete permanently"
+                    >
+                      {deletingFile === `${activeBucketTab}-${file.fullPath}`
+                        ? 'Deleting...'
+                        : '🗑️ Delete'}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+
+    {/* Footer Tip */}
+    {!bucketLoading && bucketFiles[activeBucketTab]?.length > 0 && (
+      <div style={{
+        marginTop: '40px',
+        padding: '20px',
+        background: 'linear-gradient(135deg, #e3f2fd 0%, #f0f8ff 100%)',
+        borderRadius: '12px',
+        border: '1px solid #bbdefb',
+        textAlign: 'center',
+        color: '#1565c0',
+        fontSize: '15px'
+      }}>
+        <strong>💡 All files are private and secure</strong><br/>
+        Only you can view and manage them.
+      </div>
+    )}
+  </div>
 )}
-
-
               
    
                        {/* Students Tab - IMPROVED WITH EDIT */}
@@ -7394,6 +7850,7 @@ onClick={() => {
                           {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][slot.day_of_week]}
                         </td>
                         <td>{slot.start_time} – {slot.end_time}</td>
+
                         <td>
                           <strong>{slot.course_code}</strong><br/>
                           <small>{slot.course_name}</small>
@@ -7564,6 +8021,150 @@ onClick={() => {
                 )}
               </div>
         )}
+        {/* ==================== ALL FILES MANAGER - ADMIN ONLY ==================== */}
+{activeTab === 'all-files' && isAdmin && (
+  <div className="tab-content">
+    <div className="tab-header">
+      <h2>🗂️ University File Manager (Admin)</h2>
+      <p>Full access to all uploaded files across the system — including student submissions</p>
+      <div className="tab-actions">
+        <button
+          className="refresh-button"
+          onClick={fetchAllBucketFiles}
+          disabled={adminBucketLoading}
+        >
+          🔄 {adminBucketLoading ? 'Loading...' : 'Refresh All Files'}
+        </button>
+      </div>
+    </div>
+
+    {/* Bucket Tabs */}
+    <div className="bucket-tabs" style={{
+      display: 'flex',
+      gap: '0',
+      marginBottom: '30px',
+      borderBottom: '3px solid #e3e6ea',
+      overflowX: 'auto'
+    }}>
+      {adminBuckets.map(bucket => {
+        const count = adminBucketFiles[bucket]?.length || 0;
+        const isActive = activeAdminBucket === bucket;
+   const displayName = bucket === 'assignments' ? 'Student Assignment Submissions' :
+                   bucket === 'lecturerbucket' ? 'Lecturer Assignment Uploads' :
+                   bucket === 'Student exam' ? 'Student Exams Submissions' :
+                   bucket === 'Lecturer exam' ? 'Lecturer Exams uploads' :
+                   bucket === 'Tutorials' ? 'Tutorials uploads' :
+                   bucket;
+        return (
+          <button
+            key={bucket}
+            onClick={() => setActiveAdminBucket(bucket)}
+            style={{
+              flex: '1 1 0',
+              minWidth: '180px',
+              padding: '16px 24px',
+              border: 'none',
+              borderBottom: isActive ? '5px solid #d32f2f' : '5px solid transparent',
+              backgroundColor: isActive ? '#ffebee' : 'transparent',
+              color: isActive ? '#d32f2f' : '#555',
+              fontWeight: isActive ? '700' : '600',
+              fontSize: '16px',
+              cursor: 'pointer',
+              transition: 'all 0.3s ease'
+            }}
+          >
+            {displayName}
+            <span style={{
+              marginLeft: '12px',
+              padding: '6px 14px',
+              backgroundColor: isActive ? '#d32f2f' : '#e0e0e0',
+              color: 'white',
+              borderRadius: '20px',
+              fontSize: '14px',
+              fontWeight: 'bold'
+            }}>
+              {adminBucketLoading && isActive ? '...' : count}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+
+    {/* Files Table */}
+    {adminBucketLoading ? (
+      <div style={{ textAlign: 'center', padding: '100px' }}>
+        <div className="spinner"></div>
+        <p>Loading all files from {activeAdminBucket}...</p>
+      </div>
+    ) : adminBucketFiles[activeAdminBucket]?.length === 0 ? (
+      <div className="empty-state">
+        <p>No files found in {activeAdminBucket}</p>
+      </div>
+    ) : (
+      <div className="table-container">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>File Name</th>
+              <th>Size</th>
+              <th>Uploaded</th>
+              <th>Full Path</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {adminBucketFiles[activeAdminBucket].map((file, idx) => (
+              <tr key={idx}>
+                <td><strong>{file.name}</strong></td>
+                <td>{file.size ? `${(file.size / 1024 / 1024).toFixed(2)} MB` : '—'}</td>
+                <td>
+                  {file.created_at
+                    ? new Date(file.created_at).toLocaleDateString()
+                    : '—'}
+                </td>
+                <td style={{ fontSize: '13px', color: '#666', wordBreak: 'break-all' }}>
+                  📁 {file.fullPath}
+                </td>
+                <td>
+                  <div className="action-buttons flat">
+                    <a
+                      href={file.publicUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="action-btn view small"
+                    >
+                      👁️ View/Download
+                    </a>
+                    <button
+                      className="action-btn delete small"
+                      onClick={() => handleDeleteFile(activeAdminBucket, file.fullPath)}
+                      disabled={deletingFile === `${activeAdminBucket}-${file.fullPath}`}
+                    >
+                      {deletingFile === `${activeAdminBucket}-${file.fullPath}` ? 'Deleting...' : '🗑️ Delete'}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+
+    <div style={{
+      marginTop: '40px',
+      padding: '20px',
+      background: '#ffebee',
+      borderRadius: '12px',
+      border: '2px solid #ef9a9a',
+      textAlign: 'center',
+      color: '#c62828'
+    }}>
+      <strong>⚠️ ADMIN POWER:</strong> You can permanently delete any file from any bucket, including student exam/assignment submissions.
+      <br />Use responsibly.
+    </div>
+  </div>
+)}
         
 {activeTab === 'complete-courses' && isAdmin && (
   <div className="tab-content">
