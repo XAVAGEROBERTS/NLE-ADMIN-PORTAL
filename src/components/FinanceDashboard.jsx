@@ -178,15 +178,15 @@ const FinanceDashboard = ({ profile, signOut }) => {
         setStats(prev => ({ ...prev, totalStudents: studentsData.length }));
       }
       
-      // Fetch recent transactions for dashboard
-      const { data: transactionsData, error: transactionsError } = await supabase
-        .from('financial_records')
-        .select(`
-          *,
-          students (student_id, full_name, program, program_code)
-        `)
-        .order('created_at', { ascending: false })
-        .limit(50);
+   // FIXED: Load ALL transactions for accurate analytics
+const { data: transactionsData, error: transactionsError } = await supabase
+  .from('financial_records')
+  .select(`
+    *,
+    students (student_id, full_name, program, program_code)
+  `)
+  .order('created_at', { ascending: false });
+// Remove .limit(50) entirely
       
       if (transactionsError) throw transactionsError;
       
@@ -1266,7 +1266,7 @@ const categoryData = Object.entries(categoryDistribution)
             <span className="finance-stat-value">{stats.totalStudents}</span>
             <span className="finance-stat-change neutral">
               <Users size={14} />
-              {stats.clearedStudents} Cleared
+              {stats.clearedStudents} Active
             </span>
           </div>
         </div>
@@ -1489,44 +1489,58 @@ const categoryData = Object.entries(categoryDistribution)
                     )}
                   </div>
                 </div>
+<div className="finance-chart-card">
+  <div className="finance-chart-header">
+    <h3><PieChartIcon size={20} /> Fee Category Distribution</h3>
+  </div>
+  <div className="finance-chart-container">
+    {analytics.categoryData && analytics.categoryData.length > 0 ? (
+      <ResponsiveContainer width="100%" height={300}>
+        <PieChart>
+          <Pie
+            data={analytics.categoryData}
+            cx="50%"
+            cy="50%"
+            outerRadius={80}
+            fill="#8884d8"
+            dataKey="value"
+          >
+            {analytics.categoryData.map((entry, index) => (
+              <Cell
+                key={`cell-${index}`}
+                fill={['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8', '#FF6B6B', '#4ECDC4'][index % 7]}
+              />
+            ))}
+          </Pie>
 
-                <div className="finance-chart-card">
-                  <div className="finance-chart-header">
-                    <h3><PieChartIcon size={20} /> Fee Category Distribution</h3>
-                  </div>
-                  <div className="finance-chart-container">
-                    {analytics.categoryData && analytics.categoryData.length > 0 ? (
-                      <ResponsiveContainer width="100%" height={300}>
-                        <PieChart>
-                          <Pie
-                            data={analytics.categoryData}
-                            cx="50%"
-                            cy="50%"
-                            labelLine={true}
-                            label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(1)}%`}
-                            outerRadius={80}
-                            fill="#8884d8"
-                            dataKey="value"
-                          >
-                            {analytics.categoryData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8', '#FF6B6B', '#4ECDC4'][index % 7]} />
-                            ))}
-                          </Pie>
-                          <Tooltip 
-                            formatter={(value) => [`$${Number(value).toLocaleString()}`, 'Amount']}
-                            labelFormatter={(label) => `Category: ${label}`}
-                          />
-                          <Legend />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    ) : (
-                      <div className="finance-no-data">
-                        <PieChartIcon size={32} />
-                        <p>No category data available for the selected period.</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
+          {/* Tooltip: Shows ONLY category name and amount — NO percentage */}
+          <Tooltip
+            contentStyle={{
+              backgroundColor: '#fff',
+              border: '1px solid #ccc',
+              borderRadius: '6px',
+              padding: '10px',
+            }}
+            labelStyle={{ fontWeight: 'bold', color: '#333' }}
+            formatter={(value) => `$${Number(value).toLocaleString()}`}
+          />
+
+          {/* Legend at bottom showing only category names with colors */}
+          <Legend
+            verticalAlign="bottom"
+            align="center"
+            wrapperStyle={{ paddingTop: '20px' }}
+          />
+        </PieChart>
+      </ResponsiveContainer>
+    ) : (
+      <div className="finance-no-data">
+        <PieChartIcon size={32} />
+        <p>No category data available for the selected period.</p>
+      </div>
+    )}
+  </div>
+</div>
               </div>
             </div>
 
