@@ -6,18 +6,35 @@ import AdminDashboard from './components/AdminDashboard';
 import { App as CapacitorApp } from '@capacitor/app';
 import { useEffect } from 'react';
 
-// Protected Route wrapper component
-const AdminProtectedRoute = ({ children }) => {
-  const { isAdmin, loading } = useAdminAuth();
+// Protected Route wrapper component - FIXED for all roles
+const ProtectedRoute = ({ children }) => {
+  const { isAuthenticated, isAdmin, isLecturer, isFinance, loading, profile } = useAdminAuth();
+  
+  console.log('🔒 ProtectedRoute check:', { isAuthenticated, isAdmin, isLecturer, isFinance, loading, profile });
   
   if (loading) {
-    return <div>Loading...</div>;
+    return (
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'center', 
+        alignItems: 'center', 
+        height: '100vh',
+        fontSize: '18px',
+        color: '#666'
+      }}>
+        Loading...
+      </div>
+    );
   }
   
-  if (!isAdmin) {
+  // Check if user is authenticated (admin, lecturer, or finance)
+  if (!isAuthenticated) {
+    console.log('❌ Not authenticated, redirecting to login');
     return <Navigate to="/login" replace />;
   }
   
+  // User is authenticated, render children
+  console.log('✅ Authenticated, rendering protected content');
   return children;
 };
 
@@ -33,7 +50,10 @@ function App() {
     });
 
     return () => {
-      backButtonListener.remove();
+      // Fixed: Check if remove exists before calling
+      if (backButtonListener && typeof backButtonListener.remove === 'function') {
+        backButtonListener.remove();
+      }
     };
   }, []);
 
@@ -41,40 +61,40 @@ function App() {
     <Router>
       <AdminAuthProvider>
         <Routes>
-          {/* Public route */}
+          {/* Public route - login page */}
           <Route path="/login" element={<AdminLogin />} />
           
-          {/* Protected routes */}
+          {/* Protected routes - accessible by Admin, Lecturer, and Finance */}
           <Route 
             path="/dashboard" 
             element={
-              <AdminProtectedRoute>
+              <ProtectedRoute>
                 <AdminDashboard />
-              </AdminProtectedRoute>
+              </ProtectedRoute>
             } 
           />
           
           <Route 
             path="/lectures" 
             element={
-              <AdminProtectedRoute>
+              <ProtectedRoute>
                 <div style={{ padding: '20px' }}>
                   <h1>Lectures</h1>
                   <p>Lectures management page - coming soon</p>
                 </div>
-              </AdminProtectedRoute>
+              </ProtectedRoute>
             } 
           />
           
           <Route 
             path="/materials" 
             element={
-              <AdminProtectedRoute>
+              <ProtectedRoute>
                 <div style={{ padding: '20px' }}>
                   <h1>Materials</h1>
                   <p>Course materials page - coming soon</p>
                 </div>
-              </AdminProtectedRoute>
+              </ProtectedRoute>
             } 
           />
           

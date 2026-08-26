@@ -295,7 +295,12 @@ const AdminDashboard = () => {
   const [loadingAssignments, setLoadingAssignments] = useState(true);
   const [attendanceRecords, setAttendanceRecords] = useState([]);
   const [attendanceError, setAttendanceError] = useState(null);
-
+  // Add this near other modal states
+  
+  // Add this near other modal states
+const [selectedTextAnswer, setSelectedTextAnswer] = useState(null);
+  const [showTextAnswersModal, setShowTextAnswersModal] = useState(false);
+  
   // === ADD THESE STATES NEAR OTHER STATES (around line 150) ===
   const [activeBucketTab, setActiveBucketTab] = useState("lecturerbucket"); // lecturerbucket | Tutorials | Lecturer exam
   const [bucketFiles, setBucketFiles] = useState({
@@ -442,6 +447,63 @@ const AdminDashboard = () => {
     code: "",
   });
 
+
+  // Check for expired bypasses every minute
+useEffect(() => {
+  const checkExpiredBypasses = async () => {
+    try {
+      const now = new Date();
+      const expiryTime = new Date(now.getTime() - 24 * 60 * 60 * 1000); // 24 hours ago
+      
+      // Find students with bypass enabled and timestamp older than 24 hours
+      const { data, error } = await supabase
+        .from("students")
+        .select("id, fees_clearance_bypassed, attendance_clearance_bypassed, exam_clearance_bypassed, bypass_timestamp")
+        .lt("bypass_timestamp", expiryTime.toISOString())
+        .or("fees_clearance_bypassed.eq.true,attendance_clearance_bypassed.eq.true,exam_clearance_bypassed.eq.true");
+      
+      if (error) {
+        console.error("Error checking expired bypasses:", error);
+        return;
+      }
+      
+      if (data && data.length > 0) {
+        console.log(`🔄 Found ${data.length} expired bypasses to reset`);
+        
+        for (const student of data) {
+          const updateData = {
+            fees_clearance_bypassed: false,
+            attendance_clearance_bypassed: false,
+            exam_clearance_bypassed: false,
+            bypass_timestamp: null
+          };
+          
+          const { error: updateError } = await supabase
+            .from("students")
+            .update(updateData)
+            .eq("id", student.id);
+            
+          if (updateError) {
+            console.error(`Failed to reset bypass for ${student.id}:`, updateError);
+          } else {
+            console.log(`✅ Reset expired bypass for student ${student.id}`);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Error in bypass expiry check:", err);
+    }
+  };
+  
+  // Check immediately on mount
+  checkExpiredBypasses();
+  
+  // Check every minute
+  const interval = setInterval(checkExpiredBypasses, 60000);
+  
+  return () => clearInterval(interval);
+}, []);
+
   // === ADD THIS useEffect to load programs on mount and when tab opens ===
   useEffect(() => {
     if (activeTab === "programs" && isAdmin) {
@@ -525,68 +587,149 @@ const AdminDashboard = () => {
     loadStudents();
   }, [activeTab, isAdmin, financeSearch]);
 
-  const searchStudentForBypass = async () => {
-    if (!bypassSearch.trim()) {
-      setBypassError("Enter a student ID or name");
-      return;
-    }
+ const searchStudentForBypass = async () => {
+  if (!bypassSearch.trim()) {
+    setBypassError("Enter a student ID or name");
+    return;
+  }
 
-    setBypassLoading(true);
-    setBypassError("");
-    setBypassStudent(null);
+  setBypassLoading(true);
+  setBypassError("");
+  setBypassStudent(null);
 
-    try {
-      let query = supabase
-        .from("students")
-        .select(
-          "id, student_id, full_name, program, fees_clearance_bypassed, attendance_clearance_bypassed, exam_clearance_bypassed",
-        );
-
-      if (bypassSearch.includes("-")) {
-        // Likely student ID
-        query = query.eq("student_id", bypassSearch.trim());
-      } else {
-        // Name search
-        query = query.ilike("full_name", `%${bypassSearch.trim()}%`);
-      }
-
-      const { data, error } = await query.limit(1).single();
-
-      if (error || !data) {
-        setBypassError("Student not found");
-      } else {
-        setBypassStudent(data);
-      }
-    } catch (err) {
-      setBypassError("Search failed");
-    } finally {
-      setBypassLoading(false);
-    }
-  };
-
-  const handleToggleBypass = async (field) => {
-    if (!bypassStudent) return;
-
-    setBypassLoading(true);
-
-    const newValue = !bypassStudent[field];
-
-    const { error } = await supabase
+  try {
+    let query = supabase
       .from("students")
-      .update({ [field]: newValue })
-      .eq("id", bypassStudent.id);
-
-    if (error) {
-      alert("Failed to update: " + error.message);
-    } else {
-      alert(
-        `${field.replace("_", " ")} ${newValue ? "enabled" : "disabled"} successfully`,
+      .select(
+        "id, student_id, full_name, program, fees_clearance_bypassed, attendance_clearance_bypassed, exam_clearance_bypassed, bypass_timestamp",
       );
-      setBypassStudent({ ...bypassStudent, [field]: newValue });
+
+    if (bypassSearch.includes("-")) {
+      query = query.eq("student_id", bypassSearch.trim());
+    } else {
+      query = query.ilike("full_name", `%${bypassSearch.trim()}%`);
     }
 
+    const { data, error } = await query.limit(1).single();
+
+    if (error || !data) {
+      setBypassError("Student not found");
+    } else {
+      // ⭐ Check if bypass has expired (24 hours)
+      let studentData = data;
+      let needsUpdate = false;
+      const updateData = {};
+      
+      if (data.bypass_timestamp) {
+        const bypassTime = new Date(data.bypass_timestamp);
+        const now = new Date();
+        const hoursDiff = (now - bypassTime) / (1000 * 60 * 60);
+        
+        // If more than 24 hours have passed, disable all bypasses
+        if (hoursDiff >= 24) {
+          console.log(`⏰ Bypass expired for ${data.full_name} (${hoursDiff.toFixed(1)} hours ago)`);
+          
+          // Check which bypasses are enabled
+          if (data.fees_clearance_bypassed) {
+            updateData.fees_clearance_bypassed = false;
+            studentData.fees_clearance_bypassed = false;
+            needsUpdate = true;
+          }
+          if (data.attendance_clearance_bypassed) {
+            updateData.attendance_clearance_bypassed = false;
+            studentData.attendance_clearance_bypassed = false;
+            needsUpdate = true;
+          }
+          if (data.exam_clearance_bypassed) {
+            updateData.exam_clearance_bypassed = false;
+            studentData.exam_clearance_bypassed = false;
+            needsUpdate = true;
+          }
+          
+          if (needsUpdate) {
+            updateData.bypass_timestamp = null;
+            studentData.bypass_timestamp = null;
+            
+            // Update the database
+            const { error: updateError } = await supabase
+              .from("students")
+              .update(updateData)
+              .eq("id", data.id);
+              
+            if (updateError) {
+              console.error("Failed to reset expired bypass:", updateError);
+            } else {
+              console.log("✅ Expired bypass reset successfully");
+            }
+          }
+        } else {
+          // Show remaining time
+          const remainingHours = 24 - hoursDiff;
+          const remainingMinutes = (remainingHours % 1) * 60;
+          studentData._bypassRemaining = `${Math.floor(remainingHours)}h ${Math.floor(remainingMinutes)}m`;
+        }
+      }
+      
+      setBypassStudent(studentData);
+    }
+  } catch (err) {
+    setBypassError("Search failed");
+  } finally {
     setBypassLoading(false);
-  };
+  }
+};
+
+const handleToggleBypass = async (field) => {
+  if (!bypassStudent) return;
+
+  setBypassLoading(true);
+
+  const newValue = !bypassStudent[field];
+  const now = new Date().toISOString();
+
+  // Build update object
+  const updateData = { [field]: newValue };
+  
+  // If enabling any bypass, set timestamp
+  if (newValue === true) {
+    updateData.bypass_timestamp = now;
+  } else {
+    // Check if ALL bypasses are now disabled
+    let allDisabled = true;
+    if (field === 'fees_clearance_bypassed') {
+      allDisabled = !newValue && !bypassStudent.attendance_clearance_bypassed && !bypassStudent.exam_clearance_bypassed;
+    } else if (field === 'attendance_clearance_bypassed') {
+      allDisabled = !newValue && !bypassStudent.fees_clearance_bypassed && !bypassStudent.exam_clearance_bypassed;
+    } else if (field === 'exam_clearance_bypassed') {
+      allDisabled = !newValue && !bypassStudent.fees_clearance_bypassed && !bypassStudent.attendance_clearance_bypassed;
+    }
+    
+    if (allDisabled) {
+      updateData.bypass_timestamp = null;
+    }
+  }
+
+  const { error } = await supabase
+    .from("students")
+    .update(updateData)
+    .eq("id", bypassStudent.id);
+
+  if (error) {
+    alert("Failed to update: " + error.message);
+  } else {
+    const fieldName = field.replace(/_/g, " ").replace("bypassed", "").trim();
+    const expiryMessage = newValue 
+      ? "This will auto-reset after 24 hours." 
+      : "Bypass disabled.";
+    alert(
+      `${fieldName} ${newValue ? "enabled ✅" : "disabled ❌"} successfully!\n${expiryMessage}`,
+    );
+    // Refresh student data to get updated timestamp
+    await searchStudentForBypass();
+  }
+
+  setBypassLoading(false);
+};
 
   const loadStudentFinance = async (studentId) => {
     setFinanceLoading(true);
@@ -874,6 +1017,26 @@ const AdminDashboard = () => {
       setAdminBucketLoading(false);
     }
   };
+
+
+  // Open text answers modal
+const openTextAnswersModal = () => {
+  console.log("🔍 Opening text answers modal...");
+  console.log("📊 examSubmissions:", examSubmissions);
+  
+  const textSubmissions = examSubmissions.filter(
+    (sub) => sub.answer_text && sub.answer_text.length > 0
+  );
+  
+  console.log("📝 Text submissions found:", textSubmissions.length);
+  
+  if (textSubmissions.length === 0) {
+    alert("No text answers found to view.");
+    return;
+  }
+  
+  setShowTextAnswersModal(true);
+};
 
   // === ADD FETCH PROGRAMS FUNCTION ===
   // const fetchPrograms = async () => {
@@ -1686,22 +1849,22 @@ const AdminDashboard = () => {
     status: "scheduled",
   });
 
-  const [newExam, setNewExam] = useState({
-    course_id: "",
-    title: "",
-    description: "",
-    exam_type: "midterm",
-    start_time: new Date(Date.now() + 24 * 60 * 60 * 1000)
-      .toISOString()
-      .slice(0, 16),
-    end_time: new Date(Date.now() + 25 * 60 * 60 * 1000)
-      .toISOString()
-      .slice(0, 16),
-    total_marks: 100,
-    venue: "Main Hall",
-    status: "scheduled",
-  });
-
+const [newExam, setNewExam] = useState({
+  course_id: "",
+  title: "",
+  description: "",
+  exam_type: "midterm",
+  submission_type: "both", // ⭐ NEW: "text", "file", or "both"
+  start_time: new Date(Date.now() + 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 16),
+  end_time: new Date(Date.now() + 25 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 16),
+  total_marks: 100,
+  venue: "Main Hall",
+  status: "scheduled",
+});
   const [newFinanceRecord, setNewFinanceRecord] = useState({
     student_id: "",
     description: "",
@@ -1772,22 +1935,44 @@ const AdminDashboard = () => {
     );
   }, [examTargetProgram, programs, courses]);
 
-  useEffect(() => {
-    if (!authLoading && !profile) {
-      navigate("/login");
-      return;
-    }
+ 
+useEffect(() => {
+  console.log('🔄 Auth state changed:', { 
+    authLoading, 
+    hasProfile: !!profile,
+    isAdmin,
+    isLecturer,
+    isFinance
+  });
 
-    if (profile) {
-      initializeDashboard();
-      setupRealtimeSubscription();
+  // Don't redirect while still loading
+  if (authLoading) {
+    console.log('⏳ Auth still loading, waiting...');
+    return;
+  }
+
+  // If auth is done loading and there's no profile, redirect to login
+  if (!authLoading && !profile) {
+    console.log('⚠️ No profile found, redirecting to login');
+    navigate('/login');
+    return;
+  }
+
+  // Profile exists, initialize dashboard
+  if (profile) {
+    console.log('✅ Profile loaded, initializing dashboard');
+    initializeDashboard();
+    setupRealtimeSubscription();
+  }
+
+  // Cleanup subscription on unmount
+  return () => {
+    if (subscriptionRef.current) {
+      subscriptionRef.current.unsubscribe();
     }
-    return () => {
-      if (subscriptionRef.current) {
-        subscriptionRef.current.unsubscribe();
-      }
-    };
-  }, [profile, authLoading, navigate]);
+  };
+}, [profile, authLoading, navigate, isAdmin, isLecturer, isFinance]);
+
   useEffect(() => {
     if (activeTab === "timetables" && isAdmin) {
       fetchProgramTimetables();
@@ -1914,123 +2099,175 @@ const AdminDashboard = () => {
     loadPrograms();
   }, []); // Run once on mount — no dependency on isAdmin
   // =================== FILE DOWNLOAD FUNCTIONS ===================
-  const downloadFile = async (fileUrl, fileName, submissionId = null) => {
-    try {
-      const downloadKey = submissionId
-        ? `${submissionId}_${fileName}`
-        : fileName;
-      setDownloadingFile(downloadKey);
+const downloadFile = async (fileUrl, fileName, submissionId = null, bucket = null) => {
+  try {
+    const downloadKey = submissionId
+      ? `${submissionId}_${fileName}`
+      : fileName;
+    setDownloadingFile(downloadKey);
 
-      console.log("📥 Download attempt:", { fileUrl, fileName, submissionId });
+    console.log("📥 Download attempt:", { fileUrl, fileName, submissionId, bucket });
 
-      // Extract the full path after "assignments/"
-      let filePath = "";
+    // If fileUrl is already a full URL, open it directly
+    if (fileUrl.startsWith("http")) {
+      console.log("🔗 File is already a full URL, opening directly");
+      window.open(fileUrl, "_blank");
+      setDownloadingFile(null);
+      return;
+    }
 
-      if (fileUrl.includes("assignments/")) {
-        // Extract everything after "assignments/"
-        const match = fileUrl.match(/assignments\/(.*)/);
-        if (match && match[1]) {
-          filePath = match[1];
-          console.log("📂 Extracted file path:", filePath);
+    // Determine which bucket to use
+    let bucketName = "assignments"; // default
+    let filePath = fileUrl;
+
+    // Check if the URL contains a bucket name
+    if (fileUrl.includes("/storage/v1/object/public/")) {
+      // Extract bucket and path from full URL
+      const match = fileUrl.match(/\/storage\/v1\/object\/public\/([^/]+)\/(.+)/);
+      if (match) {
+        bucketName = match[1];
+        filePath = match[2];
+        console.log(`📂 Extracted from URL: bucket=${bucketName}, path=${filePath}`);
+      } else {
+        // Try to extract just the path
+        const pathMatch = fileUrl.match(/public\/(.+)/);
+        if (pathMatch) {
+          filePath = pathMatch[1];
         }
       }
+    } else if (fileUrl.includes("assignments/")) {
+      // Extract everything after "assignments/"
+      const match = fileUrl.match(/assignments\/(.*)/);
+      if (match && match[1]) {
+        filePath = match[1];
+        bucketName = "assignments";
+        console.log(`📂 Extracted from assignments: path=${filePath}`);
+      }
+    } else if (fileUrl.includes("Student exam/")) {
+      const match = fileUrl.match(/Student exam\/(.*)/);
+      if (match && match[1]) {
+        filePath = match[1];
+        bucketName = "Student exam";
+        console.log(`📂 Extracted from Student exam: path=${filePath}`);
+      }
+    } else if (fileUrl.includes("Lecturer exam/")) {
+      const match = fileUrl.match(/Lecturer exam\/(.*)/);
+      if (match && match[1]) {
+        filePath = match[1];
+        bucketName = "Lecturer exam";
+        console.log(`📂 Extracted from Lecturer exam: path=${filePath}`);
+      }
+    }
 
-      if (!filePath) {
-        console.error("❌ Could not extract file path from URL:", fileUrl);
-        alert("Invalid file URL format");
+    // If a specific bucket was passed, use it
+    if (bucket) {
+      bucketName = bucket;
+    }
+
+    // Clean the file path
+    filePath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
+
+    if (!filePath || filePath.length < 3) {
+      console.error("❌ Invalid file path:", filePath);
+      // Try to use the original URL as fallback
+      if (fileUrl.startsWith("http")) {
+        window.open(fileUrl, "_blank");
+        setDownloadingFile(null);
         return;
       }
+      alert("Invalid file path");
+      setDownloadingFile(null);
+      return;
+    }
 
-      // Construct proper Supabase URL
-      const projectRef = supabase.supabaseUrl.split("//")[1].split(".")[0];
-      const fullUrl = `https://${projectRef}.supabase.co/storage/v1/object/public/assignments/${filePath}`;
-      console.log("🔗 Full download URL:", fullUrl);
+    console.log(`📂 Final: bucket=${bucketName}, path=${filePath}`);
 
-      // Get public URL
-      const { data: publicUrlData } = supabase.storage
-        .from("assignments")
-        .getPublicUrl(filePath);
+    // Get public URL
+    const { data: publicUrlData } = supabase.storage
+      .from(bucketName)
+      .getPublicUrl(filePath);
 
-      console.log("🌐 Generated public URL:", publicUrlData.publicUrl);
+    const publicUrl = publicUrlData.publicUrl;
+    console.log("🌐 Generated public URL:", publicUrl);
 
-      // First try: direct fetch with the full URL
+    // Try to download using the public URL
+    try {
+      console.log("🔧 Trying to download from public URL...");
+      const response = await fetch(publicUrl);
+
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName || filePath.split("/").pop() || "download";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        console.log("✅ Download successful from public URL");
+        setDownloadingFile(null);
+        return;
+      } else {
+        console.warn("⚠️ Public URL download failed, trying storage API...");
+        throw new Error(`HTTP ${response.status}`);
+      }
+    } catch (fetchError) {
+      console.warn("⚠️ Fetch error:", fetchError.message);
+
+      // Try Supabase storage API
       try {
-        console.log("🔧 Method 1: Trying direct download with full path...");
-        const response = await fetch(fullUrl);
+        console.log("🔧 Trying storage API download...");
+        const { data, error: downloadError } = await supabase.storage
+          .from(bucketName)
+          .download(filePath);
 
-        if (response.ok) {
-          const blob = await response.blob();
-          const url = window.URL.createObjectURL(blob);
+        if (downloadError) {
+          console.error("❌ Storage API error:", downloadError);
+          // Last resort: open in new tab
+          console.log("🔄 Opening public URL in new tab...");
+          window.open(publicUrl, "_blank");
+        } else {
+          const url = window.URL.createObjectURL(data);
           const a = document.createElement("a");
           a.href = url;
-          a.download =
-            fileName || filePath.split("/").pop() || "assignment_submission";
+          a.download = fileName || filePath.split("/").pop() || "download";
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
           window.URL.revokeObjectURL(url);
-          console.log("✅ Direct download successful");
-        } else {
-          console.warn("⚠️ Direct download failed, trying storage API...");
-          throw new Error(`HTTP ${response.status}`);
+          console.log("✅ Storage API download successful");
         }
-      } catch (directError) {
-        console.warn("⚠️ Direct download error:", directError.message);
-
-        // Second try: Supabase storage API with full path
-        try {
-          console.log("🔧 Method 2: Trying storage API with path:", filePath);
-          const { data, error: downloadError } = await supabase.storage
-            .from("assignments")
-            .download(filePath);
-
-          if (downloadError) {
-            console.error("❌ Storage API error:", downloadError);
-            // Last resort: open in new tab
-            console.log("🔄 Opening public URL in new tab...");
-            window.open(publicUrlData.publicUrl, "_blank");
-          } else {
-            const url = window.URL.createObjectURL(data);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download =
-              fileName || filePath.split("/").pop() || "assignment_submission";
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            window.URL.revokeObjectURL(url);
-            console.log("✅ Storage API download successful");
-          }
-        } catch (storageError) {
-          console.error("❌ Storage error:", storageError);
-          // Final fallback
-          window.open(publicUrlData.publicUrl, "_blank");
-        }
+      } catch (storageError) {
+        console.error("❌ Storage error:", storageError);
+        // Final fallback
+        window.open(publicUrl, "_blank");
       }
-
-      // Update download count
-      if (submissionId) {
-        try {
-          await supabase
-            .from("assignment_submissions")
-            .update({
-              download_count:
-                (assignmentSubmissions.find(
-                  (s) => s.submission_id === submissionId,
-                )?.download_count || 0) + 1,
-            })
-            .eq("id", submissionId);
-        } catch (countError) {
-          console.warn("⚠️ Could not update download count:", countError);
-        }
-      }
-    } catch (error) {
-      console.error("❌ Download error:", error);
-      alert("Error downloading file: " + error.message);
-    } finally {
-      setDownloadingFile(null);
     }
-  };
+
+    // Update download count for assignment submissions
+    if (submissionId && bucketName === "assignments") {
+      try {
+        await supabase
+          .from("assignment_submissions")
+          .update({
+            download_count:
+              (assignmentSubmissions.find(
+                (s) => s.submission_id === submissionId,
+              )?.download_count || 0) + 1,
+          })
+          .eq("id", submissionId);
+      } catch (countError) {
+        console.warn("⚠️ Could not update download count:", countError);
+      }
+    }
+  } catch (error) {
+    console.error("❌ Download error:", error);
+    alert("Error downloading file: " + error.message);
+  } finally {
+    setDownloadingFile(null);
+  }
+};
   // =================== DEBUG FUNCTIONS ===================
   const debugStudentRelationship = async () => {
     console.log("🔍 Debugging student-submission relationship...");
@@ -2607,209 +2844,301 @@ const AdminDashboard = () => {
     }
   };
 
-  const fetchExamSubmissions = async (examId) => {
-    if (!examId) {
+const fetchExamSubmissions = async (examId) => {
+  if (!examId) {
+    setExamSubmissions([]);
+    return;
+  }
+  
+  try {
+    console.log("📝 Fetching submissions for exam:", examId);
+    
+    // Fetch submissions
+    const { data: submissions, error } = await supabase
+      .from("exam_submissions")
+      .select("*")
+      .eq("exam_id", examId)
+      .order("submitted_at", { ascending: false });
+
+    if (error) {
+      console.error("Error fetching submissions:", error);
       setExamSubmissions([]);
       return;
     }
-    try {
-      // Fetch submissions
-      const { data: submissions, error } = await supabase
-        .from("exam_submissions")
-        .select("*")
-        .eq("exam_id", examId)
-        .order("submitted_at", { ascending: false });
-      if (error) throw error;
-      if (!submissions || submissions.length === 0) {
-        setExamSubmissions([]);
-        return;
-      }
-      // Get unique student UUIDs
-      const studentUuids = [...new Set(submissions.map((s) => s.student_id))];
-      // Fetch student details: name, email, registration number
-      const { data: students } = await supabase
-        .from("students")
-        .select("id, full_name, email, student_id")
-        .in("id", studentUuids);
-      const studentMap = {};
-      students?.forEach((stu) => {
-        studentMap[stu.id] = {
-          full_name: stu.full_name || "Unknown Student",
-          email: stu.email || "No email",
-          registration_number: stu.student_id || "N/A",
-        };
-      });
-      // Process with student info
-      const processed = submissions.map((sub) => {
-        const student = studentMap[sub.student_id] || {
-          full_name: "Unknown Student",
-          email: "No email",
-          registration_number: "N/A",
-        };
-        return {
-          id: sub.id,
-          student_name: student.full_name,
-          student_email: student.email,
-          registration_number: student.registration_number,
-          submitted_at: sub.submitted_at,
-          status: sub.status || "submitted",
-          file_download_urls: sub.answer_files || [],
-          total_marks_obtained: sub.total_marks_obtained || null,
-          feedback: sub.feedback || "",
-        };
-      });
-      setExamSubmissions(processed);
-      const initialForm = {};
-      processed.forEach((sub) => {
-        initialForm[sub.id] = {
-          marks: sub.total_marks_obtained?.toString() || "",
-          feedback: sub.feedback || "",
-        };
-      });
-      setExamGradeForm(initialForm);
-    } catch (err) {
-      console.error("Error:", err);
-      setExamSubmissions([]);
-    }
-  };
 
-  const fetchMyExams = async () => {
-    if (!isLecturer || !profile?.id) {
-      console.log("fetchMyExams: Not a lecturer or no profile");
+    if (!submissions || submissions.length === 0) {
+      console.log("No submissions found for this exam");
+      setExamSubmissions([]);
+      return;
+    }
+
+    // Get unique student UUIDs
+    const studentUuids = [...new Set(submissions.map((s) => s.student_id))];
+    console.log(`Found ${submissions.length} submissions from ${studentUuids.length} students`);
+
+    // Fetch student details
+    const { data: students, error: studentError } = await supabase
+      .from("students")
+      .select("id, full_name, email, student_id")
+      .in("id", studentUuids);
+
+    if (studentError) {
+      console.error("Error fetching students:", studentError);
+    }
+
+    const studentMap = {};
+    students?.forEach((stu) => {
+      studentMap[stu.id] = {
+        full_name: stu.full_name || "Unknown Student",
+        email: stu.email || "No email",
+        registration_number: stu.student_id || "N/A",
+      };
+    });
+
+    // Process submissions with student info
+    const processed = submissions.map((sub) => {
+      const student = studentMap[sub.student_id] || {
+        full_name: "Unknown Student",
+        email: "No email",
+        registration_number: "N/A",
+      };
+
+      // ⭐ FIXED: Generate download URLs for answer files (submitted by students)
+      const answerFileUrls = (sub.answer_files || [])
+        .map((filePath) => {
+          if (!filePath) return null;
+          if (filePath.startsWith("http")) return filePath;
+          
+          // Clean path
+          const cleanPath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
+          try {
+            const { data: urlData } = supabase.storage
+              .from("Student exam")
+              .getPublicUrl(cleanPath);
+            return urlData.publicUrl;
+          } catch (err) {
+            console.warn("Error generating URL for:", filePath, err);
+            return null;
+          }
+        })
+        .filter((url) => url);
+
+      console.log(`Student ${student.full_name} has ${answerFileUrls.length} answer files`);
+
+      return {
+        id: sub.id,
+        student_name: student.full_name,
+        student_email: student.email,
+        registration_number: student.registration_number,
+        submitted_at: sub.submitted_at,
+        status: sub.status || "submitted",
+        answer_files: sub.answer_files || [],
+        file_download_urls: answerFileUrls,
+        answer_text: sub.answer_text || "",
+        total_marks_obtained: sub.total_marks_obtained || null,
+        feedback: sub.feedback || "",
+        graded_at: sub.graded_at || null,
+      };
+    });
+
+    setExamSubmissions(processed);
+    console.log(`✅ Processed ${processed.length} submissions with files`);
+    
+    // Initialize grading form
+    const initialForm = {};
+    processed.forEach((sub) => {
+      initialForm[sub.id] = {
+        marks: sub.total_marks_obtained?.toString() || "",
+        feedback: sub.feedback || "",
+      };
+    });
+    setExamGradeForm(initialForm);
+    
+  } catch (err) {
+    console.error("Error in fetchExamSubmissions:", err);
+    setExamSubmissions([]);
+  }
+};
+
+const fetchMyExams = async () => {
+  if (!isLecturer || !profile?.id) {
+    console.log("fetchMyExams: Not a lecturer or no profile");
+    setMyExams([]);
+    return;
+  }
+  console.log("🔍 Starting fetchMyExams for lecturer:", profile.id);
+
+  try {
+    // === Step 1: Get course IDs taught by this lecturer ===
+    let courseIds = [];
+    
+    const { data: lecturerCourses, error: lecturerCoursesError } = await supabase
+      .from("courses")
+      .select("id")
+      .eq("lecturer_id", profile.id);
+
+    if (lecturerCoursesError) {
+      console.error("Error fetching lecturer courses:", lecturerCoursesError);
+    } else if (lecturerCourses?.length > 0) {
+      courseIds = lecturerCourses.map((c) => c.id);
+      console.log(`Found ${courseIds.length} courses assigned to lecturer`);
+    }
+
+    if (courseIds.length === 0 && departmentCodes?.length > 0) {
+      console.log("No direct course assignments, checking department courses...");
+      const { data: deptCourses, error: deptCoursesError } = await supabase
+        .from("courses")
+        .select("id")
+        .in("department_code", departmentCodes);
+
+      if (deptCoursesError) {
+        console.error("Error fetching department courses:", deptCoursesError);
+      } else if (deptCourses?.length > 0) {
+        courseIds = deptCourses.map((c) => c.id);
+        console.log(`Found ${courseIds.length} courses in departments:`, departmentCodes);
+      }
+    }
+
+    if (courseIds.length === 0) {
+      console.log("No courses found for this lecturer");
       setMyExams([]);
       return;
     }
-    console.log("🔍 Starting fetchMyExams for lecturer:", profile.id);
 
-    try {
-      // === Step 1: Get course IDs ===
-      let courseIds = [];
-      const { data: lecturerCourses } = await supabase
-        .from("courses")
-        .select("id")
-        .eq("lecturer_id", profile.id);
-
-      if (lecturerCourses?.length > 0) {
-        courseIds = lecturerCourses.map((c) => c.id);
-      }
-
-      if (courseIds.length === 0 && departmentCodes?.length > 0) {
-        const { data: deptCourses } = await supabase
-          .from("courses")
-          .select("id")
-          .in("department_code", departmentCodes);
-        courseIds = deptCourses?.map((c) => c.id) || [];
-      }
-
-      if (courseIds.length === 0) {
-        setMyExams([]);
-        return;
-      }
-
-      // === Step 2: Fetch exams (no order here) ===
-      const { data: exams, error: examsError } = await supabase
-        .from("examinations")
-        .select(
-          `
+    // === Step 2: Fetch exams for these courses with ALL fields ===
+    const { data: exams, error: examsError } = await supabase
+      .from("examinations")
+      .select(`
         id,
         title,
+        description,
         start_time,
         end_time,
         total_marks,
+        exam_type,
+        venue,
+        status,
         course_id,
+        exam_files,
+        target_academic_year,
+        target_year_of_study,
+        target_semester,
+        target_program_id,
         courses!inner (
           course_code,
           course_name,
           department_code
         )
-      `,
-        )
-        .in("course_id", courseIds);
+      `)
+      .in("course_id", courseIds)
+      .order("start_time", { ascending: true });
 
-      if (examsError) throw examsError;
-      if (!exams || exams.length === 0) {
-        setMyExams([]);
-        return;
-      }
+    if (examsError) {
+      console.error("Error fetching exams:", examsError);
+      setMyExams([]);
+      return;
+    }
 
-      const examIds = exams.map((e) => e.id);
+    if (!exams || exams.length === 0) {
+      console.log("No exams found for these courses");
+      setMyExams([]);
+      return;
+    }
 
-      // === Step 3: Fetch submission stats ===
-      const { data: submissions } = await supabase
-        .from("exam_submissions")
-        .select("exam_id, status")
-        .in("exam_id", examIds);
+    console.log(`Found ${exams.length} exams`);
 
-      const statsMap = {};
-      examIds.forEach((id) => {
-        statsMap[id] = { submitted: 0, graded: 0, pending: 0 };
-      });
+    // === Step 3: Fetch submission stats ===
+    const examIds = exams.map((e) => e.id);
+    const { data: submissions, error: submissionsError } = await supabase
+      .from("exam_submissions")
+      .select("exam_id, status")
+      .in("exam_id", examIds);
 
-      (submissions || []).forEach((sub) => {
-        const stats = statsMap[sub.exam_id];
-        if (stats) {
-          if (sub.status === "submitted" || sub.status === "graded")
-            stats.submitted++;
-          if (sub.status === "graded") stats.graded++;
-          stats.pending = stats.submitted - stats.graded;
+    if (submissionsError) {
+      console.warn("Error fetching submissions:", submissionsError);
+    }
+
+    const statsMap = {};
+    examIds.forEach((id) => {
+      statsMap[id] = { submitted: 0, graded: 0, pending: 0 };
+    });
+
+    (submissions || []).forEach((sub) => {
+      const stats = statsMap[sub.exam_id];
+      if (stats) {
+        if (sub.status === "submitted" || sub.status === "graded") {
+          stats.submitted++;
         }
-      });
+        if (sub.status === "graded") {
+          stats.graded++;
+        }
+        stats.pending = stats.submitted - stats.graded;
+      }
+    });
 
-      // === Step 4: Process and sort client-side ===
-      const now = new Date();
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+    // === Step 4: Process exams ===
+    const now = new Date();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
-      const processedExams = exams.map((exam) => ({
+    const processedExams = exams.map((exam) => {
+      const startDate = new Date(exam.start_time);
+      const endDate = new Date(exam.end_time);
+      const isActive = now >= startDate && now <= endDate;
+      const isToday = startDate.toDateString() === today.toDateString();
+      
+      // ⭐ Log exam files
+      console.log(`📎 Exam ${exam.title} has ${exam.exam_files?.length || 0} files attached:`, exam.exam_files);
+      
+      return {
         exam_id: exam.id,
         title: exam.title || "Untitled Exam",
+        description: exam.description || "",
         course_code: exam.courses?.course_code || "N/A",
         course_name: exam.courses?.course_name || "N/A",
         department_code: exam.courses?.department_code || "N/A",
         start_time: exam.start_time,
         end_time: exam.end_time,
         total_marks: exam.total_marks || 100,
+        exam_type: exam.exam_type || "online",
+        venue: exam.venue || "Online",
+        status: exam.status || "published",
+        exam_files: exam.exam_files || [], // ⭐ This contains the uploaded exam files
+        target_academic_year: exam.target_academic_year,
+        target_year_of_study: exam.target_year_of_study,
+        target_semester: exam.target_semester,
         submitted: statsMap[exam.id]?.submitted || 0,
         graded: statsMap[exam.id]?.graded || 0,
         pending: statsMap[exam.id]?.pending || 0,
-        _startDate: new Date(exam.start_time),
-        _endDate: new Date(exam.end_time),
-      }));
+        isActive: isActive,
+        isToday: isToday,
+        _startDate: startDate,
+        _endDate: endDate,
+      };
+    });
 
-      // === SMART SORTING: Active → Today → Future (soonest) → Past (most recent) ===
-      const sortedExams = processedExams.sort((a, b) => {
-        const isActiveA = now >= a._startDate && now <= a._endDate;
-        const isActiveB = now >= b._startDate && now <= b._endDate;
+    // Sort exams
+    const sortedExams = processedExams.sort((a, b) => {
+      if (a.isActive && !b.isActive) return -1;
+      if (!a.isActive && b.isActive) return 1;
+      if (a.isToday && !b.isToday) return -1;
+      if (!a.isToday && b.isToday) return 1;
+      if (a._startDate > today && b._startDate > today) {
+        return a._startDate - b._startDate;
+      }
+      return b._endDate - a._endDate;
+    });
 
-        // Active exams always first
-        if (isActiveA && !isActiveB) return -1;
-        if (!isActiveA && isActiveB) return 1;
-
-        // Then today’s exams (even if not active yet)
-        const isTodayA = a._startDate.toDateString() === today.toDateString();
-        const isTodayB = b._startDate.toDateString() === today.toDateString();
-
-        if (isTodayA && !isTodayB) return -1;
-        if (!isTodayA && isTodayB) return 1;
-
-        // Future exams: soonest first
-        if (a._startDate > today && b._startDate > today) {
-          return a._startDate - b._startDate;
-        }
-
-        // Past exams: most recent first
-        return b._endDate - a._endDate;
-      });
-
-      console.log("✅ Exams sorted (active/today on top):", sortedExams);
-      setMyExams(sortedExams);
-    } catch (error) {
-      console.error("Error in fetchMyExams:", error);
-      setMyExams([]);
-    } finally {
-      setLoadingAssignments(false);
-    }
-  };
+    console.log(`✅ Processed ${sortedExams.length} exams`);
+    setMyExams(sortedExams);
+    
+  } catch (error) {
+    console.error("Error in fetchMyExams:", error);
+    setMyExams([]);
+  } finally {
+    setLoadingAssignments(false);
+  }
+};
 
   useEffect(() => {
     if (activeTab === "grade-exams" && isLecturer && profile?.id) {
@@ -3454,6 +3783,268 @@ const AdminDashboard = () => {
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
   };
+
+  const downloadTextAnswersAsWord = async () => {
+  // Filter only submissions with text answers
+  const textSubmissions = examSubmissions.filter(
+    (sub) => sub.answer_text && sub.answer_text.length > 0
+  );
+
+  if (textSubmissions.length === 0) {
+    alert("No text answers found to export.");
+    return;
+  }
+
+  try {
+    // Dynamically import docx
+    const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, BorderStyle, WidthType } = await import('docx');
+
+    // Build the document
+    const doc = new Document({
+      sections: [{
+        properties: {},
+        children: [
+          // Title
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: `Exam Text Answers - ${selectedExamForGrading?.title || "Exam"}`,
+                size: 28,
+                bold: true,
+                font: "Arial",
+              }),
+            ],
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 400 },
+          }),
+
+          // Exam Info
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: `Course: ${selectedExamForGrading?.course_code || "N/A"} - ${selectedExamForGrading?.course_name || "N/A"}`,
+                size: 22,
+                font: "Arial",
+              }),
+            ],
+            spacing: { after: 200 },
+          }),
+
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: `Total Submissions with Text: ${textSubmissions.length}`,
+                size: 22,
+                font: "Arial",
+              }),
+            ],
+            spacing: { after: 400 },
+          }),
+
+          // Separator line
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: "=".repeat(80),
+                size: 18,
+                font: "Arial",
+              }),
+            ],
+            spacing: { after: 400 },
+          }),
+
+          // Each submission
+          ...textSubmissions.flatMap((sub, index) => {
+            const children = [];
+
+            // Student header
+            children.push(
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: `${index + 1}. ${sub.student_name || "Unknown Student"}`,
+                    size: 24,
+                    bold: true,
+                    font: "Arial",
+                  }),
+                ],
+                spacing: { before: 400, after: 100 },
+              })
+            );
+
+            // Student info
+            children.push(
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: `   Registration: ${sub.registration_number || "N/A"}  |  Email: ${sub.student_email || "N/A"}  |  Submitted: ${sub.submitted_at ? new Date(sub.submitted_at).toLocaleString() : "N/A"}`,
+                    size: 18,
+                    font: "Arial",
+                    color: "666666",
+                  }),
+                ],
+                spacing: { after: 200 },
+              })
+            );
+
+            // Answer text
+            children.push(
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: `   Answer:`,
+                    size: 20,
+                    bold: true,
+                    font: "Arial",
+                  }),
+                ],
+                spacing: { after: 100 },
+              })
+            );
+
+            // Answer content with preserved formatting
+            const answerLines = (sub.answer_text || "").split("\n");
+            answerLines.forEach((line, lineIndex) => {
+              if (line.trim() === "") {
+                children.push(
+                  new Paragraph({
+                    children: [
+                      new TextRun({
+                        text: "",
+                        size: 20,
+                        font: "Arial",
+                      }),
+                    ],
+                    spacing: { after: 50 },
+                  })
+                );
+              } else {
+                children.push(
+                  new Paragraph({
+                    children: [
+                      new TextRun({
+                        text: `   ${line}`,
+                        size: 20,
+                        font: "Arial",
+                      }),
+                    ],
+                    spacing: { after: 50 },
+                  })
+                );
+              }
+            });
+
+            // Status
+            const statusText = sub.status === "graded" 
+              ? `✓ Graded (${sub.total_marks_obtained || 0} marks)` 
+              : "⏳ Pending Grading";
+            
+            children.push(
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: `   Status: ${statusText}`,
+                    size: 18,
+                    font: "Arial",
+                    color: sub.status === "graded" ? "00aa00" : "cc8800",
+                  }),
+                ],
+                spacing: { before: 100, after: 200 },
+              })
+            );
+
+            // Separator between submissions
+            if (index < textSubmissions.length - 1) {
+              children.push(
+                new Paragraph({
+                  children: [
+                    new TextRun({
+                      text: "-".repeat(60),
+                      size: 16,
+                      font: "Arial",
+                      color: "cccccc",
+                    }),
+                  ],
+                  spacing: { before: 200, after: 200 },
+                })
+              );
+            }
+
+            return children;
+          }),
+
+          // Footer
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: `Generated on: ${new Date().toLocaleString()}`,
+                size: 16,
+                font: "Arial",
+                color: "999999",
+              }),
+            ],
+            spacing: { before: 600, after: 100 },
+            alignment: AlignmentType.CENTER,
+          }),
+        ],
+      }],
+    });
+
+    // Generate the document
+    const blob = await Packer.toBlob(doc);
+    
+    // Download the file
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `Text_Answers_${selectedExamForGrading?.title || "exam"}_${new Date().toISOString().split("T")[0]}.docx`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+
+    alert(`✅ ${textSubmissions.length} text answers exported successfully!`);
+
+  } catch (error) {
+    console.error("Error exporting Word document:", error);
+    
+    // Fallback: Try a simpler approach using Blob
+    try {
+      console.log("Trying fallback export method...");
+      let content = `Exam Text Answers - ${selectedExamForGrading?.title || "Exam"}\n`;
+      content += `="=".repeat(60)}\n\n`;
+      content += `Course: ${selectedExamForGrading?.course_code || "N/A"} - ${selectedExamForGrading?.course_name || "N/A"}\n`;
+      content += `Total Submissions: ${textSubmissions.length}\n\n`;
+      content += `-`.repeat(60) + `\n\n`;
+
+      textSubmissions.forEach((sub, index) => {
+        content += `${index + 1}. ${sub.student_name || "Unknown Student"}\n`;
+        content += `   Registration: ${sub.registration_number || "N/A"}\n`;
+        content += `   Email: ${sub.student_email || "N/A"}\n`;
+        content += `   Submitted: ${sub.submitted_at ? new Date(sub.submitted_at).toLocaleString() : "N/A"}\n`;
+        content += `   Answer:\n   ${sub.answer_text || "No answer provided"}\n\n`;
+        content += `   Status: ${sub.status === "graded" ? "Graded" : "Pending Grading"}\n`;
+        content += `\n` + `-`.repeat(40) + `\n\n`;
+      });
+
+      content += `\nGenerated on: ${new Date().toLocaleString()}`;
+
+      const blob = new Blob([content], { type: "text/plain" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `Text_Answers_${selectedExamForGrading?.title || "exam"}_${new Date().toISOString().split("T")[0]}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(link.href);
+
+      alert(`✅ ${textSubmissions.length} text answers exported as TXT file!`);
+    } catch (fallbackError) {
+      console.error("Fallback export also failed:", fallbackError);
+      alert("Failed to export. Please try again.");
+    }
+  }
+};
+
 
   // =================== EXISTING FUNCTIONS ===================
   const fetchDashboardStats = async () => {
@@ -4861,83 +5452,92 @@ Email: ${profileData.email}
     }
   };
 
-  // UPDATED: handleAddExam with file upload
-  const handleAddExam = async () => {
-    if (!validateExamCohort()) return;
+// UPDATED: handleAddExam with file upload and submission type
+const handleAddExam = async () => {
+  if (!validateExamCohort()) return;
 
-    try {
-      // Your existing enrolled students check
-      const { data: enrolledStudents, error: enrollCheckError } = await supabase
-        .from("students")
-        .select("id")
-        .eq("program_id", examTargetProgram)
-        .eq("academic_year", examTargetCohort.academic_year.trim())
-        .eq("year_of_study", examTargetCohort.year_of_study)
-        .eq("semester", examTargetCohort.semester)
-        .eq("status", "active");
+  try {
+    // Your existing enrolled students check
+    const { data: enrolledStudents, error: enrollCheckError } = await supabase
+      .from("students")
+      .select("id")
+      .eq("program_id", examTargetProgram)
+      .eq("academic_year", examTargetCohort.academic_year.trim())
+      .eq("year_of_study", examTargetCohort.year_of_study)
+      .eq("semester", examTargetCohort.semester)
+      .eq("status", "active");
 
-      if (enrollCheckError) throw enrollCheckError;
-      if (!enrolledStudents || enrolledStudents.length === 0) {
-        alert("No active/enrolled students found in this target cohort.");
-        return;
-      }
+    if (enrollCheckError) throw enrollCheckError;
+    if (!enrolledStudents || enrolledStudents.length === 0) {
+      alert("No active/enrolled students found in this target cohort.");
+      return;
+    }
+    // ⭐ Validate file upload for file-only submissions
+if (newExam.submission_type === 'file' && examFiles.length === 0) {
+  alert("Please upload at least one exam file for file-only submission.");
+  return;
+}
 
-      // Upload files first
-      let uploadedExamFiles = [];
+    // Upload files first if submission_type is 'file' or 'both'
+    let uploadedExamFiles = [];
+    if (newExam.submission_type === 'file' || newExam.submission_type === 'both') {
       if (examFiles.length > 0) {
         uploadedExamFiles = await uploadExamFiles(examFiles);
       }
-
-      const start = new Date(newExam.start_time);
-      const end = new Date(newExam.end_time);
-      const durationMinutes = Math.round((end - start) / 60000);
-
-      if (durationMinutes <= 0) {
-        alert("End time must be after start time");
-        return;
-      }
-
-      const examData = {
-        ...newExam,
-        status: "published",
-        target_academic_year: examTargetCohort.academic_year.trim(),
-        target_year_of_study: examTargetCohort.year_of_study,
-        target_semester: examTargetCohort.semester,
-        target_program_id: examTargetProgram,
-        duration_minutes: durationMinutes,
-        venue: newExam.venue || newExam.location || "Online",
-        exam_files: uploadedExamFiles, // ← NEW: array of file paths
-      };
-
-      const { error } = await supabase.from("examinations").insert([examData]);
-
-      if (error) throw error;
-
-      // Reset form
-      setShowExamsModal(false);
-      setNewExam({
-        course_id: "",
-        title: "",
-        description: "",
-        exam_type: "midterm",
-        start_time: "",
-        end_time: "",
-        total_marks: 100,
-        venue: "",
-        location: "",
-      });
-      setExamFiles([]); // Reset files
-      setExamTargetProgram("");
-      setExamTargetCohort({ academic_year: "", year_of_study: 1, semester: 1 });
-      setExamCohortError("");
-
-      fetchExams();
-      alert("Exam scheduled successfully with files!");
-    } catch (error) {
-      console.error("Error scheduling exam:", error);
-      alert("Error: " + error.message);
     }
-  };
+
+    const start = new Date(newExam.start_time);
+    const end = new Date(newExam.end_time);
+    const durationMinutes = Math.round((end - start) / 60000);
+
+    if (durationMinutes <= 0) {
+      alert("End time must be after start time");
+      return;
+    }
+
+    const examData = {
+      ...newExam,
+      status: "published",
+      target_academic_year: examTargetCohort.academic_year.trim(),
+      target_year_of_study: examTargetCohort.year_of_study,
+      target_semester: examTargetCohort.semester,
+      target_program_id: examTargetProgram,
+      duration_minutes: durationMinutes,
+      venue: newExam.venue || newExam.location || "Online",
+      exam_files: uploadedExamFiles, // array of file paths
+      submission_type: newExam.submission_type || "both", // ⭐ Save submission type
+    };
+
+    const { error } = await supabase.from("examinations").insert([examData]);
+
+    if (error) throw error;
+
+    // Reset form
+    setShowExamsModal(false);
+  setNewExam({
+  course_id: "",
+  title: "",
+  description: "",
+  exam_type: "midterm",
+  submission_type: "both",
+  start_time: "",
+  end_time: "",
+  total_marks: 100,
+  venue: "",
+  location: "",
+});
+    setExamFiles([]); // Reset files
+    setExamTargetProgram("");
+    setExamTargetCohort({ academic_year: "", year_of_study: 1, semester: 1 });
+    setExamCohortError("");
+
+    fetchExams();
+    alert("Exam scheduled successfully!");
+  } catch (error) {
+    console.error("Error scheduling exam:", error);
+    alert("Error: " + error.message);
+  }
+};
 
   const handleAddFinanceRecord = async () => {
     try {
@@ -6455,23 +7055,50 @@ Email: ${profileData.email}
                     </div>
 
                     {/* Export Buttons */}
-                    {assignmentSubmissions.length > 0 && (
-                      <div className="export-options">
-                        <button
-                          className="export-button"
-                          onClick={downloadSubmissionsCSV}
-                        >
-                          📥 Export CSV
-                        </button>
-                        <button
-                          className="export-button"
-                          onClick={downloadAllSubmissions}
-                          disabled={batchDownloading}
-                        >
-                          📦 Download All Files
-                        </button>
-                      </div>
-                    )}
+{/* Export Buttons */}
+{assignmentSubmissions.length > 0 && (
+  <div className="export-options">
+    <button
+      className="export-button"
+      onClick={downloadSubmissionsCSV}
+    >
+      📥 Export CSV
+    </button>
+    <button
+      className="export-button"
+      onClick={downloadAllSubmissions}
+      disabled={batchDownloading}
+    >
+      📦 Download All Files
+    </button>
+  </div>
+)}
+{/* Exam Text Answers Buttons */}
+{selectedExamForGrading && examSubmissions.length > 0 && (
+  <div className="export-options" style={{ marginTop: "10px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+    <button
+      className="export-button"
+      onClick={openTextAnswersModal}
+      disabled={examSubmissions.filter(s => s.answer_text && s.answer_text.length > 0).length === 0}
+      style={{
+        backgroundColor: examSubmissions.filter(s => s.answer_text && s.answer_text.length > 0).length > 0 ? "#6f42c1" : "#ccc",
+        color: "white",
+        padding: "10px 20px",
+        border: "none",
+        borderRadius: "8px",
+        fontSize: "14px",
+        fontWeight: "bold",
+        cursor: examSubmissions.filter(s => s.answer_text && s.answer_text.length > 0).length > 0 ? "pointer" : "not-allowed",
+        display: "flex",
+        alignItems: "center",
+        gap: "8px"
+      }}
+    >
+      <i className="fas fa-file-alt"></i>
+      View Text Answers ({examSubmissions.filter(s => s.answer_text && s.answer_text.length > 0).length})
+    </button>
+  </div>
+)}
                   </div>
                 ) : (
                   /* List of My Assignments */
@@ -6661,39 +7288,118 @@ Email: ${profileData.email}
                                         : "Submitted"}
                                     </span>
                                   </td>
-                                  <td>
-                                    {submission.file_download_urls &&
-                                    submission.file_download_urls.length > 0 ? (
-                                      <div className="file-links">
-                                        {submission.file_download_urls.map(
-                                          (url, idx) => (
-                                            <div
-                                              key={idx}
-                                              className="file-download-item"
-                                            >
-                                              <a
-                                                href="#"
-                                                onClick={(e) => {
-                                                  e.preventDefault();
-                                                  downloadFile(
-                                                    url,
-                                                    `${submission.student_name}_Exam_Answer_${idx + 1}`,
-                                                  );
-                                                }}
-                                                className="file-link"
-                                              >
-                                                📥 Answer File {idx + 1}
-                                              </a>
-                                            </div>
-                                          ),
-                                        )}
-                                      </div>
-                                    ) : (
-                                      <span className="text-muted">
-                                        No files uploaded
-                                      </span>
-                                    )}
-                                  </td>
+<td>
+  {/* Show Exam Files (from the exam) */}
+  {selectedExamForGrading?.exam_files && selectedExamForGrading.exam_files.length > 0 && (
+    <div style={{ marginBottom: "8px" }}>
+      <strong style={{ fontSize: "12px", color: "#1976d2" }}>📎 Exam Files:</strong>
+      <div className="file-links" style={{ marginTop: "4px" }}>
+        {selectedExamForGrading.exam_files.map((filePath, idx) => {
+          const fileName = filePath.split('/').pop() || `Exam_File_${idx + 1}`;
+          const { data: urlData } = supabase.storage
+            .from("Lecturer exam")
+            .getPublicUrl(filePath);
+          return (
+            <div key={idx} className="file-download-item">
+              <a
+                href={urlData.publicUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="file-link"
+              >
+                📄 {fileName}
+              </a>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  )}
+  
+  {/* Show Student Submitted Files */}
+  {submission.file_download_urls && submission.file_download_urls.length > 0 ? (
+    <div>
+      <strong style={{ fontSize: "12px", color: "#28a745" }}>📤 Student Answers:</strong>
+      <div className="file-links" style={{ marginTop: "4px" }}>
+        {submission.file_download_urls.map((url, idx) => {
+          const fileName = submission.answer_files?.[idx]?.split('/').pop() || `Answer_${idx + 1}`;
+          return (
+            <div key={idx} className="file-download-item">
+            <a
+  href="#"
+  onClick={(e) => {
+    e.preventDefault();
+    downloadFile(url, `${submission.student_name}_${fileName}`, submission.id, "Student exam");
+  }}
+  className="file-link"
+>
+  📥 {fileName}
+</a>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  ) : (
+    <span className="text-muted">No answers uploaded</span>
+  )}
+  
+ {/* ⭐ Show Text Answer */}
+{submission.answer_text && submission.answer_text.length > 0 && (
+  <div style={{ marginTop: "8px" }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+      <strong style={{ fontSize: "12px", color: "#6f42c1" }}>📝 Text Answer:</strong>
+      <button
+        onClick={() => {
+          // Store the current submission for the modal
+          setSelectedTextAnswer(submission);
+          setShowTextAnswersModal(true);
+        }}
+        style={{
+          background: "none",
+          border: "none",
+          color: "#007bff",
+          fontSize: "12px",
+          cursor: "pointer",
+          textDecoration: "underline",
+          padding: "2px 8px",
+          borderRadius: "4px",
+          hover: { backgroundColor: "#e3f2fd" }
+        }}
+        onMouseEnter={(e) => e.target.style.backgroundColor = "#e3f2fd"}
+        onMouseLeave={(e) => e.target.style.backgroundColor = "transparent"}
+      >
+        View Full 📄
+      </button>
+    </div>
+    <div style={{ 
+      maxWidth: "200px", 
+      maxHeight: "60px", 
+      overflow: "hidden", 
+      backgroundColor: "#f8f9fa", 
+      padding: "8px", 
+      borderRadius: "4px",
+      fontSize: "13px",
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+      marginTop: "2px",
+      cursor: "pointer",
+      border: "1px solid #e9ecef",
+      position: "relative"
+    }}
+    onClick={() => {
+      setSelectedTextAnswer(submission);
+      setShowTextAnswersModal(true);
+    }}
+    >
+      {submission.answer_text.length > 150 
+        ? submission.answer_text.substring(0, 150) + "..."
+        : submission.answer_text
+      }
+    </div>
+  </div>
+)}
+</td>
                                   <td>
                                     {submission.status === "graded" ||
                                     submission.status === "submitted" ? (
@@ -6833,17 +7539,32 @@ Email: ${profileData.email}
                           <p>
                             📅 {new Date(exam.start_time).toLocaleDateString()}
                           </p>
-                          <p>
-                            Submitted: <strong>{exam.submitted || 0}</strong> |
-                            Graded: <strong>{exam.graded || 0}</strong> |
-                            Pending: <strong>{exam.pending || 0}</strong>
-                          </p>
-                          <button
-                            className="action-btn view"
-                            onClick={() => handleViewExamSubmissions(exam)}
-                          >
-                            View Submissions
-                          </button>
+                      <p>
+  📎 Files: {exam.exam_files && exam.exam_files.length > 0 ? (
+    <span style={{ color: "#28a745", fontWeight: "bold" }}>
+      {exam.exam_files.length} file(s) attached
+    </span>
+  ) : (
+    <span style={{ color: "#999" }}>No files</span>
+  )}
+</p>
+<p>
+  Submitted: <strong>{exam.submitted || 0}</strong> |
+  Graded: <strong>{exam.graded || 0}</strong> |
+  Pending: <strong>{exam.pending || 0}</strong>
+</p>
+                        <button
+  className="action-btn view"
+  onClick={() => handleViewExamSubmissions(exam)}
+>
+  View Submissions
+</button>
+{/* ⭐ Show if files are attached */}
+<div style={{ marginTop: "5px" }}>
+  <span style={{ fontSize: "12px", color: exam.exam_files && exam.exam_files.length > 0 ? "#28a745" : "#999" }}>
+    📎 {exam.exam_files && exam.exam_files.length > 0 ? `${exam.exam_files.length} file(s) attached` : "No files"}
+  </span>
+</div>
                         </div>
                       ))
                     ) : (
@@ -8103,31 +8824,48 @@ Email: ${profileData.email}
                       {bypassStudent.student_id}) — {bypassStudent.program}
                       <br />
                       <br />
-                      {/* Current status display */}
-                      <div style={{ marginBottom: "15px", fontSize: "14px" }}>
-                        <strong>Current Override Status:</strong>
-                        <br />
-                        Fees Bypass:{" "}
-                        {bypassStudent.fees_clearance_bypassed ? (
-                          <span style={{ color: "#28a745" }}>✓ Enabled</span>
-                        ) : (
-                          <span style={{ color: "#dc3545" }}>✗ Disabled</span>
-                        )}
-                        <br />
-                        Attendance Bypass:{" "}
-                        {bypassStudent.attendance_clearance_bypassed ? (
-                          <span style={{ color: "#28a745" }}>✓ Enabled</span>
-                        ) : (
-                          <span style={{ color: "#dc3545" }}>✗ Disabled</span>
-                        )}
-                        <br />
-                        Exam Bypass:{" "}
-                        {bypassStudent.exam_clearance_bypassed ? (
-                          <span style={{ color: "#28a745" }}>✓ Enabled</span>
-                        ) : (
-                          <span style={{ color: "#dc3545" }}>✗ Disabled</span>
-                        )}
-                      </div>
+                     {/* Current status display */}
+<div style={{ marginBottom: "15px", fontSize: "14px" }}>
+  <strong>Current Override Status:</strong>
+  <br />
+  Fees Bypass:{" "}
+  {bypassStudent.fees_clearance_bypassed ? (
+    <span style={{ color: "#28a745" }}>✓ Enabled</span>
+  ) : (
+    <span style={{ color: "#dc3545" }}>✗ Disabled</span>
+  )}
+  <br />
+  Attendance Bypass:{" "}
+  {bypassStudent.attendance_clearance_bypassed ? (
+    <span style={{ color: "#28a745" }}>✓ Enabled</span>
+  ) : (
+    <span style={{ color: "#dc3545" }}>✗ Disabled</span>
+  )}
+  <br />
+  Exam Bypass:{" "}
+  {bypassStudent.exam_clearance_bypassed ? (
+    <span style={{ color: "#28a745" }}>✓ Enabled</span>
+  ) : (
+    <span style={{ color: "#dc3545" }}>✗ Disabled</span>
+  )}
+  <br />
+  {/* ⭐ Show expiry timer if any bypass is enabled */}
+  {bypassStudent.bypass_timestamp && (
+    <div style={{ marginTop: "10px", padding: "8px 12px", backgroundColor: "#fff3cd", borderRadius: "6px", border: "1px solid #ffc107" }}>
+      <span style={{ fontWeight: "bold", color: "#856404" }}>
+        ⏰ Expires in: {bypassStudent._bypassRemaining || "Calculating..."}
+      </span>
+      <br />
+      <span style={{ fontSize: "12px", color: "#856404" }}>
+        Enabled: {new Date(bypassStudent.bypass_timestamp).toLocaleString()}
+      </span>
+      <br />
+      <span style={{ fontSize: "12px", color: "#856404" }}>
+        Auto-reset after 24 hours
+      </span>
+    </div>
+  )}
+</div>
                       <div
                         style={{
                           display: "flex",
@@ -12189,6 +12927,32 @@ Email: ${profileData.email}
                   <option value="online">Online</option>
                 </select>
               </div>
+              {/* ⭐ Submission Type - New! */}
+<div className="form-group">
+  <label>Submission Type *</label>
+  <select
+    value={newExam.submission_type || "both"}
+    onChange={(e) => {
+      const value = e.target.value;
+      setNewExam({ ...newExam, submission_type: value });
+      // If submission_type is 'text', clear exam files
+      if (value === 'text') {
+        setExamFiles([]);
+      }
+    }}
+    className="form-select"
+    required
+  >
+    <option value="text">📝 Text Answer Only</option>
+    <option value="file">📎 File Upload Only</option>
+    <option value="both">📝 Text + File Upload</option>
+  </select>
+  <small style={{ display: "block", marginTop: "5px", color: "#6c757d" }}>
+    {newExam.submission_type === "text" && "Students can only type their answers in the text area."}
+    {newExam.submission_type === "file" && "Students can only upload files as answers."}
+    {newExam.submission_type === "both" && "Students can type answers AND upload files."}
+  </small>
+</div>
 
               {/* Total Marks */}
               <div className="form-group">
@@ -12284,90 +13048,107 @@ Email: ${profileData.email}
                 />
               </div>
 
-              {/* NEW: Exam Files Upload */}
-              <div className="form-group">
-                <label>
-                  Exam Files (PDF, Word, etc.) - Students will download these
-                </label>
-                <div
-                  className="file-upload-area"
-                  onClick={() => examFileInputRef.current?.click()}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.classList.add("drag-over");
-                  }}
-                  onDragLeave={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.classList.remove("drag-over");
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.classList.remove("drag-over");
-                    setExamFiles((prev) => [
-                      ...prev,
-                      ...Array.from(e.dataTransfer.files),
-                    ]);
-                  }}
-                >
-                  <input
-                    type="file"
-                    ref={examFileInputRef}
-                    multiple
-                    accept=".pdf,.doc,.docx,.ppt,.pptx,.zip"
-                    onChange={(e) =>
-                      setExamFiles((prev) => [
-                        ...prev,
-                        ...Array.from(e.target.files),
-                      ])
-                    }
-                    style={{ display: "none" }}
-                  />
-                  <div className="upload-icon">📤</div>
-                  <p>
-                    <strong>Upload exam papers</strong>
-                  </p>
-                  <p className="small-text">
-                    PDF, Word, PPT, ZIP (students download from student portal)
-                  </p>
-                </div>
+             {/* Exam Files Upload - Only show if not 'text' only */}
+{newExam.submission_type !== "text" && (
+  <div className="form-group">
+    <label>
+      Exam Files (PDF, Word, etc.) - Students will download these
+      {newExam.submission_type === "file" && (
+        <span style={{ color: "#dc3545", fontWeight: "bold" }}> *Required</span>
+      )}
+    </label>
+    <div
+      className="file-upload-area"
+      onClick={() => examFileInputRef.current?.click()}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.currentTarget.classList.add("drag-over");
+      }}
+      onDragLeave={(e) => {
+        e.preventDefault();
+        e.currentTarget.classList.remove("drag-over");
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        e.currentTarget.classList.remove("drag-over");
+        setExamFiles((prev) => [
+          ...prev,
+          ...Array.from(e.dataTransfer.files),
+        ]);
+      }}
+      style={{
+        border: newExam.submission_type === "file" && examFiles.length === 0 
+          ? "2px dashed #dc3545" 
+          : "2px dashed #007bff"
+      }}
+    >
+      <input
+        type="file"
+        ref={examFileInputRef}
+        multiple
+        accept=".pdf,.doc,.docx,.ppt,.pptx,.zip"
+        onChange={(e) =>
+          setExamFiles((prev) => [
+            ...prev,
+            ...Array.from(e.target.files),
+          ])
+        }
+        style={{ display: "none" }}
+      />
+      <div className="upload-icon">📤</div>
+      <p>
+        <strong>Upload exam papers</strong>
+        {newExam.submission_type === "file" && (
+          <span style={{ color: "#dc3545" }}> *Required</span>
+        )}
+      </p>
+      <p className="small-text">
+        PDF, Word, PPT, ZIP (students download from student portal)
+      </p>
+      {newExam.submission_type === "file" && examFiles.length === 0 && (
+        <p style={{ color: "#dc3545", fontSize: "12px", marginTop: "5px" }}>
+          ⚠️ Please upload at least one file for file-only submission
+        </p>
+      )}
+    </div>
 
-                {uploadingExamFiles && (
-                  <div className="upload-progress">
-                    <div className="progress-bar">
-                      <div
-                        className="progress-fill"
-                        style={{ width: `${examUploadProgress}%` }}
-                      ></div>
-                    </div>
-                    <p>Uploading: {examUploadProgress}%</p>
-                  </div>
-                )}
+    {uploadingExamFiles && (
+      <div className="upload-progress">
+        <div className="progress-bar">
+          <div
+            className="progress-fill"
+            style={{ width: `${examUploadProgress}%` }}
+          ></div>
+        </div>
+        <p>Uploading: {examUploadProgress}%</p>
+      </div>
+    )}
 
-                {examFiles.length > 0 && (
-                  <div className="file-list">
-                    <h4>Selected ({examFiles.length})</h4>
-                    <div className="files-grid">
-                      {examFiles.map((file, idx) => (
-                        <div key={idx} className="file-item">
-                          <span>
-                            {file.name} ({(file.size / 1024 / 1024).toFixed(2)}{" "}
-                            MB)
-                          </span>
-                          <button
-                            onClick={() =>
-                              setExamFiles((prev) =>
-                                prev.filter((_, i) => i !== idx),
-                              )
-                            }
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
+    {examFiles.length > 0 && (
+      <div className="file-list">
+        <h4>Selected ({examFiles.length})</h4>
+        <div className="files-grid">
+          {examFiles.map((file, idx) => (
+            <div key={idx} className="file-item">
+              <span>
+                {file.name} ({(file.size / 1024 / 1024).toFixed(2)} MB)
+              </span>
+              <button
+                onClick={() =>
+                  setExamFiles((prev) =>
+                    prev.filter((_, i) => i !== idx),
+                  )
+                }
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
+  </div>
+)}
 
               {/* Modal Actions */}
               <div className="modal-actions">
@@ -13093,6 +13874,272 @@ Email: ${profileData.email}
           onUpdate={handleStudentPictureUpdate}
         />
       )}
+     {/* Text Answers Modal - Word Document Style */}
+{showTextAnswersModal && (
+  <div className="modal-overlay" onClick={() => {
+    setShowTextAnswersModal(false);
+    setSelectedTextAnswer(null);
+  }}>
+    <div className="modal large-modal" style={{ maxWidth: "900px", maxHeight: "90vh", overflow: "hidden" }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ 
+        display: "flex", 
+        justifyContent: "space-between", 
+        alignItems: "center", 
+        padding: "20px 24px",
+        borderBottom: "2px solid #e9ecef",
+        backgroundColor: "#f8f9fa",
+        borderRadius: "16px 16px 0 0"
+      }}>
+        <div>
+          <h3 style={{ margin: 0, color: "#2c3e50" }}>
+            <i className="fas fa-file-word" style={{ color: "#2b579a", marginRight: "10px" }}></i>
+            Text Answer
+          </h3>
+          <p style={{ margin: "5px 0 0 0", color: "#6c757d", fontSize: "14px" }}>
+            {selectedTextAnswer?.student_name || "Student"} - {selectedExamForGrading?.course_code || "Exam"}
+          </p>
+        </div>
+        <button 
+          onClick={() => {
+            setShowTextAnswersModal(false);
+            setSelectedTextAnswer(null);
+          }}
+          style={{
+            background: "none",
+            border: "none",
+            fontSize: "24px",
+            cursor: "pointer",
+            color: "#6c757d",
+            padding: "5px 10px",
+            borderRadius: "4px",
+            transition: "all 0.2s"
+          }}
+          onMouseEnter={(e) => e.target.style.backgroundColor = "#e9ecef"}
+          onMouseLeave={(e) => e.target.style.backgroundColor = "transparent"}
+        >
+          ✕
+        </button>
+      </div>
+      
+      <div style={{ 
+        padding: "24px", 
+        overflowY: "auto", 
+        maxHeight: "calc(90vh - 150px)",
+        backgroundColor: "white"
+      }}>
+        {/* Document Header */}
+        <div style={{ 
+          textAlign: "center", 
+          borderBottom: "2px solid #2b579a", 
+          paddingBottom: "20px", 
+          marginBottom: "30px"
+        }}>
+          <h2 style={{ margin: 0, color: "#2b579a", fontSize: "24px" }}>
+            NLE UNIVERSITY
+          </h2>
+          <h3 style={{ margin: "5px 0", color: "#333", fontSize: "18px" }}>
+            EXAMINATION TEXT ANSWER
+          </h3>
+          <p style={{ margin: "5px 0", color: "#666", fontSize: "14px" }}>
+            {selectedExamForGrading?.title || "Exam"} - {selectedExamForGrading?.course_code || "N/A"}
+          </p>
+          <p style={{ margin: "5px 0", color: "#999", fontSize: "12px" }}>
+            Generated: {new Date().toLocaleString()}
+          </p>
+        </div>
+
+        {/* Student Info */}
+        {selectedTextAnswer && (
+          <div style={{
+            backgroundColor: "#f8f9fa",
+            padding: "20px",
+            borderRadius: "8px",
+            marginBottom: "30px",
+            border: "1px solid #e9ecef"
+          }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "15px" }}>
+              <div>
+                <div style={{ fontSize: "12px", color: "#999", marginBottom: "4px" }}>STUDENT NAME</div>
+                <div style={{ fontSize: "16px", fontWeight: "bold", color: "#2c3e50" }}>
+                  {selectedTextAnswer.student_name || "Unknown Student"}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: "12px", color: "#999", marginBottom: "4px" }}>REGISTRATION NUMBER</div>
+                <div style={{ fontSize: "16px", fontWeight: "bold", color: "#2c3e50" }}>
+                  {selectedTextAnswer.registration_number || "N/A"}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: "12px", color: "#999", marginBottom: "4px" }}>EMAIL</div>
+                <div style={{ fontSize: "16px", fontWeight: "bold", color: "#2c3e50" }}>
+                  {selectedTextAnswer.student_email || "N/A"}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: "12px", color: "#999", marginBottom: "4px" }}>SUBMITTED AT</div>
+                <div style={{ fontSize: "16px", fontWeight: "bold", color: "#2c3e50" }}>
+                  {selectedTextAnswer.submitted_at ? new Date(selectedTextAnswer.submitted_at).toLocaleString() : "N/A"}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Status Badge */}
+        {selectedTextAnswer && (
+          <div style={{ marginBottom: "20px", display: "flex", gap: "10px", alignItems: "center" }}>
+            <span style={{
+              padding: "6px 16px",
+              borderRadius: "20px",
+              fontSize: "14px",
+              fontWeight: "bold",
+              backgroundColor: selectedTextAnswer.status === "graded" ? "#4caf50" : "#ff9800",
+              color: "white"
+            }}>
+              {selectedTextAnswer.status === "graded" ? "✓ GRADED" : "⏳ PENDING"}
+            </span>
+            {selectedTextAnswer.status === "graded" && selectedTextAnswer.total_marks_obtained !== null && (
+              <span style={{
+                padding: "6px 16px",
+                borderRadius: "20px",
+                fontSize: "14px",
+                fontWeight: "bold",
+                backgroundColor: "#1976d2",
+                color: "white"
+              }}>
+                Score: {selectedTextAnswer.total_marks_obtained}/{selectedExamForGrading?.total_marks || 100}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Answer Text - Full View */}
+        {selectedTextAnswer && (
+          <div style={{
+            padding: "25px",
+            backgroundColor: "white",
+            borderRadius: "8px",
+            border: "2px solid #e0e0e0",
+            minHeight: "300px",
+            marginBottom: "20px"
+          }}>
+            <div style={{
+              fontSize: "14px",
+              color: "#999",
+              marginBottom: "15px",
+              fontWeight: "bold",
+              letterSpacing: "1px",
+              borderBottom: "1px solid #e9ecef",
+              paddingBottom: "10px"
+            }}>
+              📝 ANSWER TEXT
+            </div>
+            <div style={{
+              fontSize: "17px",
+              lineHeight: "2",
+              color: "#333",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word"
+            }}>
+              {selectedTextAnswer.answer_text}
+            </div>
+          </div>
+        )}
+
+        {/* Feedback if graded */}
+        {selectedTextAnswer?.status === "graded" && selectedTextAnswer?.feedback && (
+          <div style={{
+            padding: "15px 20px",
+            backgroundColor: "#e8f5e9",
+            borderRadius: "8px",
+            borderLeft: "4px solid #4caf50"
+          }}>
+            <div style={{ fontSize: "14px", fontWeight: "bold", color: "#2e7d32" }}>
+              <i className="fas fa-comment"></i> Feedback:
+            </div>
+            <div style={{ fontSize: "15px", color: "#333", marginTop: "8px", lineHeight: "1.6" }}>
+              {selectedTextAnswer.feedback}
+            </div>
+          </div>
+        )}
+        
+        {/* Footer */}
+        <div style={{
+          textAlign: "center",
+          borderTop: "2px solid #e9ecef",
+          paddingTop: "20px",
+          marginTop: "30px",
+          color: "#999",
+          fontSize: "12px"
+        }}>
+          <p style={{ margin: 0 }}>
+            NLE University - Examination Department
+          </p>
+          <p style={{ margin: "5px 0 0 0" }}>
+            Generated on: {new Date().toLocaleString()}
+          </p>
+        </div>
+      </div>
+      
+      {/* Footer Actions */}
+      <div style={{
+        padding: "16px 24px",
+        borderTop: "1px solid #e9ecef",
+        backgroundColor: "#f8f9fa",
+        borderRadius: "0 0 16px 16px",
+        display: "flex",
+        justifyContent: "flex-end",
+        gap: "12px"
+      }}>
+        <button
+          onClick={() => {
+            setShowTextAnswersModal(false);
+            setSelectedTextAnswer(null);
+          }}
+          style={{
+            padding: "10px 24px",
+            backgroundColor: "#6c757d",
+            color: "white",
+            border: "none",
+            borderRadius: "8px",
+            fontSize: "14px",
+            fontWeight: "500",
+            cursor: "pointer"
+          }}
+        >
+          Close
+        </button>
+        {selectedTextAnswer && (
+          <button
+            onClick={() => {
+              // Copy to clipboard
+              navigator.clipboard.writeText(selectedTextAnswer.answer_text)
+                .then(() => alert("Answer text copied to clipboard!"))
+                .catch(() => alert("Failed to copy"));
+            }}
+            style={{
+              padding: "10px 24px",
+              backgroundColor: "#28a745",
+              color: "white",
+              border: "none",
+              borderRadius: "8px",
+              fontSize: "14px",
+              fontWeight: "500",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px"
+            }}
+          >
+            <i className="fas fa-copy"></i>
+            Copy Text
+          </button>
+        )}
+      </div>
+    </div>
+  </div>
+)}
     </div>
   );
 };;;
