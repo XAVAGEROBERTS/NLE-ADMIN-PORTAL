@@ -5694,31 +5694,53 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
     }
   };
 
-  const handleEditExam = async () => {
-    try {
-      const { error } = await supabase
-        .from("examinations")
-        .update({
-          title: editExam.title,
-          description: editExam.description,
-          start_time: editExam.start_time,
-          end_time: editExam.end_time,
-          venue: editExam.venue,
-          status: editExam.status,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", editingExam.id);
-
-      if (error) throw error;
-
-      setEditingExam(null);
-      fetchExams();
-      alert("Exam updated successfully!");
-    } catch (error) {
-      console.error("Error updating exam:", error);
-      alert("Error updating exam: " + error.message);
+ const handleEditExam = async () => {
+  if (!editingExam) return;
+  
+  try {
+    // Validate
+    if (!editExam.title?.trim()) {
+      alert("Please enter a title");
+      return;
     }
-  };
+    
+    const start = new Date(editExam.start_time);
+    const end = new Date(editExam.end_time);
+    const durationMinutes = Math.round((end - start) / 60000);
+    
+    if (durationMinutes <= 0) {
+      alert("End time must be after start time");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("examinations")
+      .update({
+        title: editExam.title.trim(),
+        description: editExam.description?.trim() || "",
+        start_time: editExam.start_time,
+        end_time: editExam.end_time,
+        total_marks: parseInt(editExam.total_marks) || 100,
+        venue: editExam.venue?.trim() || "",
+        exam_type: editExam.exam_type || "online",
+        status: editExam.status || "published",
+        submission_type: editExam.submission_type || "both",
+        duration_minutes: durationMinutes,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", editingExam.id);
+
+    if (error) throw error;
+
+    setEditingExam(null);
+    fetchExams();
+    fetchDashboardStats();
+    alert("✅ Exam updated successfully!");
+  } catch (error) {
+    console.error("Error updating exam:", error);
+    alert("Error updating exam: " + error.message);
+  }
+};
 
   const handleDeleteExam = async (examId) => {
     if (!window.confirm("Are you sure you want to delete this exam?")) {
@@ -8488,32 +8510,50 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
                           </div>
                         </div>
                         <div className="exam-actions">
-                          <button
-                            className="action-btn view"
-                            onClick={() => setSelectedExam(exam)}
-                          >
-                            View Details
-                          </button>
+                         <button
+  className="action-btn view"
+  onClick={() => {
+    setSelectedExam(exam);
+    // Also set the edit exam state with all fields for consistency
+    setEditingExam(exam);
+    setEditExam({
+      title: exam.title || "",
+      description: exam.description || "",
+      start_time: exam.start_time || "",
+      end_time: exam.end_time || "",
+      venue: exam.venue || "",
+      status: exam.status || "published",
+      total_marks: exam.total_marks || 100,
+      exam_type: exam.exam_type || "online",
+      submission_type: exam.submission_type || "both",
+    });
+  }}
+>
+  View Details
+</button>
                           {(isAdmin ||
                             (isLecturer &&
                               exam.lecturer_id === profile.id)) && (
                             <>
-                              <button
-                                className="action-btn edit"
-                                onClick={() => {
-                                  setEditingExam(exam);
-                                  setEditExam({
-                                    title: exam.title,
-                                    description: exam.description,
-                                    start_time: exam.start_time,
-                                    end_time: exam.end_time,
-                                    venue: exam.venue,
-                                    status: exam.status,
-                                  });
-                                }}
-                              >
-                                Edit
-                              </button>
+                           <button
+  className="action-btn edit"
+  onClick={() => {
+    setEditingExam(exam);
+    setEditExam({
+      title: exam.title || "",
+      description: exam.description || "",
+      start_time: exam.start_time || "",
+      end_time: exam.end_time || "",
+      venue: exam.venue || "",
+      status: exam.status || "published",
+      total_marks: exam.total_marks || 100,
+      exam_type: exam.exam_type || "online",
+      submission_type: exam.submission_type || "both",
+    });
+  }}
+>
+  Edit
+</button>
                               <button
                                 className="action-btn delete"
                                 onClick={() => handleDeleteExam(exam.id)}
@@ -14136,6 +14176,323 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
             Copy Text
           </button>
         )}
+      </div>
+    </div>
+  </div>
+      )}
+      
+      {/* Edit Exam Modal */}
+{editingExam && (
+  <div className="modal-overlay">
+    <div className="modal large-modal">
+      <h3>✏️ Edit Exam</h3>
+      <p style={{ color: "#666", marginBottom: "15px" }}>
+        Editing: <strong>{editingExam.title}</strong> ({editingExam.courses?.course_code || "N/A"})
+      </p>
+      
+      <div className="modal-form">
+        <div className="form-group">
+          <label className="form-label">Title *</label>
+          <input
+            type="text"
+            value={editExam.title || ""}
+            onChange={(e) =>
+              setEditExam({ ...editExam, title: e.target.value })
+            }
+            className="form-input"
+            required
+          />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Description</label>
+          <textarea
+            value={editExam.description || ""}
+            onChange={(e) =>
+              setEditExam({ ...editExam, description: e.target.value })
+            }
+            rows="3"
+            className="form-textarea"
+          />
+        </div>
+
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">Start Date & Time *</label>
+            <input
+              type="datetime-local"
+              value={editExam.start_time || ""}
+              onChange={(e) =>
+                setEditExam({ ...editExam, start_time: e.target.value })
+              }
+              className="form-input"
+              required
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label">End Date & Time *</label>
+            <input
+              type="datetime-local"
+              value={editExam.end_time || ""}
+              onChange={(e) =>
+                setEditExam({ ...editExam, end_time: e.target.value })
+              }
+              className="form-input"
+              required
+            />
+          </div>
+        </div>
+
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">Total Marks *</label>
+            <input
+              type="number"
+              value={editExam.total_marks || 100}
+              onChange={(e) =>
+                setEditExam({ ...editExam, total_marks: parseInt(e.target.value) || 100 })
+              }
+              min="1"
+              className="form-input"
+              required
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Exam Type</label>
+            <select
+              value={editExam.exam_type || "online"}
+              onChange={(e) =>
+                setEditExam({ ...editExam, exam_type: e.target.value })
+              }
+              className="form-select"
+            >
+              <option value="written">Written</option>
+              <option value="practical">Practical</option>
+              <option value="oral">Oral</option>
+              <option value="online">Online</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">Venue/Location</label>
+            <input
+              type="text"
+              value={editExam.venue || ""}
+              onChange={(e) =>
+                setEditExam({ ...editExam, venue: e.target.value })
+              }
+              placeholder="e.g. Main Hall, Online"
+              className="form-input"
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Status</label>
+            <select
+              value={editExam.status || "published"}
+              onChange={(e) =>
+                setEditExam({ ...editExam, status: e.target.value })
+              }
+              className="form-select"
+            >
+              <option value="published">Published</option>
+              <option value="draft">Draft</option>
+              <option value="closed">Closed</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Submission Type</label>
+          <select
+            value={editExam.submission_type || "both"}
+            onChange={(e) =>
+              setEditExam({ ...editExam, submission_type: e.target.value })
+            }
+            className="form-select"
+          >
+            <option value="text">📝 Text Answer Only</option>
+            <option value="file">📎 File Upload Only</option>
+            <option value="both">📝 Text + File Upload</option>
+          </select>
+          <small style={{ display: "block", marginTop: "5px", color: "#6c757d" }}>
+            {editExam.submission_type === "text" && "Students can only type their answers."}
+            {editExam.submission_type === "file" && "Students can only upload files."}
+            {editExam.submission_type === "both" && "Students can type AND upload files."}
+          </small>
+        </div>
+
+        {/* Duration Preview */}
+        <div style={{
+          padding: "12px 16px",
+          backgroundColor: "#f0f8ff",
+          borderRadius: "8px",
+          margin: "15px 0",
+          textAlign: "center",
+          fontSize: "16px",
+          color: "#1976d2",
+        }}>
+          <strong>Calculated Duration:</strong>{" "}
+          <span style={{ fontSize: "18px", fontWeight: "bold" }}>
+            {(() => {
+              if (!editExam.start_time || !editExam.end_time) return "N/A";
+              const start = new Date(editExam.start_time);
+              const end = new Date(editExam.end_time);
+              if (end <= start) return <span style={{ color: "#d32f2f" }}>⚠️ Invalid (end before start)</span>;
+              const mins = Math.round((end - start) / 60000);
+              return `${mins} minute${mins !== 1 ? "s" : ""}`;
+            })()}
+          </span>
+        </div>
+
+        <div className="modal-actions">
+          <button
+            className="cancel-button"
+            onClick={() => setEditingExam(null)}
+          >
+            Cancel
+          </button>
+          <button className="confirm-button" onClick={handleEditExam}>
+            ✅ Update Exam
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+      )}
+      {/* View Exam Details Modal */}
+{selectedExam && (
+  <div className="modal-overlay" onClick={() => setSelectedExam(null)}>
+    <div className="modal large-modal" onClick={(e) => e.stopPropagation()}>
+      <div style={{ 
+        display: "flex", 
+        justifyContent: "space-between", 
+        alignItems: "center",
+        marginBottom: "20px"
+      }}>
+        <h3 style={{ margin: 0 }}>📋 Exam Details</h3>
+        <button
+          className="cancel-button"
+          onClick={() => setSelectedExam(null)}
+          style={{ padding: "8px 16px" }}
+        >
+          ✕ Close
+        </button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+        <div>
+          <strong>Title:</strong>
+          <p>{selectedExam.title || "N/A"}</p>
+        </div>
+        <div>
+          <strong>Course:</strong>
+          <p>{selectedExam.courses?.course_code || "N/A"} - {selectedExam.courses?.course_name || "N/A"}</p>
+        </div>
+        <div>
+          <strong>Description:</strong>
+          <p>{selectedExam.description || "No description"}</p>
+        </div>
+        <div>
+          <strong>Status:</strong>
+          <span className={`status-badge ${selectedExam.status || "scheduled"}`}>
+            {selectedExam.status?.toUpperCase() || "SCHEDULED"}
+          </span>
+        </div>
+        <div>
+          <strong>Start Time:</strong>
+          <p>{selectedExam.start_time ? new Date(selectedExam.start_time).toLocaleString() : "N/A"}</p>
+        </div>
+        <div>
+          <strong>End Time:</strong>
+          <p>{selectedExam.end_time ? new Date(selectedExam.end_time).toLocaleString() : "N/A"}</p>
+        </div>
+        <div>
+          <strong>Duration:</strong>
+          <p>{selectedExam.duration_minutes || "N/A"} minutes</p>
+        </div>
+        <div>
+          <strong>Total Marks:</strong>
+          <p>{selectedExam.total_marks || 100}</p>
+        </div>
+        <div>
+          <strong>Exam Type:</strong>
+          <p>{selectedExam.exam_type || "online"}</p>
+        </div>
+        <div>
+          <strong>Venue/Location:</strong>
+          <p>{selectedExam.venue || selectedExam.location || "Online"}</p>
+        </div>
+        <div>
+          <strong>Submission Type:</strong>
+          <p>{selectedExam.submission_type || "both"}</p>
+        </div>
+        <div>
+          <strong>Exam Files:</strong>
+          {selectedExam.exam_files && selectedExam.exam_files.length > 0 ? (
+            <div className="file-links" style={{ marginTop: "5px" }}>
+              {selectedExam.exam_files.map((filePath, idx) => {
+                const fileName = filePath.split('/').pop() || `Exam_File_${idx + 1}`;
+                const { data: urlData } = supabase.storage
+                  .from("Lecturer exam")
+                  .getPublicUrl(filePath);
+                return (
+                  <div key={idx} className="file-download-item">
+                    <a
+                      href={urlData.publicUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="file-link"
+                    >
+                      📄 {fileName}
+                    </a>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p>No files attached</p>
+          )}
+        </div>
+        <div>
+          <strong>Target Cohort:</strong>
+          <p>
+            {selectedExam.target_academic_year || "N/A"} • 
+            Year {selectedExam.target_year_of_study || "?"} • 
+            Semester {selectedExam.target_semester || "?"}
+          </p>
+        </div>
+      </div>
+
+      <div style={{ marginTop: "30px", display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+        <button
+          className="action-btn edit"
+          onClick={() => {
+            setSelectedExam(null);
+            // Open edit modal
+            setEditingExam(selectedExam);
+            setEditExam({
+              title: selectedExam.title || "",
+              description: selectedExam.description || "",
+              start_time: selectedExam.start_time || "",
+              end_time: selectedExam.end_time || "",
+              venue: selectedExam.venue || "",
+              status: selectedExam.status || "published",
+              total_marks: selectedExam.total_marks || 100,
+              exam_type: selectedExam.exam_type || "online",
+              submission_type: selectedExam.submission_type || "both",
+            });
+          }}
+        >
+          ✏️ Edit Exam
+        </button>
+        <button
+          className="cancel-button"
+          onClick={() => setSelectedExam(null)}
+        >
+          Close
+        </button>
       </div>
     </div>
   </div>
