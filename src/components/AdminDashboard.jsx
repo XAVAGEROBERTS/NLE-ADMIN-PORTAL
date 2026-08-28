@@ -2467,19 +2467,23 @@ const [markingStudentsInProgress, setMarkingStudentsInProgress] = useState(false
   const [selectedUser, setSelectedUser] = useState(null);
   const [selectedLecturerDetails, setSelectedLecturerDetails] = useState(null);
   // Student Edit States
-  const [editingStudent, setEditingStudent] = useState(null);
-  const [editStudentForm, setEditStudentForm] = useState({
-    full_name: "",
-    email: "",
-    phone: "",
-    program_id: "",
-    program: "",
-    year_of_study: 1,
-    semester: 1,
-    department: "",
-    department_code: "",
-    status: "active",
-  });
+ const [editingStudent, setEditingStudent] = useState(null);
+const [editStudentForm, setEditStudentForm] = useState({
+  full_name: "",
+  email: "",
+  phone: "",
+  date_of_birth: "",
+  program_id: "",
+  program: "",
+  program_code: "",
+  year_of_study: 1,
+  semester: 1,
+  department: "",
+  department_code: "",
+  intake: "January",
+  academic_year: "",
+  status: "active",
+});
   const [selectedCourse, setSelectedCourse] = useState(null);
   const [selectedLecture, setSelectedLecture] = useState(null);
   const [selectedExam, setSelectedExam] = useState(null);
@@ -9263,29 +9267,35 @@ useEffect(() => {
                                     </button>
                                     <button
                                       className="action-item edit"
-                                      onClick={() => {
-                                        setEditingStudent(student);
-                                        const matchingProgram = programs.find(
-                                          (p) =>
-                                            p.code ===
-                                              student.department_code ||
-                                            p.name === student.program,
-                                        );
-                                        setEditStudentForm({
-                                          full_name: student.full_name || "",
-                                          email: student.email || "",
-                                          phone: student.phone || "",
-                                          program_id: matchingProgram?.id || "",
-                                          program: student.program || "",
-                                          year_of_study:
-                                            student.year_of_study || 1,
-                                          semester: student.semester || 1,
-                                          department: student.department || "",
-                                          department_code:
-                                            student.department_code || "",
-                                          status: student.status || "active",
-                                        });
-                                      }}
+                                   onClick={() => {
+  setEditingStudent(student);
+  // Load ALL existing DB values so admin only changes what they need
+  const matchingProgram =
+    programs.find((p) => p.id === student.program_id) ||
+    programs.find(
+      (p) => p.code === (student.program_code || "").toUpperCase()
+    ) ||
+    programs.find((p) => p.name === student.program);
+
+  setEditStudentForm({
+    full_name: student.full_name || "",
+    email: student.email || "",
+    phone: student.phone || "",
+    date_of_birth: student.date_of_birth
+      ? String(student.date_of_birth).slice(0, 10)
+      : "",
+    program_id: matchingProgram?.id || student.program_id || "",
+    program: matchingProgram?.name || student.program || "",
+    program_code: student.program_code || matchingProgram?.code || "",
+    year_of_study: student.year_of_study || 1,
+    semester: student.semester || 1,
+    department: student.department || "",
+    department_code: student.department_code || "",
+    intake: student.intake || "January",
+    academic_year: student.academic_year || "",
+    status: student.status || "active",
+  });
+}}
                                     >
                                       ✏️ Edit
                                     </button>
@@ -12938,27 +12948,25 @@ useEffect(() => {
                     try {
                       const { error } = await supabase
                         .from("students")
-                        .update({
-                          full_name: editStudentForm.full_name.trim(),
-                          email: editStudentForm.email.trim(),
-                          phone: editStudentForm.phone || null,
-                          date_of_birth: editStudentForm.date_of_birth || null,
-                          program_id: editStudentForm.program_id,
-                          program: editStudentForm.program,
-                          program_code: editStudentForm.program_code
-                            .trim()
-                            .toUpperCase(),
-                          department: editStudentForm.department.trim(),
-                          department_code: editStudentForm.department_code
-                            .trim()
-                            .toUpperCase(),
-                          year_of_study: editStudentForm.year_of_study,
-                          semester: editStudentForm.semester,
-                          intake: editStudentForm.intake,
-                          academic_year: editStudentForm.academic_year.trim(),
-                          status: editStudentForm.status,
-                          updated_at: new Date().toISOString(),
-                        })
+                     .update({
+  full_name: editStudentForm.full_name.trim(),
+  email: editStudentForm.email.trim(),
+  phone: editStudentForm.phone?.trim() || null,
+  date_of_birth: editStudentForm.date_of_birth || null,
+  program_id: editStudentForm.program_id || null,
+  program: editStudentForm.program?.trim() || null,
+  program_code:
+    (editStudentForm.program_code || "").trim().toUpperCase() || null,
+  department: editStudentForm.department?.trim() || null,
+  department_code:
+    (editStudentForm.department_code || "").trim().toUpperCase() || null,
+  year_of_study: editStudentForm.year_of_study,
+  semester: editStudentForm.semester,
+  intake: editStudentForm.intake || null,
+  academic_year: editStudentForm.academic_year?.trim() || null,
+  status: editStudentForm.status,
+  updated_at: new Date().toISOString(),
+})
                         .eq("id", editingStudent.id);
                       if (error) throw error;
                       alert("Student updated successfully!");
