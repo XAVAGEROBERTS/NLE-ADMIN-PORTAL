@@ -296,18 +296,50 @@ const AdminDashboard = () => {
   const [attendanceRecords, setAttendanceRecords] = useState([]);
   const [attendanceError, setAttendanceError] = useState(null);
   // Add this near other modal states
+  // ===== NEW: Student count cache for completed courses =====
+const [studentCounts, setStudentCounts] = useState({});
+// ===== END NEW STATE =====
+
+  const [selectedBucketFiles, setSelectedBucketFiles] = useState([]); // fullPath strings
+const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  const notesUploadXhrRef = useRef(null); // active XHR so Cancel can abort it
+const notesUploadCancelledRef = useRef(false);
+
+  // Toast notification states
+const [toast, setToast] = useState({
+  show: false,
+  message: '',
+  type: 'success' // 'success', 'error', 'info'
+});
+  
   
   // Add this near other modal states
 const [selectedTextAnswer, setSelectedTextAnswer] = useState(null);
   const [showTextAnswersModal, setShowTextAnswersModal] = useState(false);
   
+  // Notes Upload States
+const [showNotesUpload, setShowNotesUpload] = useState(false);
+const [uploadingNotes, setUploadingNotes] = useState(false);
+const [notesUploadProgress, setNotesUploadProgress] = useState(0);
+const [notesFiles, setNotesFiles] = useState([]);
+const [noteTitle, setNoteTitle] = useState('');
+const [noteCategory, setNoteCategory] = useState('');
+const [noteDescription, setNoteDescription] = useState('');
+const [noteCourseId, setNoteCourseId] = useState('');
+const [noteCourses, setNoteCourses] = useState([]);
+
+  const notesFileInputRef = useRef(null);
+  const [noteMaterialType, setNoteMaterialType] = useState('notes'); // 'notes' or 'video'
+  
   // === ADD THESE STATES NEAR OTHER STATES (around line 150) ===
   const [activeBucketTab, setActiveBucketTab] = useState("lecturerbucket"); // lecturerbucket | Tutorials | Lecturer exam
-  const [bucketFiles, setBucketFiles] = useState({
-    lecturerbucket: [],
-    Tutorials: [],
-    "Lecturer exam": [],
-  });
+const [bucketFiles, setBucketFiles] = useState({
+  lecturerbucket: [],
+  Tutorials: [],
+  "Lecturer exam": [],
+  Notes: [],
+});
   const [bucketLoading, setBucketLoading] = useState(false);
   const [deletingFile, setDeletingFile] = useState(null);
   // ADD THESE STATES (around line 150 with other bucket states)
@@ -399,6 +431,13 @@ const [selectedTextAnswer, setSelectedTextAnswer] = useState(null);
     [],
   );
   const [reversalInProgress, setReversalInProgress] = useState(false);
+// ===== NEW: Student-specific reversal states =====
+const [selectedStudentsForReversal, setSelectedStudentsForReversal] = useState([]);
+const [studentsInCompletedCourses, setStudentsInCompletedCourses] = useState([]);
+const [showStudentSelectionModal, setShowStudentSelectionModal] = useState(false);
+const [selectedCourseForStudentView, setSelectedCourseForStudentView] = useState(null);
+// ===== END NEW STATES =====
+  
   // [students, lecturers, courses, etc...]
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -447,6 +486,9 @@ const [selectedTextAnswer, setSelectedTextAnswer] = useState(null);
     code: "",
   });
 
+  useEffect(() => {
+  setSelectedBucketFiles([]); // clear selection when changing bucket tab
+}, [activeBucketTab]);
 
   // Check for expired bypasses every minute
 useEffect(() => {
@@ -516,6 +558,12 @@ useEffect(() => {
       fetchAllBucketFiles();
     }
   }, [activeTab, isAdmin, activeAdminBucket]);
+
+useEffect(() => {
+  if (activeTab === "notes-upload" && isLecturer && profile?.id) {
+    fetchNoteCourses();
+  }
+}, [activeTab, isLecturer, profile?.id]);
 
   // === ADD THIS useEffect to load files when tab opens ===
   useEffect(() => {
@@ -814,6 +862,7 @@ const handleToggleBypass = async (field) => {
         lecturerbucket: [],
         Tutorials: [],
         "Lecturer exam": [],
+        Notes: [],
       };
 
       console.log("Starting private file fetch for lecturer:", profile.id);
@@ -940,14 +989,68 @@ const handleToggleBypass = async (field) => {
         }
       }
 
+      // ================================================
+// 4. Notes - Private per lecturer + Recursive
+// ================================================
+{
+  const allFiles = [];
+  const lecturerPrefix = `notes/${profile.id}`;
+  console.log("Fetching Notes from private folder:", lecturerPrefix);
+
+  const recurse = async (path = lecturerPrefix) => {
+    const { data: items, error } = await supabase.storage
+      .from("Notes")
+      .list(path, { limit: 1000 });
+
+    if (error) {
+      console.error(`Notes list error at "${path}":`, error);
+      return;
+    }
+
+    if (!items || items.length === 0) return;
+
+    for (const item of items) {
+      if (!item.name || item.name === ".emptyFolderPlaceholder") continue;
+
+      const fullPath = path ? `${path}/${item.name}` : item.name;
+
+      // Folder: no id / no metadata size often — recurse if it looks like a folder
+      const isFolder = item.id === null || (item.metadata === null && !item.name.includes("."));
+
+      if (item.metadata || item.id) {
+        // File
+        const { data: urlData } = supabase.storage
+          .from("Notes")
+          .getPublicUrl(fullPath);
+        allFiles.push({
+          ...item,
+          fullPath,
+          publicUrl: urlData.publicUrl,
+          size: item.metadata?.size || 0,
+          bucket: "Notes",
+        });
+      } else {
+        // Folder → go deeper
+        await recurse(fullPath);
+      }
+    }
+  };
+
+  await recurse();
+  results.Notes = allFiles;
+  console.log(`Found ${results.Notes.length} private note files`);
+}
+
+
       // Update state
       setBucketFiles(results);
 
-      console.log("✅ SUCCESS - PRIVATE FILE COUNTS:", {
-        "Assignment Files": results.lecturerbucket.length,
-        Tutorials: results.Tutorials.length,
-        "Exam Papers": results["Lecturer exam"].length,
-      });
+   console.log("✅ SUCCESS - PRIVATE FILE COUNTS:", {
+  "Assignment Files": results.lecturerbucket.length,
+  Tutorials: results.Tutorials.length,
+  "Exam Papers": results["Lecturer exam"].length,
+  Notes: results.Notes.length,
+});
     } catch (err) {
       console.error("Unexpected error in fetchBucketFiles:", err);
     } finally {
@@ -1038,20 +1141,73 @@ const openTextAnswersModal = () => {
   setShowTextAnswersModal(true);
 };
 
-  // === ADD FETCH PROGRAMS FUNCTION ===
-  // const fetchPrograms = async () => {
-  //   try {
-  //     const { data, error } = await supabase
-  //       .from('programs')
-  //       .select('id, name, code')
-  //       .order('name');
-  //     if (error) throw error;
-  //     setPrograms(data || []);
-  //   } catch (err) {
-  //     console.error('Error loading programs:', err);
-  //     alert('Failed to load programs: ' + err.message);
-  //   }
-  // };
+  const toggleSelectBucketFile = (fullPath) => {
+  setSelectedBucketFiles((prev) =>
+    prev.includes(fullPath)
+      ? prev.filter((p) => p !== fullPath)
+      : [...prev, fullPath]
+  );
+};
+
+const toggleSelectAllBucketFiles = () => {
+  const files = bucketFiles[activeBucketTab] || [];
+  const allPaths = files.map((f) => f.fullPath);
+  if (
+    selectedBucketFiles.length === allPaths.length &&
+    allPaths.length > 0
+  ) {
+    setSelectedBucketFiles([]);
+  } else {
+    setSelectedBucketFiles(allPaths);
+  }
+};
+
+const handleBulkDeleteFiles = async () => {
+  if (selectedBucketFiles.length === 0) {
+    alert("Select at least one file");
+    return;
+  }
+
+  if (
+    !window.confirm(
+      `Delete ${selectedBucketFiles.length} selected file(s) permanently?\nThis cannot be undone.`
+    )
+  ) {
+    return;
+  }
+
+  setBulkDeleting(true);
+  try {
+    const { error } = await supabase.storage
+      .from(activeBucketTab)
+      .remove(selectedBucketFiles);
+
+    if (error) throw error;
+
+    alert(`✅ Deleted ${selectedBucketFiles.length} file(s)`);
+    setSelectedBucketFiles([]);
+    fetchBucketFiles();
+  } catch (err) {
+    console.error("Bulk delete error:", err);
+    alert("Failed to delete some files: " + err.message);
+    fetchBucketFiles();
+  } finally {
+    setBulkDeleting(false);
+  }
+};
+  // Toast helper functions
+const showToast = (message, type = 'success') => {
+  setToast({ show: true, message, type });
+  // Auto-hide after 4 seconds
+  setTimeout(() => {
+    setToast({ show: false, message: '', type: 'success' });
+  }, 4000);
+};
+
+const hideToast = () => {
+  setToast({ show: false, message: '', type: 'success' });
+};
+
 
   // === ADD HANDLE SAVE PROGRAM FUNCTION ===
   const handleSaveProgram = async () => {
@@ -1531,51 +1687,571 @@ const openTextAnswersModal = () => {
     }
   };
 
-  // Handle reversing course completion
-  const handleReverseCourseCompletion = async () => {
-    if (selectedCoursesForReversal.length === 0) {
-      alert("Please select at least one course to reverse");
+
+// Fetch counts whenever completedCourses changes
+useEffect(() => {
+  if (completedCourses.length > 0) {
+    fetchStudentCounts(completedCourses);
+  }
+}, [completedCourses]);
+// ===== END NEW FUNCTION =====
+
+// ===== NEW: Toggle student selection =====
+const toggleStudentReversalSelection = (studentCourseId) => {
+  setSelectedStudentsForReversal((prev) =>
+    prev.includes(studentCourseId)
+      ? prev.filter((id) => id !== studentCourseId)
+      : [...prev, studentCourseId]
+  );
+};
+
+// ===== NEW: Select all students =====
+const selectAllStudentsForReversal = () => {
+  if (selectedStudentsForReversal.length === studentsInCompletedCourses.length) {
+    setSelectedStudentsForReversal([]);
+  } else {
+    setSelectedStudentsForReversal(studentsInCompletedCourses.map((s) => s.id));
+  }
+};
+
+// ===== FIXED: Handle reversing completion for selected students =====
+const handleReverseStudentCompletion = async () => {
+  if (selectedStudentsForReversal.length === 0) {
+    alert("Please select at least one student to reverse");
+    return;
+  }
+
+  if (
+    !window.confirm(
+      `⚠️ IMPORTANT: This will change ${selectedStudentsForReversal.length} student(s) from "completed" back to "enrolled" status for the selected course.\n\n` +
+        `These students will be able to submit assignments/exams for this course again.\n\n` +
+        `Are you sure you want to proceed?`,
+    )
+  )
+    return;
+
+  setReversalInProgress(true);
+
+  try {
+    let successCount = 0;
+    let errorCount = 0;
+    const errors = [];
+
+    // Process each selected student_course record
+    for (const studentCourseId of selectedStudentsForReversal) {
+      try {
+        // 1. Check for visible assignments - use student_course_id
+        const { data: visibleAssignments, error: vaFetchError } = await supabase
+          .from("student_visible_assignments")
+          .select("id")
+          .eq("student_course_id", studentCourseId);
+
+        if (vaFetchError) {
+          console.warn(`Could not check visible_assignments:`, vaFetchError);
+        } else if (visibleAssignments && visibleAssignments.length > 0) {
+          const vaIds = visibleAssignments.map(va => va.id);
+          const { error: vaDeleteError } = await supabase
+            .from("student_visible_assignments")
+            .delete()
+            .in("id", vaIds);
+          
+          if (vaDeleteError) {
+            console.warn(`Could not delete visible_assignments:`, vaDeleteError);
+          }
+        }
+
+        // 2. Update student_courses status
+        const { error: updateError } = await supabase
+          .from("student_courses")
+          .update({
+            status: "enrolled",
+            updated_at: new Date().toISOString(),
+            completion_date: null,
+          })
+          .eq("id", studentCourseId);
+
+        if (updateError) {
+          console.error(`Failed to update student_course ${studentCourseId}:`, updateError);
+          errors.push(`Failed to update record ${studentCourseId}: ${updateError.message}`);
+          errorCount++;
+        } else {
+          successCount++;
+          console.log(`✅ Reversed completion for student_course ${studentCourseId}`);
+        }
+
+      } catch (err) {
+        console.error(`Error processing student_course ${studentCourseId}:`, err);
+        errorCount++;
+        errors.push(`Error processing record: ${err.message}`);
+      }
+    }
+
+    // Show summary
+    if (successCount > 0) {
+      alert(
+        `✅ Successfully reversed ${successCount} student record(s) back to "enrolled" status!\n\n` +
+        (errorCount > 0 ? `⚠️ ${errorCount} record(s) failed.\n\nErrors:\n${errors.slice(0, 5).join('\n')}` : '')
+      );
+    } else {
+      alert(`❌ No records were reversed. Please check the console for errors.\n\n${errors.join('\n')}`);
+    }
+
+    // Reset selections and refresh data
+    setSelectedStudentsForReversal([]);
+    setShowStudentSelectionModal(false);
+    setSelectedCourseForStudentView(null);
+    fetchCompletedCourses();
+
+  } catch (err) {
+    console.error("Error reversing completion:", err);
+    alert("Failed to reverse completion: " + err.message);
+  } finally {
+    setReversalInProgress(false);
+  }
+};
+
+
+const fetchEnrolledStudentCounts = async (courses) => {
+  if (!courses?.length) {
+    setEnrolledStudentCounts({});
+    return;
+  }
+  try {
+    const counts = {};
+    for (const course of courses) {
+      // Get student_ids that are enrolled
+      const { data: rows } = await supabase
+        .from("student_courses")
+        .select("student_id")
+        .eq("course_id", course.id)
+        .eq("status", "enrolled");
+
+      if (!rows?.length) {
+        counts[course.id] = 0;
+        continue;
+      }
+
+      const ids = [
+        ...new Set(
+          rows
+            .map((r) => r.student_id)
+            .filter((id) => id != null)
+            .map((id) => String(id).trim())
+        ),
+      ];
+
+      // Count only those that exist in students
+      const { count: byId } = await supabase
+        .from("students")
+        .select("*", { count: "exact", head: true })
+        .in("id", ids);
+
+      const { count: byReg } = await supabase
+        .from("students")
+        .select("*", { count: "exact", head: true })
+        .in("student_id", ids);
+
+      // Approximate unique resolved count (good enough for badge)
+      counts[course.id] = Math.max(byId || 0, byReg || 0);
+    }
+    setEnrolledStudentCounts(counts);
+  } catch (err) {
+    console.error("Error fetching enrolled counts:", err);
+  }
+};
+
+const fetchStudentCounts = async (courses) => {
+  if (!courses?.length) {
+    setStudentCounts({});
+    return;
+  }
+  try {
+    const counts = {};
+    for (const course of courses) {
+      const { data: rows } = await supabase
+        .from("student_courses")
+        .select("student_id")
+        .eq("course_id", course.id)
+        .eq("status", "completed");
+
+      if (!rows?.length) {
+        counts[course.id] = 0;
+        continue;
+      }
+
+      const ids = [
+        ...new Set(
+          rows
+            .map((r) => r.student_id)
+            .filter((id) => id != null)
+            .map((id) => String(id).trim())
+        ),
+      ];
+
+      const { count: byId } = await supabase
+        .from("students")
+        .select("*", { count: "exact", head: true })
+        .in("id", ids);
+
+      const { count: byReg } = await supabase
+        .from("students")
+        .select("*", { count: "exact", head: true })
+        .in("student_id", ids);
+
+      counts[course.id] = Math.max(byId || 0, byReg || 0);
+    }
+    setStudentCounts(counts);
+  } catch (err) {
+    console.error("Error fetching student counts:", err);
+  }
+};
+
+// Call it when coursesForCompletion changes
+useEffect(() => {
+  if (coursesForCompletion.length > 0 && !showReversalMode) {
+    fetchEnrolledStudentCounts(coursesForCompletion);
+  }
+}, [coursesForCompletion, showReversalMode]);
+const fetchStudentsForCourseReversal = async (courseId) => {
+  try {
+    const { data: studentCourses, error: scError } = await supabase
+      .from("student_courses")
+      .select("id, student_id")
+      .eq("course_id", courseId)
+      .eq("status", "completed");
+
+    if (scError) throw scError;
+
+    if (!studentCourses?.length) {
+      alert("No students have completed this course.");
+      setStudentsInCompletedCourses([]);
+      setShowStudentSelectionModal(false);
       return;
     }
 
-    if (
-      !window.confirm(
-        `⚠️ IMPORTANT: This will change ${selectedCoursesForReversal.length} course(s) from "completed" back to "enrolled" status.\n\n` +
-          `Students will be able to submit assignments/exams for these courses again.\n\n` +
-          `Are you sure you want to proceed?`,
-      )
-    )
+    const rawIds = [
+      ...new Set(
+        studentCourses
+          .map((sc) => sc.student_id)
+          .filter((id) => id != null && String(id).trim() !== "")
+          .map((id) => String(id).trim())
+      ),
+    ];
+
+    const BATCH = 50;
+    const studentMap = {};
+
+    for (let i = 0; i < rawIds.length; i += BATCH) {
+      const batch = rawIds.slice(i, i + BATCH);
+
+      const { data: byId } = await supabase
+        .from("students")
+        .select("id, full_name, student_id, email, program, department_code")
+        .in("id", batch);
+
+      (byId || []).forEach((s) => {
+        studentMap[String(s.id)] = s;
+        if (s.student_id) studentMap[String(s.student_id).trim()] = s;
+      });
+
+      const { data: byReg } = await supabase
+        .from("students")
+        .select("id, full_name, student_id, email, program, department_code")
+        .in("student_id", batch);
+
+      (byReg || []).forEach((s) => {
+        studentMap[String(s.id)] = s;
+        if (s.student_id) studentMap[String(s.student_id).trim()] = s;
+      });
+    }
+
+    const combinedData = studentCourses.map((sc) => {
+      const key = sc.student_id != null ? String(sc.student_id).trim() : null;
+      const student = key ? studentMap[key] : null;
+
+      return {
+        id: sc.id,
+        student_id: sc.student_id,
+        students: student || {
+          id: sc.student_id,
+          full_name: `⚠️ Unlinked (${String(sc.student_id || "null").slice(0, 8)}…)`,
+          student_id: String(sc.student_id || "N/A"),
+          email: "—",
+          program: "—",
+          department_code: "—",
+        },
+        _unlinked: !student,
+      };
+    });
+
+    console.log(
+      `✅ Reversal list: ${combinedData.filter((r) => !r._unlinked).length} linked, ` +
+        `${combinedData.filter((r) => r._unlinked).length} unlinked, total ${combinedData.length}`
+    );
+
+    setStudentsInCompletedCourses(combinedData);
+    setSelectedCourseForStudentView(courseId);
+    setSelectedStudentsForReversal([]);
+    setShowStudentSelectionModal(true);
+  } catch (err) {
+    console.error("Error fetching students:", err);
+    alert("Failed to load students: " + err.message);
+  }
+};
+
+  const fetchStudentsForCourseCompletion = async (courseId) => {
+  try {
+    // 1. Always get raw student_courses first (source of truth for count)
+    const { data: studentCourses, error: scError } = await supabase
+      .from("student_courses")
+      .select("id, student_id")
+      .eq("course_id", courseId)
+      .eq("status", "enrolled");
+
+    if (scError) throw scError;
+
+    if (!studentCourses?.length) {
+      alert("No enrolled students found for this course.");
+      setStudentsInEnrolledCourses([]);
+      setShowStudentCompletionModal(false);
       return;
+    }
 
-    setReversalInProgress(true);
+    // 2. Unique student_ids
+    const rawIds = [
+      ...new Set(
+        studentCourses
+          .map((sc) => sc.student_id)
+          .filter((id) => id != null && String(id).trim() !== "")
+          .map((id) => String(id).trim())
+      ),
+    ];
 
-    try {
-      // Update all selected courses from "completed" to "enrolled"
-      const { data, error } = await supabase
-        .from("student_courses")
-        .update({
-          status: "enrolled",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("status", "completed")
-        .in("course_id", selectedCoursesForReversal);
+    console.log(`🔍 Course ${courseId}: ${studentCourses.length} enrolled rows, ${rawIds.length} unique student_ids`);
 
-      if (error) throw error;
+    // 3. Lookup students in batches (by UUID and by registration number)
+    const BATCH = 50;
+    const studentMap = {};
 
+    for (let i = 0; i < rawIds.length; i += BATCH) {
+      const batch = rawIds.slice(i, i + BATCH);
+
+      const { data: byId, error: e1 } = await supabase
+        .from("students")
+        .select(
+          "id, full_name, student_id, email, program, department_code, academic_year, year_of_study, semester"
+        )
+        .in("id", batch);
+
+      if (e1) console.warn("byId batch error:", e1);
+      (byId || []).forEach((s) => {
+        studentMap[String(s.id)] = s;
+        if (s.student_id) studentMap[String(s.student_id).trim()] = s;
+      });
+
+      const { data: byReg, error: e2 } = await supabase
+        .from("students")
+        .select(
+          "id, full_name, student_id, email, program, department_code, academic_year, year_of_study, semester"
+        )
+        .in("student_id", batch);
+
+      if (e2) console.warn("byReg batch error:", e2);
+      (byReg || []).forEach((s) => {
+        studentMap[String(s.id)] = s;
+        if (s.student_id) studentMap[String(s.student_id).trim()] = s;
+      });
+    }
+
+    // 4. Build list — keep EVERY row (resolved or not)
+    const combinedData = studentCourses.map((sc) => {
+      const key = sc.student_id != null ? String(sc.student_id).trim() : null;
+      const student = key ? studentMap[key] : null;
+
+      return {
+        id: sc.id, // student_courses.id (needed for update)
+        student_id: sc.student_id,
+        students: student || {
+          id: sc.student_id,
+          full_name: `⚠️ Unlinked (${String(sc.student_id || "null").slice(0, 8)}…)`,
+          student_id: String(sc.student_id || "N/A"),
+          email: "—",
+          program: "—",
+          department_code: "—",
+        },
+        _unlinked: !student, // flag for UI if you want
+      };
+    });
+
+    const linked = combinedData.filter((r) => !r._unlinked).length;
+    const unlinked = combinedData.length - linked;
+
+    console.log(`✅ Linked: ${linked} | Unlinked: ${unlinked} | Total shown: ${combinedData.length}`);
+
+    if (unlinked > 0) {
+      console.warn(
+        "Unlinked student_ids:",
+        combinedData.filter((r) => r._unlinked).map((r) => r.student_id)
+      );
+    }
+
+    setStudentsInEnrolledCourses(combinedData);
+    setSelectedCourseForStudentCompletion(courseId);
+    setSelectedStudentsForCompletion([]);
+    setShowStudentCompletionModal(true);
+  } catch (err) {
+    console.error("Error fetching students for completion:", err);
+    alert("Failed to load students: " + err.message);
+  }
+};
+
+const toggleStudentCompletionSelection = (studentCourseId) => {
+  setSelectedStudentsForCompletion((prev) =>
+    prev.includes(studentCourseId)
+      ? prev.filter((id) => id !== studentCourseId)
+      : [...prev, studentCourseId]
+  );
+};
+
+const selectAllStudentsForCompletion = () => {
+  if (selectedStudentsForCompletion.length === studentsInEnrolledCourses.length) {
+    setSelectedStudentsForCompletion([]);
+  } else {
+    setSelectedStudentsForCompletion(studentsInEnrolledCourses.map((s) => s.id));
+  }
+};
+
+// ===== NEW: Mark selected individual students as completed =====
+const handleMarkStudentCompletion = async () => {
+  if (selectedStudentsForCompletion.length === 0) {
+    alert("Please select at least one student to mark as completed");
+    return;
+  }
+
+  if (
+    !window.confirm(
+      `✅ This will mark ${selectedStudentsForCompletion.length} student(s) as "completed" for the selected course.\n\n` +
+        `Only the selected students will be affected.\n\n` +
+        `Are you sure you want to proceed?`
+    )
+  )
+    return;
+
+  setMarkingStudentsInProgress(true);
+
+  try {
+    let successCount = 0;
+    let errorCount = 0;
+    const errors = [];
+
+    for (const studentCourseId of selectedStudentsForCompletion) {
+      try {
+        const { error: updateError } = await supabase
+          .from("student_courses")
+          .update({
+            status: "completed",
+            updated_at: new Date().toISOString(),
+            // completion_date: new Date().toISOString().split("T")[0], // uncomment if column exists
+          })
+          .eq("id", studentCourseId);
+
+        if (updateError) {
+          console.error(`Failed to update student_course ${studentCourseId}:`, updateError);
+          errors.push(`Failed to update record ${studentCourseId}: ${updateError.message}`);
+          errorCount++;
+        } else {
+          successCount++;
+          console.log(`✅ Marked student_course ${studentCourseId} as completed`);
+        }
+      } catch (err) {
+        console.error(`Error processing student_course ${studentCourseId}:`, err);
+        errorCount++;
+        errors.push(`Error processing record: ${err.message}`);
+      }
+    }
+
+    if (successCount > 0) {
+      alert(
+        `✅ Successfully marked ${successCount} student(s) as completed!\n\n` +
+          (errorCount > 0
+            ? `⚠️ ${errorCount} record(s) failed.\n\nErrors:\n${errors.slice(0, 5).join("\n")}`
+            : "")
+      );
+    } else {
+      alert(`❌ No records were updated.\n\n${errors.join("\n")}`);
+    }
+
+    // Reset & refresh
+    setSelectedStudentsForCompletion([]);
+    setShowStudentCompletionModal(false);
+    setSelectedCourseForStudentCompletion(null);
+    fetchCoursesForCompletion();
+    fetchStudentsForCompletion();
+    fetchEnrolledStudentCounts(coursesForCompletion);
+  } catch (err) {
+    console.error("Error marking student completion:", err);
+    alert("Failed to mark completion: " + err.message);
+  } finally {
+    setMarkingStudentsInProgress(false);
+  }
+};
+// ===== END NEW FUNCTIONS =====
+// ===== END NEW FUNCTIONS =====
+
+// ===== REPLACE THIS FUNCTION =====
+const handleReverseCourseCompletion = async () => {
+  if (selectedCoursesForReversal.length === 0) {
+    alert("Please select at least one course to reverse");
+    return;
+  }
+
+  if (
+    !window.confirm(
+      `⚠️ IMPORTANT: This will change ${selectedCoursesForReversal.length} course(s) from "completed" back to "enrolled" status.\n\n` +
+        `ALL students in these courses will be affected.\n\n` +
+        `To reverse specific students only, use the "Select Students" button.\n\n` +
+        `Are you sure you want to proceed?`,
+    )
+  )
+    return;
+
+  setReversalInProgress(true);
+
+  try {
+    const { data, error } = await supabase
+      .from("student_courses")
+      .update({
+        status: "enrolled",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("status", "completed")
+      .in("course_id", selectedCoursesForReversal);
+
+    if (error) {
+      if (error.message.includes("student_visible_assignments")) {
+        alert(
+          "⚠️ There's a database trigger that automatically creates visibility records.\n\n" +
+          "Please use the 'Select Students' option to reverse individual students instead."
+        );
+      } else {
+        throw error;
+      }
+    } else {
       alert(
         `✅ Successfully reversed ${selectedCoursesForReversal.length} course(s) back to "enrolled" status!`,
       );
-
-      // Reset selections and refresh data
-      setSelectedCoursesForReversal([]);
-      fetchCompletedCourses();
-    } catch (err) {
-      console.error("Error reversing completion:", err);
-      alert("Failed to reverse completion: " + err.message);
-    } finally {
-      setReversalInProgress(false);
     }
-  };
+
+    setSelectedCoursesForReversal([]);
+    fetchCompletedCourses();
+  } catch (err) {
+    console.error("Error reversing completion:", err);
+    alert("Failed to reverse completion: " + err.message);
+  } finally {
+    setReversalInProgress(false);
+  }
+};
+// ===== END REPLACEMENT =====
 
   // Toggle course selection for reversal
   const toggleCourseReversalSelection = (courseId) => {
@@ -1765,7 +2441,14 @@ const openTextAnswersModal = () => {
   const [downloadProgress, setDownloadProgress] = useState({});
   const [batchDownloading, setBatchDownloading] = useState(false);
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
-
+// ===== NEW: Student-specific completion states (re-complete after reversal) =====
+const [selectedStudentsForCompletion, setSelectedStudentsForCompletion] = useState([]);
+const [studentsInEnrolledCourses, setStudentsInEnrolledCourses] = useState([]);
+const [showStudentCompletionModal, setShowStudentCompletionModal] = useState(false);
+const [selectedCourseForStudentCompletion, setSelectedCourseForStudentCompletion] = useState(null);
+const [enrolledStudentCounts, setEnrolledStudentCounts] = useState({});
+const [markingStudentsInProgress, setMarkingStudentsInProgress] = useState(false);
+// ===== END NEW STATES =====
   // Modals and forms
   const [showDepartmentModal, setShowDepartmentModal] = useState(false);
   const [selectedLecturerForDept, setSelectedLecturerForDept] = useState(null);
@@ -4734,6 +5417,495 @@ const fetchMyExams = async () => {
       alert("Failed to save slot: " + err.message);
     }
   };
+  
+  // =================== NOTES MANAGEMENT FUNCTIONS ===================
+const fetchNoteCourses = async () => {
+  if (!profile?.id) return;
+  
+  try {
+    const { data, error } = await supabase
+      .from('courses')
+      .select('id, course_code, course_name, department_code')
+      .eq('lecturer_id', profile.id)
+      .eq('is_active', true)
+      .order('course_code');
+
+    if (error) throw error;
+    setNoteCourses(data || []);
+  } catch (err) {
+    console.error('Error fetching courses for notes:', err);
+  }
+};
+
+const formatFileSize = (bytes) => {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
+
+const getFileIcon = (fileName) => {
+  const ext = fileName.split('.').pop().toLowerCase();
+  const iconMap = {
+    pdf: '📄', doc: '📝', docx: '📝', ppt: '📊', pptx: '📊',
+    xls: '📊', xlsx: '📊', txt: '📃', zip: '📦', rar: '📦',
+    jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️',
+    mp4: '🎬', mp3: '🎵',
+  };
+  return iconMap[ext] || '📎';
+};
+
+const fetchUploadedNotes = async () => {
+  if (!profile?.id) return;
+  
+  setLoadingNotes(true);
+  try {
+    console.log('📚 Fetching notes for lecturer:', profile.id);
+    
+    // Fetch from Notes bucket
+    const { data: notesFiles, error: notesError } = await supabase.storage
+      .from('Notes')
+      .list('', { limit: 1000 });
+
+    // Fetch from Tutorials bucket
+    const { data: videoFiles, error: videoError } = await supabase.storage
+      .from('Tutorials')
+      .list('', { limit: 1000 });
+
+    if (notesError && videoError) {
+      console.error('Error listing files:', notesError, videoError);
+      setUploadedNotes([]);
+      setLoadingNotes(false);
+      return;
+    }
+
+    console.log('📁 Notes bucket files:', notesFiles?.length || 0);
+    console.log('📁 Tutorials bucket files:', videoFiles?.length || 0);
+
+    // ⭐ CRITICAL FIX: Properly merge and process files
+    const allFiles = [];
+    
+    // Process Notes bucket files
+    if (notesFiles) {
+      notesFiles.forEach(file => {
+        if (file.name === '.emptyFolderPlaceholder') return;
+        allFiles.push({
+          ...file,
+          _bucket: 'Notes',
+          _isVideo: false
+        });
+      });
+    }
+    
+    // Process Tutorials bucket files
+    if (videoFiles) {
+      videoFiles.forEach(file => {
+        if (file.name === '.emptyFolderPlaceholder') return;
+        allFiles.push({
+          ...file,
+          _bucket: 'Tutorials',
+          _isVideo: true // ⭐ Mark as video
+        });
+      });
+    }
+    
+    if (allFiles.length === 0) {
+      setUploadedNotes([]);
+      setLoadingNotes(false);
+      return;
+    }
+
+    const processedNotes = [];
+    
+    for (const file of allFiles) {
+      // Skip files that don't belong to this lecturer
+      if (!file.name.includes(profile.id)) continue;
+      
+      const isVideo = file._isVideo;
+      const bucketName = file._bucket;
+      
+      // ⭐ Get the actual file path for the bucket
+      const filePath = file.name; // For root level files
+      
+      const { data: urlData } = supabase.storage
+        .from(bucketName)
+        .getPublicUrl(filePath);
+
+      let category = 'General';
+      let course = 'Unknown';
+      let title = file.name;
+      
+      console.log(`📄 Processing file: ${file.name}, isVideo: ${isVideo}, bucket: ${bucketName}`);
+      
+      if (isVideo) {
+        // ⭐ For videos: better title extraction
+        const pathParts = file.name.split('/');
+        const lastPart = pathParts[pathParts.length - 1] || file.name;
+        
+        // Remove timestamp and clean up
+        title = lastPart.replace(/\.[^.]+$/, '') // Remove extension
+          .replace(/_\d{13}$/, '') // Remove timestamp if present
+          .replace(/_/g, ' '); // Replace underscores with spaces
+        
+        // Try to extract info from path structure
+        // Format: tutorials/lecturerId/programCode/academicYear/YearX_SemY/filename
+        if (pathParts.length >= 6) {
+          // pathParts[2] = programCode, pathParts[3] = academicYear
+          course = pathParts[2] || 'Unknown';
+          category = pathParts[3] || 'Video';
+        }
+        
+        console.log(`🎬 Video found: ${title}, course: ${course}`);
+      } else {
+        // Parse notes format
+        const nameWithoutExt = file.name.replace(/\.[^.]+$/, '');
+        const parts = nameWithoutExt.split('_');
+        
+        if (parts.length >= 3) {
+          category = parts[1] || 'General';
+          const titleParts = parts.slice(2);
+          if (titleParts.length > 0 && /^\d+$/.test(titleParts[titleParts.length - 1])) {
+            titleParts.pop();
+          }
+          title = titleParts.join(' ') || file.name;
+        } else {
+          title = file.name;
+        }
+      }
+
+      const fileSize = file.metadata?.size || 0;
+      const uploadDate = file.created_at || new Date().toISOString();
+
+      processedNotes.push({
+        id: file.id || file.name,
+        name: file.name,
+        title: title || file.name,
+        category: category || 'General',
+        course: course || 'Unknown',
+        fileSize: fileSize,
+        fileSizeFormatted: formatFileSize(fileSize),
+        uploadDate: uploadDate,
+        uploadDateFormatted: new Date(uploadDate).toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric'
+        }),
+        downloadUrl: urlData.publicUrl,
+        fileType: file.name.split('.').pop().toLowerCase(),
+        icon: isVideo ? '🎬' : getFileIcon(file.name),
+        isVideo: isVideo,
+        bucket: bucketName,
+      });
+    }
+
+    const sortedNotes = processedNotes.sort((a, b) => 
+      new Date(b.uploadDate) - new Date(a.uploadDate)
+    );
+
+    console.log(`✅ Found ${sortedNotes.length} materials (${sortedNotes.filter(n => n.isVideo).length} videos, ${sortedNotes.filter(n => !n.isVideo).length} documents)`);
+    setUploadedNotes(sortedNotes);
+  } catch (err) {
+    console.error('Error fetching notes:', err);
+    setUploadedNotes([]);
+  } finally {
+    setLoadingNotes(false);
+  }
+};
+
+  const cancelNotesUpload = () => {
+  notesUploadCancelledRef.current = true;
+
+  // Abort in-flight XHR
+  if (notesUploadXhrRef.current) {
+    try {
+      notesUploadXhrRef.current.abort();
+    } catch (_) {}
+    notesUploadXhrRef.current = null;
+  }
+
+  setUploadingNotes(false);
+  setNotesUploadProgress(0);
+  showToast('Upload cancelled', 'info');
+};
+
+const uploadNotes = async () => {
+  if (notesFiles.length === 0) {
+    showToast('Please select at least one file to upload', 'error');
+    return;
+  }
+
+  if (!noteCourseId) {
+    showToast('Please select a course', 'error');
+    return;
+  }
+
+  notesUploadCancelledRef.current = false;
+  setUploadingNotes(true);
+  setNotesUploadProgress(0);
+
+  try {
+    const lecturerId = profile.id;
+    const uploadedPaths = [];
+
+    const { data: courseData, error: courseError } = await supabase
+      .from('courses')
+      .select('course_code, program_code, course_name')
+      .eq('id', noteCourseId)
+      .single();
+
+    if (courseError || !courseData?.course_code) {
+      showToast('Failed to fetch course details. Select a valid course.', 'error');
+      return;
+    }
+
+    let courseCode = courseData.course_code;
+    let programCode = courseData.program_code;
+
+    if (!programCode) {
+      programCode = (await getLecturerProgramCode(lecturerId)) || 'GENERAL';
+    }
+
+    const cleanCourseCode = courseCode.replace(/\s+/g, '');
+    const academicYear = selectedCohort.academic_year?.trim() || '2025/2029';
+    const year = selectedCohort.year_of_study || 1;
+    const semester = selectedCohort.semester || 1;
+    const cohortString = `YEAR${year}_SEM${semester}`;
+    const academicParts = academicYear.split('/');
+    const startYear = academicParts[0]?.trim() || '2025';
+    const endYear = academicParts[1]?.trim() || '2029';
+
+    for (let i = 0; i < notesFiles.length; i++) {
+      // Stop if user cancelled
+      if (notesUploadCancelledRef.current) {
+        showToast('Upload cancelled', 'info');
+        break;
+      }
+
+      const file = notesFiles[i];
+      const fileExt = file.name.split('.').pop().toLowerCase();
+      const originalName = file.name
+        .replace(/\.[^.]+$/, '')
+        .replace(/[^a-zA-Z0-9._-]/g, '_');
+      const safeFileName = `${originalName}.${fileExt}`;
+
+      let bucketName, fileName;
+
+      if (noteMaterialType === 'video') {
+        bucketName = 'Tutorials';
+        fileName = `tutorials/${lecturerId}/${programCode}/${cleanCourseCode}/${startYear}/${endYear}/${cohortString}/${safeFileName}`;
+      } else {
+        bucketName = 'Notes';
+        fileName = `notes/${lecturerId}/${programCode}/${cleanCourseCode}/${startYear}/${endYear}/${cohortString}/${safeFileName}`;
+      }
+
+      console.log(`📤 Uploading to: ${bucketName}/${fileName}`);
+      showToast(`Uploading ${i + 1}/${notesFiles.length}: ${file.name}`, 'info');
+
+      const { data: signedData, error: signError } = await supabase.storage
+        .from(bucketName)
+        .createSignedUploadUrl(fileName);
+
+      if (signError || !signedData?.signedUrl) {
+        showToast(
+          `Failed to prepare upload for "${file.name}": ${signError?.message || 'No signed URL'}`,
+          'error'
+        );
+        continue;
+      }
+
+      if (notesUploadCancelledRef.current) break;
+
+      try {
+        await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          notesUploadXhrRef.current = xhr; // so Cancel can abort
+
+          xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+              const fileProgress = e.loaded / e.total;
+              const overall = Math.round(
+                ((i + fileProgress) / notesFiles.length) * 100
+              );
+              setNotesUploadProgress(Math.min(overall, 99));
+            }
+          });
+
+          xhr.addEventListener('load', () => {
+            notesUploadXhrRef.current = null;
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolve();
+            } else {
+              reject(
+                new Error(
+                  `Upload failed with status ${xhr.status}: ${xhr.responseText}`
+                )
+              );
+            }
+          });
+
+          xhr.addEventListener('error', () => {
+            notesUploadXhrRef.current = null;
+            reject(new Error('Network error during upload'));
+          });
+
+          xhr.addEventListener('timeout', () => {
+            notesUploadXhrRef.current = null;
+            reject(new Error('Upload timeout – file may be too large'));
+          });
+
+          xhr.addEventListener('abort', () => {
+            notesUploadXhrRef.current = null;
+            reject(new Error('Upload cancelled'));
+          });
+
+          xhr.open('PUT', signedData.signedUrl);
+          xhr.setRequestHeader(
+            'Content-Type',
+            file.type || 'application/octet-stream'
+          );
+          xhr.timeout = 30 * 60 * 1000;
+          xhr.send(file);
+        });
+
+        if (notesUploadCancelledRef.current) break;
+
+        uploadedPaths.push(fileName);
+        setNotesUploadProgress(
+          Math.round(((i + 1) / notesFiles.length) * 100)
+        );
+      } catch (uploadErr) {
+        if (
+          notesUploadCancelledRef.current ||
+          uploadErr.message === 'Upload cancelled'
+        ) {
+          showToast('Upload cancelled', 'info');
+          break;
+        }
+        console.error(`Upload error for ${file.name}:`, uploadErr);
+        showToast(
+          `Upload failed for "${file.name}": ${uploadErr.message}`,
+          'error'
+        );
+        continue;
+      }
+    }
+
+    if (notesUploadCancelledRef.current) {
+      // already toasted
+    } else if (uploadedPaths.length > 0) {
+      const materialType =
+        noteMaterialType === 'video' ? 'video(s)' : 'note(s)';
+      showToast(
+        `✅ Successfully uploaded ${uploadedPaths.length} ${materialType}!`,
+        'success'
+      );
+      setNotesUploadProgress(100);
+
+      setNotesFiles([]);
+      setNoteTitle('');
+      setNoteCategory('');
+      setNoteDescription('');
+      setNoteCourseId('');
+      setNoteMaterialType('notes');
+      setShowNotesUpload(false);
+      setSelectedCohort({
+        academic_year: '',
+        year_of_study: 1,
+        semester: 1,
+      });
+    } else {
+      showToast(
+        'No files were uploaded successfully. Please try again.',
+        'error'
+      );
+    }
+  } catch (err) {
+    if (!notesUploadCancelledRef.current) {
+      console.error('Upload error:', err);
+      showToast('Upload failed: ' + err.message, 'error');
+    }
+  } finally {
+    notesUploadXhrRef.current = null;
+    setUploadingNotes(false);
+    setTimeout(() => setNotesUploadProgress(0), 800);
+  }
+};
+  
+// ⭐ Helper: Get content type
+const getContentType = (ext) => {
+  const types = {
+    'mp4': 'video/mp4',
+    'webm': 'video/webm',
+    'ogg': 'video/ogg',
+    'mov': 'video/quicktime',
+    'avi': 'video/x-msvideo',
+    'mkv': 'video/x-matroska',
+    'pdf': 'application/pdf',
+    'doc': 'application/msword',
+    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  };
+  return types[ext.toLowerCase()] || 'application/octet-stream';
+};
+
+// ⭐ Helper: Get lecturer's program code
+const getLecturerProgramCode = async (lecturerId) => {
+  let programCode = null;
+  
+  // Try from courses
+  const { data: lecturerCourses, error: coursesError } = await supabase
+    .from('courses')
+    .select('program_code')
+    .eq('lecturer_id', lecturerId)
+    .eq('is_active', true)
+    .not('program_code', 'is', null)
+    .limit(1);
+  
+  if (!coursesError && lecturerCourses?.length > 0) {
+    programCode = lecturerCourses[0].program_code;
+  }
+  
+  // Fallback: try from department
+  if (!programCode) {
+    const { data: lecturerData, error: lecturerError } = await supabase
+      .from('lecturers')
+      .select('department_code')
+      .eq('id', lecturerId)
+      .single();
+    
+    if (!lecturerError && lecturerData?.department_code) {
+      const deptToProgram = {
+        'SCT': 'BSCS',
+        'ENG': 'BSCE',
+        'BIT': 'BIT',
+      };
+      programCode = deptToProgram[lecturerData.department_code] || lecturerData.department_code;
+    }
+  }
+  
+  return programCode || 'GENERAL';
+};
+
+const handleDeleteNote = async (note) => {
+  if (!window.confirm(`Delete "${note.title}" permanently?`)) return;
+
+  setDeletingNoteId(note.id);
+  try {
+    const { error } = await supabase.storage
+      .from('Notes')
+      .remove([note.name]);
+
+    if (error) throw error;
+
+    showToast('✅ Note deleted successfully!', 'success');
+    await fetchUploadedNotes();
+  } catch (err) {
+    console.error('Delete error:', err);
+    showToast('Failed to delete note: ' + err.message, 'error');
+  } finally {
+    setDeletingNoteId(null);
+  }
+};
 
   const fetchAttendanceData = async () => {
     try {
@@ -5857,6 +7029,12 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
     );
   };
 
+useEffect(() => {
+  if (activeTab === "notes-upload" && isLecturer && profile?.id) {
+    fetchNoteCourses();
+  }
+}, [activeTab, isLecturer, profile?.id]);
+
   // Load assignments when tab opens
   useEffect(() => {
     if (activeTab === "grade-assignments" && isLecturer && profile?.id) {
@@ -6051,133 +7229,138 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
         </div>
       </header>
 
-      {/* Navigation */}
-      <nav className="dashboard-nav">
-        <button
-          className={`nav-item ${activeTab === "dashboard" ? "active" : ""}`}
-          onClick={() => setActiveTab("dashboard")}
-        >
-          📊 Dashboard
-        </button>
-        {isLecturer && (
-          <>
-            <button
-              className={`nav-item ${activeTab === "my-files" ? "active" : ""}`}
-              onClick={() => setActiveTab("my-files")}
-            >
-              📁 My Files
-            </button>
-            <button
-              className={`nav-item ${activeTab === "my-assignments" ? "active" : ""}`}
-              onClick={() => setActiveTab("my-assignments")}
-            >
-              📝 My Assignments
-            </button>
-            <button
-              className={`nav-item ${activeTab === "lectures" ? "active" : ""}`}
-              onClick={() => setActiveTab("lectures")}
-            >
-              🎓 My Lectures
-            </button>
-            {isLecturer && (
-              <>
-                <button
-                  className={`nav-item ${activeTab === "grade-assignments" ? "active" : ""}`}
-                  onClick={() => setActiveTab("grade-assignments")}
-                >
-                  📝 Grade Assignments
-                </button>
-
-                <button
-                  className={`nav-item ${activeTab === "grade-exams" ? "active" : ""}`}
-                  onClick={() => {
-                    setActiveTab("grade-exams");
-                    fetchMyExams(); // Load exams when entering this tab
-                  }}
-                >
-                  🎯 Grade Exams
-                </button>
-              </>
-            )}
-          </>
-        )}
-        <button
-          className={`nav-item ${activeTab === "students" ? "active" : ""}`}
-          onClick={() => setActiveTab("students")}
-        >
-          👥 Students
-        </button>
-        <button
-          className={`nav-item ${activeTab === "courses" ? "active" : ""}`}
-          onClick={() => setActiveTab("courses")}
-        >
-          📖 Courses
-        </button>
-        <button
-          className={`nav-item ${activeTab === "exams" ? "active" : ""}`}
-          onClick={() => setActiveTab("exams")}
-        >
-          🎯 Exams
-        </button>
-        <button
-          className={`nav-item ${activeTab === "attendance" ? "active" : ""}`}
-          onClick={() => setActiveTab("attendance")}
-        >
-          📅 Attendance
-        </button>
-        {isAdmin && (
-          <>
-            <button
-              className={`nav-item ${activeTab === "all-files" ? "active" : ""}`}
-              onClick={() => setActiveTab("all-files")}
-            >
-              🗂️ All Files Manager
-            </button>
-            <button
-              className={`nav-item ${activeTab === "lecturers" ? "active" : ""}`}
-              onClick={() => setActiveTab("lecturers")}
-            >
-              👨‍🏫 Lecturers
-            </button>
-            <button
-              className={`nav-item ${activeTab === "finance" ? "active" : ""}`}
-              onClick={() => setActiveTab("finance")}
-            >
-              💰 Finance
-            </button>
-            <button
-              className={`nav-item ${activeTab === "timetables" ? "active" : ""}`}
-              onClick={() => setActiveTab("timetables")}
-            >
-              ⏰ Timetables
-            </button>
-
-            {isAdmin && (
-              <button
-                className={`nav-item ${activeTab === "programs" ? "active" : ""}`}
-                onClick={() => setActiveTab("programs")}
-              >
-                🎓 Programs
-              </button>
-            )}
-
-            {isAdmin && (
-              <button
-                className={`nav-item ${activeTab === "complete-courses" ? "active" : ""}`}
-                onClick={() => setActiveTab("complete-courses")}
-              >
-                ✅ Complete Courses
-              </button>
-            )}
-            <button
-              className={`nav-item ${activeTab === "settings" ? "active" : ""}`}
-              onClick={() => setActiveTab("settings")}
-            >
-              ⚙ Settings
-            </button>
-          </>
-        )}
-      </nav>
+    {/* Navigation */}
+<nav className="dashboard-nav">
+  <button
+    className={`nav-item ${activeTab === "dashboard" ? "active" : ""}`}
+    onClick={() => setActiveTab("dashboard")}
+  >
+    📊 Dashboard
+  </button>
+  
+  {isLecturer && (
+    <>
+      <button
+        className={`nav-item ${activeTab === "my-files" ? "active" : ""}`}
+        onClick={() => setActiveTab("my-files")}
+      >
+        📁 My Files
+      </button>
+      <button
+        className={`nav-item ${activeTab === "my-assignments" ? "active" : ""}`}
+        onClick={() => setActiveTab("my-assignments")}
+      >
+        📝 My Assignments
+      </button>
+      <button
+        className={`nav-item ${activeTab === "lectures" ? "active" : ""}`}
+        onClick={() => setActiveTab("lectures")}
+      >
+        🎓 My Lectures
+      </button>
+      <button
+        className={`nav-item ${activeTab === "grade-assignments" ? "active" : ""}`}
+        onClick={() => setActiveTab("grade-assignments")}
+      >
+        📝 Grade Assignments
+      </button>
+      <button
+        className={`nav-item ${activeTab === "grade-exams" ? "active" : ""}`}
+        onClick={() => {
+          setActiveTab("grade-exams");
+          fetchMyExams();
+        }}
+      >
+        🎯 Grade Exams
+      </button>
+    </>
+  )}
+  
+  <button
+    className={`nav-item ${activeTab === "students" ? "active" : ""}`}
+    onClick={() => setActiveTab("students")}
+  >
+    👥 Students
+  </button>
+  
+  <button
+    className={`nav-item ${activeTab === "courses" ? "active" : ""}`}
+    onClick={() => setActiveTab("courses")}
+  >
+    📖 Courses
+  </button>
+  
+  <button
+    className={`nav-item ${activeTab === "exams" ? "active" : ""}`}
+    onClick={() => setActiveTab("exams")}
+  >
+    🎯 Exams
+  </button>
+  
+  <button
+    className={`nav-item ${activeTab === "attendance" ? "active" : ""}`}
+    onClick={() => setActiveTab("attendance")}
+  >
+    📅 Attendance
+  </button>
+  
+  {/* ===== NOTES UPLOAD - VISIBLE TO BOTH LECTURERS AND ADMINS ===== */}
+  {(isLecturer || isAdmin) && (
+    <button
+      className={`nav-item ${activeTab === "notes-upload" ? "active" : ""}`}
+      onClick={() => setActiveTab("notes-upload")}
+    >
+      📚 Upload Course Materials
+    </button>
+  )}
+  
+  {isAdmin && (
+    <>
+      <button
+        className={`nav-item ${activeTab === "all-files" ? "active" : ""}`}
+        onClick={() => setActiveTab("all-files")}
+      >
+        🗂️ All Files Manager
+      </button>
+      <button
+        className={`nav-item ${activeTab === "lecturers" ? "active" : ""}`}
+        onClick={() => setActiveTab("lecturers")}
+      >
+        👨‍🏫 Lecturers
+      </button>
+      <button
+        className={`nav-item ${activeTab === "finance" ? "active" : ""}`}
+        onClick={() => setActiveTab("finance")}
+      >
+        💰 Finance
+      </button>
+      <button
+        className={`nav-item ${activeTab === "timetables" ? "active" : ""}`}
+        onClick={() => setActiveTab("timetables")}
+      >
+        ⏰ Timetables
+      </button>
+      <button
+        className={`nav-item ${activeTab === "programs" ? "active" : ""}`}
+        onClick={() => setActiveTab("programs")}
+      >
+        🎓 Programs
+      </button>
+      <button
+        className={`nav-item ${activeTab === "complete-courses" ? "active" : ""}`}
+        onClick={() => setActiveTab("complete-courses")}
+      >
+        ✅ Complete Courses
+      </button>
+      <button
+        className={`nav-item ${activeTab === "settings" ? "active" : ""}`}
+        onClick={() => setActiveTab("settings")}
+      >
+        ⚙ Settings
+      </button>
+    </>
+  )}
+</nav>
 
       {/* Main Content */}
       <main className="dashboard-main">
@@ -6543,26 +7726,7 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
                     >
                       + Create Assignment
                     </button>
-                    <button
-                      className="action-button"
-                      onClick={() => {
-                        setShowTutorialsModal(true);
-                        setTutorialTitle("");
-                        setTutorialDescription("");
-                        setTutorialFiles([]);
-                        setTutorialTargetProgram("");
-                        setTutorialTargetCourse("");
-                        setTutorialTargetCohort({
-                          academic_year: "",
-                          year_of_study: 1,
-                          semester: 1,
-                        });
-                      }}
-                    >
-                      <span className="action-icon">📚</span>
-                      <span>Upload Tutorials</span>
-                      <small>PDFs, Docs, Videos for students</small>
-                    </button>
+                  
                   </div>
                 </div>
 
@@ -7628,11 +8792,12 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
                     scrollbarWidth: "thin",
                   }}
                 >
-                  {[
-                    { key: "lecturerbucket", label: "Assignment Files" },
-                    { key: "Tutorials", label: "Tutorials" },
-                    { key: "Lecturer exam", label: "Exam Papers" },
-                  ].map(({ key, label }) => {
+               {[
+  { key: "lecturerbucket", label: "Assignment Files" },
+  { key: "Tutorials", label: "Tutorials / Videos" },
+  { key: "Notes", label: "Notes" },
+  { key: "Lecturer exam", label: "Exam Papers" },
+].map(({ key, label }) => {
                     const count = bucketFiles[key]?.length || 0;
                     const isActive = activeBucketTab === key;
 
@@ -7697,12 +8862,14 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
                         color: "#666",
                       }}
                     >
-                      Loading your{" "}
-                      {activeBucketTab === "lecturerbucket"
-                        ? "assignment files"
-                        : activeBucketTab === "Tutorials"
-                          ? "tutorials"
-                          : "exam papers"}
+                    Loading your{" "}
+{activeBucketTab === "lecturerbucket"
+  ? "assignment files"
+  : activeBucketTab === "Tutorials"
+    ? "tutorials"
+    : activeBucketTab === "Notes"
+      ? "notes"
+      : "exam papers"}
                       ...
                     </p>
                   </div>
@@ -7735,114 +8902,195 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
                     >
                       You haven't uploaded any files to{" "}
                       <strong>
-                        {activeBucketTab === "lecturerbucket"
-                          ? "Assignment Files"
-                          : activeBucketTab === "Tutorials"
-                            ? "Tutorials"
-                            : "Exam Papers"}
+                     {activeBucketTab === "lecturerbucket"
+  ? "Assignment Files"
+  : activeBucketTab === "Tutorials"
+    ? "Tutorials / Videos"
+    : activeBucketTab === "Notes"
+      ? "Notes"
+      : "Exam Papers"}
                       </strong>{" "}
                       yet.
                     </p>
                   </div>
-                ) : (
-                  /* Responsive Table - No Overflow */
-                  <div
-                    className="table-container"
-                    style={{ overflowX: "auto", marginTop: "10px" }}
-                  >
-                    <table
-                      className="data-table"
-                      style={{ minWidth: "900px", width: "100%" }}
+                            ) : (
+                  <>
+                    {/* Bulk actions */}
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        marginBottom: "12px",
+                        gap: "12px",
+                        flexWrap: "wrap",
+                      }}
                     >
-                      <thead>
-                        <tr>
-                          <th style={{ width: "32%", minWidth: "220px" }}>
-                            File Name
-                          </th>
-                          <th style={{ width: "12%" }}>Size</th>
-                          <th style={{ width: "16%" }}>Uploaded</th>
-                          <th style={{ width: "30%", minWidth: "250px" }}>
-                            Full Path
-                          </th>
-                          <th style={{ width: "10%" }}>Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {bucketFiles[activeBucketTab].map((file, index) => (
-                          <tr key={file.id || file.fullPath || index}>
-                            <td style={{ wordBreak: "break-word" }}>
-                              <strong>{file.name}</strong>
-                            </td>
-                            <td>
-                              {file.metadata?.size
-                                ? `${(file.metadata.size / 1024 / 1024).toFixed(2)} MB`
-                                : "—"}
-                            </td>
-                            <td>
-                              {file.created_at
-                                ? new Date(file.created_at).toLocaleDateString(
-                                    "en-US",
-                                    {
+                      <label
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={
+                            (bucketFiles[activeBucketTab]?.length || 0) > 0 &&
+                            selectedBucketFiles.length ===
+                              bucketFiles[activeBucketTab].length
+                          }
+                          onChange={toggleSelectAllBucketFiles}
+                        />
+                        <span>
+                          Select all ({bucketFiles[activeBucketTab]?.length || 0})
+                        </span>
+                      </label>
+
+                      {selectedBucketFiles.length > 0 && (
+                        <button
+                          className="action-btn delete"
+                          onClick={handleBulkDeleteFiles}
+                          disabled={bulkDeleting}
+                          style={{
+                            background: "#dc3545",
+                            color: "white",
+                            border: "none",
+                            padding: "8px 16px",
+                            borderRadius: "8px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          {bulkDeleting
+                            ? "Deleting..."
+                            : `🗑️ Delete selected (${selectedBucketFiles.length})`}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Responsive Table - No Overflow */}
+                    <div
+                      className="table-container"
+                      style={{ overflowX: "auto", marginTop: "10px" }}
+                    >
+                      <table
+                        className="data-table"
+                        style={{ minWidth: "900px", width: "100%" }}
+                      >
+                        <thead>
+                          <tr>
+                            <th style={{ width: "48px" }}>
+                              <input
+                                type="checkbox"
+                                checked={
+                                  (bucketFiles[activeBucketTab]?.length || 0) >
+                                    0 &&
+                                  selectedBucketFiles.length ===
+                                    bucketFiles[activeBucketTab].length
+                                }
+                                onChange={toggleSelectAllBucketFiles}
+                                title="Select all"
+                              />
+                            </th>
+                            <th style={{ width: "30%", minWidth: "200px" }}>
+                              File Name
+                            </th>
+                            <th style={{ width: "12%" }}>Size</th>
+                            <th style={{ width: "16%" }}>Uploaded</th>
+                            <th style={{ width: "28%", minWidth: "200px" }}>
+                              Full Path
+                            </th>
+                            <th style={{ width: "10%" }}>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {bucketFiles[activeBucketTab].map((file, index) => (
+                            <tr key={file.id || file.fullPath || index}>
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedBucketFiles.includes(
+                                    file.fullPath
+                                  )}
+                                  onChange={() =>
+                                    toggleSelectBucketFile(file.fullPath)
+                                  }
+                                />
+                              </td>
+                              <td style={{ wordBreak: "break-word" }}>
+                                <strong>{file.name}</strong>
+                              </td>
+                              <td>
+                                {file.metadata?.size
+                                  ? `${(file.metadata.size / 1024 / 1024).toFixed(2)} MB`
+                                  : "—"}
+                              </td>
+                              <td>
+                                {file.created_at
+                                  ? new Date(
+                                      file.created_at
+                                    ).toLocaleDateString("en-US", {
                                       year: "numeric",
                                       month: "short",
                                       day: "numeric",
-                                    },
-                                  )
-                                : "—"}
-                            </td>
-                            <td
-                              style={{
-                                fontSize: "13px",
-                                color: "#666",
-                                wordBreak: "break-all",
-                                maxWidth: "300px",
-                              }}
-                            >
-                              📁 {file.fullPath}
-                            </td>
-                            <td>
-                              <div
-                                className="action-buttons flat"
+                                    })
+                                  : "—"}
+                              </td>
+                              <td
                                 style={{
-                                  gap: "10px",
-                                  justifyContent: "center",
+                                  fontSize: "13px",
+                                  color: "#666",
+                                  wordBreak: "break-all",
+                                  maxWidth: "300px",
                                 }}
                               >
-                                <a
-                                  href={file.publicUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="action-btn view small"
-                                  title="View / Download"
+                                📁 {file.fullPath}
+                              </td>
+                              <td>
+                                <div
+                                  className="action-buttons flat"
+                                  style={{
+                                    gap: "10px",
+                                    justifyContent: "center",
+                                  }}
                                 >
-                                  👁️ View
-                                </a>
-                                <button
-                                  className="action-btn delete small"
-                                  onClick={() =>
-                                    handleDeleteFile(
-                                      activeBucketTab,
-                                      file.fullPath,
-                                    )
-                                  }
-                                  disabled={
-                                    deletingFile ===
+                                  <a
+                                    href={file.publicUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="action-btn view small"
+                                    title="View / Download"
+                                  >
+                                    👁️ View
+                                  </a>
+                                  <button
+                                    className="action-btn delete small"
+                                    onClick={() =>
+                                      handleDeleteFile(
+                                        activeBucketTab,
+                                        file.fullPath
+                                      )
+                                    }
+                                    disabled={
+                                      deletingFile ===
+                                      `${activeBucketTab}-${file.fullPath}`
+                                    }
+                                    title="Delete permanently"
+                                  >
+                                    {deletingFile ===
                                     `${activeBucketTab}-${file.fullPath}`
-                                  }
-                                  title="Delete permanently"
-                                >
-                                  {deletingFile ===
-                                  `${activeBucketTab}-${file.fullPath}`
-                                    ? "Deleting..."
-                                    : "🗑️ Delete"}
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                                      ? "Deleting..."
+                                      : "🗑️ Delete"}
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
                 )}
 
                 {/* Footer Tip */}
@@ -9450,7 +10698,344 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
                   </div>
                 </div>
               </div>
-            )}
+              )}
+              
+{/* Notes Upload Tab - For Lecturers and Admins */}
+{activeTab === "notes-upload" && (isLecturer || isAdmin) && (
+  <div className="tab-content">
+    <div className="tab-header">
+      <div>
+        <h2>📚 Upload Course Materials</h2>
+        <p>Share lecture notes, study materials, and tutorial videos with your students</p>
+      </div>
+      <button
+        className="add-button"
+        onClick={() => setShowNotesUpload(!showNotesUpload)}
+      >
+        {showNotesUpload ? '✕ Close' : '+ Upload Materials'}
+      </button>
+    </div>
+
+{/* Upload Form */}
+{showNotesUpload && (
+  <div className="upload-section" style={{
+    background: 'white',
+    padding: '24px',
+    borderRadius: '12px',
+    marginBottom: '30px',
+    border: '2px solid #e9ecef',
+  }}>
+    <h3 style={{ marginBottom: '20px', color: '#2c3e50' }}>
+      📤 Upload New Materials
+    </h3>
+    
+    <div className="modal-form">
+      {/* Material Type Selection */}
+      <div className="form-group">
+        <label className="form-label">Material Type *</label>
+        <select
+          value={noteMaterialType}
+          onChange={(e) => setNoteMaterialType(e.target.value)}
+          className="form-select"
+        >
+          <option value="notes">📄 Notes / Documents (PDF, DOC, etc.)</option>
+          <option value="video">🎬 Video Tutorials (MP4, etc.)</option>
+        </select>
+        <small>
+          {noteMaterialType === 'notes' 
+            ? 'Upload PDFs, Word documents, presentations, etc.' 
+            : 'Upload MP4 video tutorials for students'}
+        </small>
+      </div>
+
+      {/* ⭐ COURSE SELECTION - MANDATORY FOR ALL UPLOADS */}
+      <div className="form-group" style={{
+        background: "#e3f2fd",
+        padding: "16px",
+        borderRadius: "10px",
+        border: "2px solid #1976d2",
+        marginBottom: "16px"
+      }}>
+        <label className="form-label">
+          Course * 
+          <span style={{ color: "#dc3545", fontWeight: "bold", marginLeft: "5px" }}>
+            (Required)
+          </span>
+        </label>
+        <select
+          value={noteCourseId}
+          onChange={(e) => setNoteCourseId(e.target.value)}
+          className="form-select"
+          required
+          style={{
+            borderColor: !noteCourseId ? "#dc3545" : ""
+          }}
+        >
+          <option value="">-- Select a course --</option>
+          {noteCourses.map((course) => (
+          <option key={course.id} value={course.id}>
+  {course.course_code} - {course.course_name} ({course.department_code})
+</option>
+          ))}
+        </select>
+        {!noteCourseId && (
+          <p style={{ color: "#dc3545", fontSize: "12px", marginTop: "5px" }}>
+            ⚠️ Please select a course to ensure materials are organized correctly
+          </p>
+        )}
+        {noteCourseId && (
+          <div style={{ 
+            marginTop: "8px", 
+            padding: "8px 12px", 
+            backgroundColor: "#d4edda", 
+            borderRadius: "4px",
+            fontSize: "13px",
+            color: "#155724"
+          }}>
+            ✅ Uploading for: <strong>{noteCourses.find(c => c.id === noteCourseId)?.course_code}</strong>
+          </div>
+        )}
+       
+      </div>
+
+      {/* Target Cohort - Only for Videos */}
+      {noteMaterialType === 'video' && (
+        <div style={{
+          background: "#f0fff4",
+          padding: "16px",
+          borderRadius: "10px",
+          marginBottom: "16px",
+          border: "2px solid #388e3c"
+        }}>
+          <h4 style={{ margin: "0 0 10px 0", color: "#388e3c" }}>
+            🎯 Target Cohort (for Videos) *
+          </h4>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Academic Year *</label>
+              <input
+                type="text"
+                value={selectedCohort.academic_year}
+                onChange={(e) => setSelectedCohort({
+                  ...selectedCohort,
+                  academic_year: e.target.value.trim()
+                })}
+                placeholder="e.g. 2025/2029"
+                className="form-input"
+                required
+              />
+            </div>
+            <div className="form-group">
+              <label>Year *</label>
+              <select
+                value={selectedCohort.year_of_study}
+                onChange={(e) => setSelectedCohort({
+                  ...selectedCohort,
+                  year_of_study: parseInt(e.target.value)
+                })}
+                className="form-select"
+                required
+              >
+                <option value="">Select Year</option>
+                {[1, 2, 3, 4].map(y => (
+                  <option key={y} value={y}>Year {y}</option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group">
+              <label>Semester *</label>
+              <select
+                value={selectedCohort.semester}
+                onChange={(e) => setSelectedCohort({
+                  ...selectedCohort,
+                  semester: parseInt(e.target.value)
+                })}
+                className="form-select"
+                required
+              >
+                <option value="">Select Semester</option>
+                <option value={1}>Semester 1</option>
+                <option value={2}>Semester 2</option>
+              </select>
+            </div>
+          </div>
+          <div style={{
+            marginTop: "10px",
+            padding: "8px 12px",
+            background: "#d4edda",
+            borderRadius: "4px",
+            fontSize: "13px",
+            color: "#155724"
+          }}>
+            📌 Videos will be organized by: Program/Course/Year/Cohort
+          </div>
+        </div>
+      )}
+
+
+
+
+
+      {/* File Upload */}
+      <div className="form-group">
+        <label className="form-label">
+          {noteMaterialType === 'notes' ? 'Files *' : 'Video Files *'}
+        </label>
+        <div
+          className="file-upload-area"
+          onClick={() => notesFileInputRef.current?.click()}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.currentTarget.classList.add('drag-over');
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault();
+            e.currentTarget.classList.remove('drag-over');
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.currentTarget.classList.remove('drag-over');
+            setNotesFiles(Array.from(e.dataTransfer.files));
+          }}
+          style={{
+            border: '2px dashed #007bff',
+            padding: '40px',
+            textAlign: 'center',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            backgroundColor: '#f8f9fa',
+          }}
+        >
+          <input
+            type="file"
+            ref={notesFileInputRef}
+            multiple
+            accept={noteMaterialType === 'notes' 
+              ? '.pdf,.doc,.docx,.ppt,.pptx,.zip,.txt,.jpg,.png' 
+              : '.mp4,.mov,.avi,.mkv,.webm'}
+            onChange={(e) => {
+              if (e.target.files) {
+                setNotesFiles(Array.from(e.target.files));
+              }
+            }}
+            style={{ display: 'none' }}
+          />
+          <div style={{ fontSize: '48px', marginBottom: '12px' }}>
+            {noteMaterialType === 'notes' ? '📄' : '🎬'}
+          </div>
+          <p><strong>Drop files here or click to browse</strong></p>
+          <p className="small-text">
+            {noteMaterialType === 'notes' 
+              ? 'PDF, DOC, DOCX, PPT, PPTX, ZIP, Images' 
+              : 'MP4, MOV, AVI, MKV, WebM (max 500MB recommended)'}
+          </p>
+        </div>
+
+        {uploadingNotes && (
+          <div className="upload-progress" style={{ marginTop: '12px' }}>
+            <div className="progress-bar">
+              <div
+                className="progress-fill"
+                style={{ width: `${notesUploadProgress}%` }}
+              ></div>
+            </div>
+            <p style={{ textAlign: 'center', marginTop: '8px' }}>
+              Uploading: {notesUploadProgress}%
+            </p>
+          </div>
+        )}
+
+        {notesFiles.length > 0 && (
+          <div className="file-list" style={{ marginTop: '12px' }}>
+            <h4>Selected Files ({notesFiles.length})</h4>
+            <div className="files-grid">
+              {notesFiles.map((file, index) => (
+                <div key={index} className="file-item" style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  padding: '8px 12px',
+                  background: '#f1f3f5',
+                  borderRadius: '6px',
+                  marginBottom: '6px',
+                }}>
+                  <span>
+                    {noteMaterialType === 'video' ? '🎬' : '📄'} {file.name} ({(file.size / 1024 / 1024).toFixed(2)} MB)
+                  </span>
+                  <button
+                    onClick={() => setNotesFiles(prev => prev.filter((_, i) => i !== index))}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#dc3545',
+                      cursor: 'pointer',
+                      fontSize: '18px',
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+    {/* Buttons */}
+<div className="modal-actions" style={{ marginTop: '20px' }}>
+  <button
+    className="cancel-button"
+    onClick={() => {
+      if (uploadingNotes) {
+        // Stop the network upload
+        cancelNotesUpload();
+      }
+      setShowNotesUpload(false);
+      setNotesFiles([]);
+      setNoteTitle('');
+      setNoteCategory('');
+      setNoteDescription('');
+      setNoteCourseId('');
+      setNoteMaterialType('notes');
+      setSelectedCohort({
+        academic_year: '',
+        year_of_study: 1,
+        semester: 1,
+      });
+    }}
+  >
+    {uploadingNotes ? 'Stop Upload' : 'Cancel'}
+  </button>
+  <button
+    className="confirm-button"
+    onClick={uploadNotes}
+    disabled={
+      uploadingNotes ||
+      notesFiles.length === 0 ||
+      !noteCourseId ||
+      (noteMaterialType === 'video' && !selectedCohort.academic_year?.trim())
+    }
+    style={{
+      opacity:
+        uploadingNotes ||
+        notesFiles.length === 0 ||
+        !noteCourseId ||
+        (noteMaterialType === 'video' && !selectedCohort.academic_year?.trim())
+          ? 0.6
+          : 1,
+    }}
+  >
+    {uploadingNotes
+      ? 'Uploading...'
+      : `📤 Upload ${noteMaterialType === 'video' ? 'Video' : 'Notes'}`}
+  </button>
+</div>
+    </div>
+  </div>
+)}
+
+   
+  </div>
+)}
           </>
         )}
         {/* Timetable Management Tab - Admin Only */}
@@ -10242,128 +11827,148 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
             </div>
 
             {/* CONTENT BASED ON MODE */}
-            {showReversalMode ? (
-              /* REVERSAL MODE */
-              completedCourses.length > 0 ? (
-                <>
-                  <div
-                    style={{
-                      marginBottom: "15px",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                    }}
-                  >
-                    <h3>Completed Courses to Reverse</h3>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={
-                          selectedCoursesForReversal.length ===
-                            completedCourses.length &&
-                          completedCourses.length > 0
-                        }
-                        onChange={selectAllForReversal}
-                      />
-                      Select All ({selectedCoursesForReversal.length} selected)
-                    </label>
-                  </div>
-                  <div className="table-container">
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>Select</th>
-                          <th>Course Code</th>
-                          <th>Course Name</th>
-                          <th>Program</th>
-                          <th>Department</th>
-                          <th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {completedCourses.map((course) => (
-                          <tr key={course.id}>
-                            <td>
-                              <input
-                                type="checkbox"
-                                checked={selectedCoursesForReversal.includes(
-                                  course.id,
-                                )}
-                                onChange={() =>
-                                  toggleCourseReversalSelection(course.id)
-                                }
-                              />
-                            </td>
-                            <td>
-                              <strong>{course.course_code}</strong>
-                            </td>
-                            <td>{course.course_name}</td>
-                            <td>{course.program || "N/A"}</td>
-                            <td>{course.department_code || "N/A"}</td>
-                            <td>
-                              <span className="status-badge completed">
-                                Completed
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div style={{ textAlign: "center", marginTop: "25px" }}>
-                    <button
-                      className="confirm-button large"
-                      onClick={handleReverseCourseCompletion}
-                      disabled={
-                        reversalInProgress ||
-                        selectedCoursesForReversal.length === 0
+         {showReversalMode ? (
+  /* REVERSAL MODE */
+  completedCourses.length > 0 ? (
+    <>
+      <div
+        style={{
+          marginBottom: "15px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: "10px",
+        }}
+      >
+        <h3>Completed Courses to Reverse</h3>
+        <label>
+          <input
+            type="checkbox"
+            checked={
+              selectedCoursesForReversal.length ===
+                completedCourses.length &&
+              completedCourses.length > 0
+            }
+            onChange={selectAllForReversal}
+          />
+          Select All Courses ({selectedCoursesForReversal.length} selected)
+        </label>
+      </div>
+      <div className="table-container">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Select</th>
+              <th>Course Code</th>
+              <th>Course Name</th>
+              <th>Program</th>
+              <th>Department</th>
+              <th>Students</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {completedCourses.map((course) => {
+              // ✅ CORRECT: Use the cached count from state
+              const studentCount = studentCounts[course.id] || 0;
+              
+              return (
+                <tr key={course.id}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selectedCoursesForReversal.includes(
+                        course.id,
+                      )}
+                      onChange={() =>
+                        toggleCourseReversalSelection(course.id)
                       }
-                      style={{
-                        background: reversalInProgress ? "#6c757d" : "#dc3545",
-                        borderColor: reversalInProgress ? "#6c757d" : "#dc3545",
-                      }}
+                    />
+                  </td>
+                  <td>
+                    <strong>{course.course_code}</strong>
+                  </td>
+                  <td>{course.course_name}</td>
+                  <td>{course.program || "N/A"}</td>
+                  <td>{course.department_code || "N/A"}</td>
+                  <td>
+                    <span className="status-badge completed">
+                      {studentCount} students
+                    </span>
+                  </td>
+                  <td>
+                    <button
+                      className="action-btn view small"
+                      onClick={() => fetchStudentsForCourseReversal(course.id)}
                     >
-                      {reversalInProgress
-                        ? "Processing Reversal..."
-                        : `↩️ Reverse ${selectedCoursesForReversal.length} Course(s) to "Enrolled"`}
+                      👥 Select Students
                     </button>
-                    <p
-                      style={{
-                        marginTop: "10px",
-                        fontSize: "12px",
-                        color: "#666",
-                      }}
-                    >
-                      This will change course status from "completed" to
-                      "enrolled" for all students.
-                    </p>
-                  </div>
-                </>
-              ) : (
-                <div className="empty-state">
-                  <div
-                    style={{
-                      fontSize: "48px",
-                      marginBottom: "20px",
-                      opacity: 0.5,
-                    }}
-                  >
-                    ✅
-                  </div>
-                  <h4>No Completed Courses Found</h4>
-                  <p
-                    className="small-text"
-                    style={{ maxWidth: "500px", margin: "0 auto" }}
-                  >
-                    No courses have been marked as completed for the selected
-                    filters.
-                    <br />
-                    Adjust the filters or use "Mark as Completed" mode instead.
-                  </p>
-                </div>
-              )
-            ) : /* MARKING MODE */
-            coursesForCompletion.length > 0 ? (
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ textAlign: "center", marginTop: "25px" }}>
+        <button
+          className="confirm-button large"
+          onClick={handleReverseCourseCompletion}
+          disabled={
+            reversalInProgress ||
+            selectedCoursesForReversal.length === 0
+          }
+          style={{
+            background: reversalInProgress ? "#6c757d" : "#dc3545",
+            borderColor: reversalInProgress ? "#6c757d" : "#dc3545",
+          }}
+        >
+          {reversalInProgress
+            ? "Processing Reversal..."
+            : `↩️ Reverse ${selectedCoursesForReversal.length} Course(s) to "Enrolled"`}
+        </button>
+        <p
+          style={{
+            marginTop: "10px",
+            fontSize: "12px",
+            color: "#666",
+          }}
+        >
+          This will change course status from "completed" to "enrolled" for 
+          <strong> ALL students</strong> in the selected courses.
+          <br />
+          Click "Select Students" to choose specific students instead.
+        </p>
+      </div>
+    </>
+  ) : (
+    <div className="empty-state">
+      <div
+        style={{
+          fontSize: "48px",
+          marginBottom: "20px",
+          opacity: 0.5,
+        }}
+      >
+        ✅
+      </div>
+      <h4>No Completed Courses Found</h4>
+      <p
+        className="small-text"
+        style={{ maxWidth: "500px", margin: "0 auto" }}
+      >
+        No courses have been marked as completed for the selected filters.
+        <br />
+        Adjust the filters or use "Mark as Completed" mode instead.
+      </p>
+    </div>
+  )
+) : 
+
+  /* MARKING MODE - KEEP EXISTING CODE UNCHANGED */
+  coursesForCompletion.length > 0 ? (
+
               <>
                 <div
                   style={{
@@ -10388,40 +11993,66 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
                   </label>
                 </div>
                 <div className="table-container">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Select</th>
-                        <th>Course Code</th>
-                        <th>Course Name</th>
-                        <th>Program</th>
-                        <th>Department</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {coursesForCompletion.map((course) => (
-                        <tr key={course.id}>
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={selectedCoursesForCompletion.includes(
-                                course.id,
-                              )}
-                              onChange={() =>
-                                toggleCourseCompletionSelection(course.id)
-                              }
-                            />
-                          </td>
-                          <td>
-                            <strong>{course.course_code}</strong>
-                          </td>
-                          <td>{course.course_name}</td>
-                          <td>{course.program || "N/A"}</td>
-                          <td>{course.department_code || "N/A"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+               <table className="data-table">
+  <thead>
+    <tr>
+      <th>Select</th>
+      <th>Course Code</th>
+      <th>Course Name</th>
+      <th>Program</th>
+      <th>Department</th>
+      <th>Enrolled Students</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {coursesForCompletion.map((course) => {
+      const enrolledCount = enrolledStudentCounts[course.id] || 0;
+      return (
+        <tr key={course.id}>
+          <td>
+            <input
+              type="checkbox"
+              checked={selectedCoursesForCompletion.includes(course.id)}
+              onChange={() => toggleCourseCompletionSelection(course.id)}
+            />
+          </td>
+          <td>
+            <strong>{course.course_code}</strong>
+          </td>
+          <td>{course.course_name}</td>
+          <td>{course.program || "N/A"}</td>
+          <td>{course.department_code || "N/A"}</td>
+          <td>
+            <span
+              className="status-badge"
+              style={{
+                background: enrolledCount > 0 ? "#ff9800" : "#6c757d",
+                color: "white",
+              }}
+            >
+              {enrolledCount} enrolled
+            </span>
+          </td>
+          <td>
+            <button
+              className="action-btn view small"
+              onClick={() => fetchStudentsForCourseCompletion(course.id)}
+              disabled={enrolledCount === 0}
+              title={
+                enrolledCount === 0
+                  ? "No enrolled students"
+                  : "Select specific students to complete"
+              }
+            >
+              👥 Select Students
+            </button>
+          </td>
+        </tr>
+      );
+    })}
+  </tbody>
+</table>
                 </div>
                 <div style={{ textAlign: "center", marginTop: "25px" }}>
                   <button
@@ -10784,7 +12415,7 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
                     <p>
                       <strong>Drop files or click to browse</strong>
                     </p>
-                    <p className="small-text">PDF, DOC, PPT, MP4, ZIP, etc.</p>
+                    <p className="small-text">MP4</p>
                   </div>
                   {uploadingTutorial && (
                     <div className="upload-progress">
@@ -14496,7 +16127,343 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
       </div>
     </div>
   </div>
+      )}
+      {/* Toast Notification */}
+{toast.show && (
+  <div className={`toast-notification ${toast.type}`} style={{
+    position: 'fixed',
+    bottom: '30px',
+    right: '30px',
+    padding: '16px 24px',
+    borderRadius: '12px',
+    backgroundColor: toast.type === 'success' ? '#28a745' : 
+                    toast.type === 'error' ? '#dc3545' : '#17a2b8',
+    color: 'white',
+    boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+    zIndex: 9999,
+    maxWidth: '450px',
+    animation: 'slideIn 0.5s ease',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    fontSize: '15px',
+    fontWeight: '500',
+  }}>
+    <span style={{ fontSize: '24px' }}>
+      {toast.type === 'success' ? '✅' : toast.type === 'error' ? '❌' : 'ℹ️'}
+    </span>
+    <span style={{ flex: 1 }}>{toast.message}</span>
+    <button
+      onClick={hideToast}
+      style={{
+        background: 'none',
+        border: 'none',
+        color: 'white',
+        fontSize: '20px',
+        cursor: 'pointer',
+        marginLeft: '8px',
+        opacity: 0.7,
+        padding: '0 4px'
+      }}
+    >
+      ✕
+    </button>
+  </div>
+      )}
+      {/* ===== NEW: Student Selection Modal for Reversal ===== */}
+{showStudentSelectionModal && studentsInCompletedCourses.length > 0 && (
+  <div className="modal-overlay" onClick={() => {
+    if (!reversalInProgress) {
+      setShowStudentSelectionModal(false);
+      setSelectedStudentsForReversal([]);
+      setSelectedCourseForStudentView(null);
+    }
+  }}>
+    <div className="modal large-modal" onClick={(e) => e.stopPropagation()}>
+      <div style={{ 
+        display: "flex", 
+        justifyContent: "space-between", 
+        alignItems: "center",
+        marginBottom: "20px"
+      }}>
+        <h3 style={{ margin: 0 }}>
+          👥 Select Students to Reverse
+          <span style={{ fontSize: "14px", fontWeight: "normal", color: "#666", marginLeft: "10px" }}>
+            Course: {completedCourses.find(c => c.id === selectedCourseForStudentView)?.course_code || "N/A"}
+          </span>
+        </h3>
+        <button
+          className="cancel-button"
+          onClick={() => {
+            if (!reversalInProgress) {
+              setShowStudentSelectionModal(false);
+              setSelectedStudentsForReversal([]);
+              setSelectedCourseForStudentView(null);
+            }
+          }}
+          style={{ padding: "8px 16px" }}
+        >
+          ✕ Close
+        </button>
+      </div>
+
+      <div style={{ marginBottom: "15px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <p style={{ margin: 0, color: "#666" }}>
+          <strong>{studentsInCompletedCourses.length}</strong> students have completed this course.
+          Select which ones to revert to "enrolled" status.
+        </p>
+        <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={selectedStudentsForReversal.length === studentsInCompletedCourses.length && studentsInCompletedCourses.length > 0}
+            onChange={selectAllStudentsForReversal}
+          />
+          Select All ({selectedStudentsForReversal.length} selected)
+        </label>
+      </div>
+
+      <div className="table-container">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th style={{ width: "50px" }}>Select</th>
+              <th>Student ID</th>
+              <th>Full Name</th>
+              <th>Email</th>
+              <th>Program</th>
+              <th>Department</th>
+            </tr>
+          </thead>
+          <tbody>
+            {studentsInCompletedCourses.map((record) => (
+              <tr key={record.id}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={selectedStudentsForReversal.includes(record.id)}
+                    onChange={() => toggleStudentReversalSelection(record.id)}
+                  />
+                </td>
+                <td>
+                  <strong>{record.students?.student_id || "N/A"}</strong>
+                </td>
+                <td>{record.students?.full_name || "Unknown"}</td>
+                <td>{record.students?.email || "N/A"}</td>
+                <td>{record.students?.program || "N/A"}</td>
+                <td>
+                  <span className="dept-badge">
+                    {record.students?.department_code || "N/A"}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ 
+        marginTop: "20px", 
+        display: "flex", 
+        justifyContent: "flex-end", 
+        gap: "12px",
+        borderTop: "1px solid #e9ecef",
+        paddingTop: "20px"
+      }}>
+        <button
+          className="cancel-button"
+          onClick={() => {
+            if (!reversalInProgress) {
+              setShowStudentSelectionModal(false);
+              setSelectedStudentsForReversal([]);
+              setSelectedCourseForStudentView(null);
+            }
+          }}
+        >
+          Cancel
+        </button>
+        <button
+          className="confirm-button"
+          onClick={handleReverseStudentCompletion}
+          disabled={reversalInProgress || selectedStudentsForReversal.length === 0}
+          style={{
+            background: reversalInProgress ? "#6c757d" : "#dc3545",
+            borderColor: reversalInProgress ? "#6c757d" : "#dc3545",
+          }}
+        >
+          {reversalInProgress 
+            ? "Processing..." 
+            : `↩️ Reverse ${selectedStudentsForReversal.length} Student(s)`}
+        </button>
+      </div>
+
+      <p style={{ marginTop: "12px", fontSize: "12px", color: "#666", textAlign: "center" }}>
+        This will only affect the selected students. Other students will remain "completed".
+      </p>
+    </div>
+  </div>
+      )}
+      {/* ===== NEW: Student Selection Modal for Individual Completion ===== */}
+{showStudentCompletionModal && studentsInEnrolledCourses.length > 0 && (
+  <div
+    className="modal-overlay"
+    onClick={() => {
+      if (!markingStudentsInProgress) {
+        setShowStudentCompletionModal(false);
+        setSelectedStudentsForCompletion([]);
+        setSelectedCourseForStudentCompletion(null);
+      }
+    }}
+  >
+    <div className="modal large-modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: "20px",
+        }}
+      >
+        <h3 style={{ margin: 0 }}>
+          ✅ Select Students to Mark as Completed
+          <span
+            style={{
+              fontSize: "14px",
+              fontWeight: "normal",
+              color: "#666",
+              marginLeft: "10px",
+            }}
+          >
+            Course:{" "}
+            {coursesForCompletion.find(
+              (c) => c.id === selectedCourseForStudentCompletion
+            )?.course_code || "N/A"}
+          </span>
+        </h3>
+        <button
+          className="cancel-button"
+          onClick={() => {
+            if (!markingStudentsInProgress) {
+              setShowStudentCompletionModal(false);
+              setSelectedStudentsForCompletion([]);
+              setSelectedCourseForStudentCompletion(null);
+            }
+          }}
+          style={{ padding: "8px 16px" }}
+        >
+          ✕ Close
+        </button>
+      </div>
+
+      <div
+        style={{
+          marginBottom: "15px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
+        <p style={{ margin: 0, color: "#666" }}>
+          <strong>{studentsInEnrolledCourses.length}</strong> student(s) are currently{" "}
+          <strong>enrolled</strong> in this course (including previously reversed students).
+          Select which ones to mark as completed.
+        </p>
+        <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={
+              selectedStudentsForCompletion.length === studentsInEnrolledCourses.length &&
+              studentsInEnrolledCourses.length > 0
+            }
+            onChange={selectAllStudentsForCompletion}
+          />
+          Select All ({selectedStudentsForCompletion.length} selected)
+        </label>
+      </div>
+
+      <div className="table-container">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th style={{ width: "50px" }}>Select</th>
+              <th>Student ID</th>
+              <th>Full Name</th>
+              <th>Email</th>
+              <th>Program</th>
+              <th>Department</th>
+            </tr>
+          </thead>
+          <tbody>
+            {studentsInEnrolledCourses.map((record) => (
+              <tr key={record.id}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={selectedStudentsForCompletion.includes(record.id)}
+                    onChange={() => toggleStudentCompletionSelection(record.id)}
+                  />
+                </td>
+                <td>
+                  <strong>{record.students?.student_id || "N/A"}</strong>
+                </td>
+                <td>{record.students?.full_name || "Unknown"}</td>
+                <td>{record.students?.email || "N/A"}</td>
+                <td>{record.students?.program || "N/A"}</td>
+                <td>
+                  <span className="dept-badge">
+                    {record.students?.department_code || "N/A"}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div
+        style={{
+          marginTop: "20px",
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: "12px",
+          borderTop: "1px solid #e9ecef",
+          paddingTop: "20px",
+        }}
+      >
+        <button
+          className="cancel-button"
+          onClick={() => {
+            if (!markingStudentsInProgress) {
+              setShowStudentCompletionModal(false);
+              setSelectedStudentsForCompletion([]);
+              setSelectedCourseForStudentCompletion(null);
+            }
+          }}
+        >
+          Cancel
+        </button>
+        <button
+          className="confirm-button"
+          onClick={handleMarkStudentCompletion}
+          disabled={markingStudentsInProgress || selectedStudentsForCompletion.length === 0}
+          style={{
+            background: markingStudentsInProgress ? "#6c757d" : "#28a745",
+            borderColor: markingStudentsInProgress ? "#6c757d" : "#28a745",
+          }}
+        >
+          {markingStudentsInProgress
+            ? "Processing..."
+            : `✅ Mark ${selectedStudentsForCompletion.length} Student(s) as Completed`}
+        </button>
+      </div>
+
+      <p style={{ marginTop: "12px", fontSize: "12px", color: "#666", textAlign: "center" }}>
+        This only affects the selected students. Other students remain unchanged.
+        Perfect for re-completing a student after a reversal.
+      </p>
+    </div>
+  </div>
 )}
+
     </div>
   );
 };;;
