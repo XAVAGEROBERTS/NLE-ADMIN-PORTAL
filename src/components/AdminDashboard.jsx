@@ -1,63 +1,64 @@
-// AdminDashboard.jsx - COMPLETE WORKING VERSION WITH FILE DOWNLOAD
-import React, { useState, useEffect, useRef } from 'react';
+// AdminDashboard.jsx - COMPLETE WORKING VERSION WITH FULL CHAT & DEBUG LOGGING
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext';
 import { supabase } from '../services/supabase';
 import DepartmentAssignmentModal from './DepartmentAssignmentModal';
 import { useLecturerDepartments } from '../hooks/useLecturerDepartments';
 import './AdminDashboardStyles.css';
-import FinanceDashboard from './FinanceDashboard'; // adjust path as needed
+import FinanceDashboard from './FinanceDashboard';
 import StudentProfilePictureModal from "./StudentProfilePictureModal";
+import AttendanceManager from './AttendanceManager';
+import FacultyManager from './FacultyManager';
+import DepartmentManager from './DepartmentManager';
+import LecturerDashboard from './LecturerDashboard';
 
+// ============================================
+// COURSE ASSIGNMENT MODAL (Admin only)
+// ============================================
 const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
   const [availableCourses, setAvailableCourses] = useState([]);
   const [assignedCourses, setAssignedCourses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedCourse, setSelectedCourse] = useState('');
-  const [selectedForUnassign, setSelectedForUnassign] = useState([]); // NEW: for bulk
+  const [selectedForUnassign, setSelectedForUnassign] = useState([]);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
         setLoading(true);
 
-        const { data: depts } = await supabase
-          .from('lecturer_departments')
-          .select('department_code')
-          .eq('lecturer_id', lecturer.id);
-
-        const deptCodes = depts?.map(d => d.department_code) || [];
-
-        let query = supabase
+        const { data, error } = await supabase
           .from('courses')
-          .select('id, course_code, course_name, lecturer_id, department_code')
-          .eq('is_active', true)
-          .order('course_code');
+          .select('id, course_code, course_name, lecturer_id, department_code, is_active')
+          .limit(50);
 
-        if (deptCodes.length > 0) {
-          query = query.in('department_code', deptCodes);
-        }
-
-        const { data: courses, error } = await query;
         if (error) throw error;
 
-        const assigned = courses.filter(c => c.lecturer_id === lecturer.id);
-        const available = courses.filter(c => c.lecturer_id !== lecturer.id);
+        if (!data || data.length === 0) {
+          setAssignedCourses([]);
+          setAvailableCourses([]);
+          return;
+        }
+
+        const assigned = data.filter(c => c.lecturer_id === lecturer.id);
+        const available = data.filter(c => c.lecturer_id !== lecturer.id);
 
         setAssignedCourses(assigned);
         setAvailableCourses(available);
-        setSelectedForUnassign([]); // reset selection
-
+        setSelectedForUnassign([]);
       } catch (err) {
-        console.error('Error:', err);
-        alert('Failed to load courses');
+        console.error("Error loading courses:", err);
+        alert("Error loading courses: " + err.message);
       } finally {
         setLoading(false);
       }
     };
 
-    fetchData();
-  }, [lecturer.id]);
+    if (lecturer?.id) {
+      fetchData();
+    }
+  }, [lecturer?.id]);
 
   const handleAssignCourse = async () => {
     if (!selectedCourse) return alert('Select a course');
@@ -72,12 +73,10 @@ const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
 
       alert('Course assigned successfully!');
 
-      // Move from available to assigned
       const course = availableCourses.find(c => c.id === selectedCourse);
       setAssignedCourses(prev => [...prev, course]);
       setAvailableCourses(prev => prev.filter(c => c.id !== selectedCourse));
       setSelectedCourse('');
-
       onAssign();
     } catch (err) {
       alert('Error: ' + err.message);
@@ -115,12 +114,10 @@ const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
 
       alert(`${selectedForUnassign.length} course(s) unassigned successfully!`);
 
-      // Update UI
       setAssignedCourses(prev => prev.filter(c => !selectedForUnassign.includes(c.id)));
       const unassignedCourses = assignedCourses.filter(c => selectedForUnassign.includes(c.id));
       setAvailableCourses(prev => [...prev, ...unassignedCourses.map(c => ({ ...c, lecturer_id: null }))]);
       setSelectedForUnassign([]);
-
       onAssign();
     } catch (err) {
       alert('Error: ' + err.message);
@@ -136,7 +133,6 @@ const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
           <p>Loading courses...</p>
         ) : (
           <>
-            {/* Assign new */}
             <div className="form-group">
               <h4>Assign New Course</h4>
               <select
@@ -161,7 +157,6 @@ const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
               </button>
             </div>
 
-            {/* Assigned courses with bulk unassign */}
             <div style={{ marginTop: '30px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                 <h4>Assigned Courses ({assignedCourses.length})</h4>
@@ -231,7 +226,9 @@ const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
   );
 };
 
-
+// ============================================
+// MAIN ADMIN DASHBOARD
+// ============================================
 const AdminDashboard = () => {
   const navigate = useNavigate();
   const {
@@ -239,2162 +236,64 @@ const AdminDashboard = () => {
     signOut,
     isAdmin,
     isLecturer,
-    isFinance, // ← ADD THIS
+    isFinance,
     loading: authLoading,
   } = useAdminAuth();
 
-  // Department hook
   const {
     departments: allowedDepartments,
     departmentCodes,
-    loading: deptLoading,
+    loading: lecturerDeptLoading,
     hasAccess,
   } = useLecturerDepartments(isLecturer ? profile?.id : null);
 
-  // State management
+  // ==================== STATE MANAGEMENT ====================
   const [activeTab, setActiveTab] = useState("dashboard");
   const [showLogoutModal, setShowLogoutModal] = useState(false);
-  // Update the loading state to include submissions
-  const [loading, setLoading] = useState({
-    dashboard: true,
-    submissions: false, // Add this
-    creatingAssignment: false,
-  });
-  const [enrollStudent, setEnrollStudent] = useState(null);
-  const [showEnrollModal, setShowEnrollModal] = useState(false);
-
-  const [newUser, setNewUser] = useState({
-    full_name: "",
-    email: "",
-    phone: "",
-    role: "student",
-    program_id: "",
-    program: "",
-    department: "",
-    department_code: "",
-    program_code: "", // ← ADD THIS
-    year_of_study: 1,
-    semester: 1,
-    intake: "January",
-    academic_year: "", // ← Now manual input (e.g., 2025/2029)
-    date_of_birth: "", // ← NEW: Date of birth
-    specialization: "",
-    google_meet_link: "",
-    program_duration_years: 4,
-  });
-  const [programs, setPrograms] = useState([]);
-
-  // === NEW: Cohort selection for assignments and lectures ===
-  const [selectedCohort, setSelectedCohort] = useState({
-    academic_year: "",
-    year_of_study: 1,
-    semester: 1,
-  });
-  const [cohortError, setCohortError] = useState("");
-  // NEW: Exam submissions states
-  const [loadingAssignments, setLoadingAssignments] = useState(true);
-  const [attendanceRecords, setAttendanceRecords] = useState([]);
-  const [attendanceError, setAttendanceError] = useState(null);
-  // Add this near other modal states
-  // ===== NEW: Student count cache for completed courses =====
-const [studentCounts, setStudentCounts] = useState({});
-// ===== END NEW STATE =====
-
-  const [selectedBucketFiles, setSelectedBucketFiles] = useState([]); // fullPath strings
-const [bulkDeleting, setBulkDeleting] = useState(false);
-
-  const notesUploadXhrRef = useRef(null); // active XHR so Cancel can abort it
-const notesUploadCancelledRef = useRef(false);
-
-  // Toast notification states
-const [toast, setToast] = useState({
-  show: false,
-  message: '',
-  type: 'success' // 'success', 'error', 'info'
-});
-  
-  
-  // Add this near other modal states
-const [selectedTextAnswer, setSelectedTextAnswer] = useState(null);
-  const [showTextAnswersModal, setShowTextAnswersModal] = useState(false);
-  
-  // Notes Upload States
-const [showNotesUpload, setShowNotesUpload] = useState(false);
-const [uploadingNotes, setUploadingNotes] = useState(false);
-const [notesUploadProgress, setNotesUploadProgress] = useState(0);
-const [notesFiles, setNotesFiles] = useState([]);
-const [noteTitle, setNoteTitle] = useState('');
-const [noteCategory, setNoteCategory] = useState('');
-const [noteDescription, setNoteDescription] = useState('');
-const [noteCourseId, setNoteCourseId] = useState('');
-const [noteCourses, setNoteCourses] = useState([]);
-
-  const notesFileInputRef = useRef(null);
-  const [noteMaterialType, setNoteMaterialType] = useState('notes'); // 'notes' or 'video'
-  
-  // === ADD THESE STATES NEAR OTHER STATES (around line 150) ===
-  const [activeBucketTab, setActiveBucketTab] = useState("lecturerbucket"); // lecturerbucket | Tutorials | Lecturer exam
-const [bucketFiles, setBucketFiles] = useState({
-  lecturerbucket: [],
-  Tutorials: [],
-  "Lecturer exam": [],
-  Notes: [],
-});
-  const [bucketLoading, setBucketLoading] = useState(false);
-  const [deletingFile, setDeletingFile] = useState(null);
-  // ADD THESE STATES (around line 150 with other bucket states)
-  const [adminBuckets, setAdminBuckets] = useState([
-    "assignments", // Student submissions
-    "Student exam",
-    "Lecturer exam",
-    "Tutorials",
-    "lecturerbucket",
-  ]);
-
-  const [adminBucketFiles, setAdminBucketFiles] = useState({
-    assignments: [],
-    "Student exam": [],
-    "Lecturer exam": [],
-    Tutorials: [],
-    lecturerbucket: [],
-  });
-  const [activeAdminBucket, setActiveAdminBucket] = useState("assignments");
-  const [adminBucketLoading, setAdminBucketLoading] = useState(false);
-
-  // === FINANCE TAB STATES (for Admin viewing Finance like FinanceDashboard) ===
-  const [financeStudents, setFinanceStudents] = useState([]);
-  const [selectedFinanceStudent, setSelectedFinanceStudent] = useState(null);
-  const [financeRecords, setFinanceRecords] = useState([]);
-  const [financeSearch, setFinanceSearch] = useState("");
-  const [financeLoading, setFinanceLoading] = useState(false);
-  const [totalBilled, setTotalBilled] = useState(0);
-  const [totalPaid, setTotalBilledPaid] = useState(0);
-  const [totalOutstanding, setTotalOutstanding] = useState(0);
-  const [summaryLoading, setSummaryLoading] = useState(true);
-
-  // Bypass tool states
-  const [bypassSearch, setBypassSearch] = useState("");
-  const [bypassStudent, setBypassStudent] = useState(null);
-  const [bypassLoading, setBypassLoading] = useState(false);
-  const [bypassError, setBypassError] = useState("");
-
-  const [myExams, setMyExams] = useState([]); // lecturer's scheduled exams
-  const [examSubmissions, setExamSubmissions] = useState([]); // student submissions
-  const [selectedExamForGrading, setSelectedExamForGrading] = useState(null); // currently viewed exam
-  const [examGradingInProgress, setExamGradingInProgress] = useState(false);
-  const [examGradeForm, setExamGradeForm] = useState({}); // {submissionId: {marks, feedback}}
-  const [selectedExamSubmissions, setSelectedExamSubmissions] = useState([]); // for bulk grading
-  const [showExamSubmissionsModal, setShowExamSubmissionsModal] =
-    useState(false);
-  // NEW: States for exam file upload
-  const [examFiles, setExamFiles] = useState([]); // Selected files
-  const [uploadingExamFiles, setUploadingExamFiles] = useState(false);
-  const [examUploadProgress, setExamUploadProgress] = useState(0);
-  const examFileInputRef = useRef(null);
-
-  const [showAttendanceRecordModal, setShowAttendanceRecordModal] =
-    useState(false);
-  const [editingAttendanceRecord, setEditingAttendanceRecord] = useState(null);
-  const [attendanceForm, setAttendanceForm] = useState({
-    student_id: "",
-    date: new Date().toISOString().split("T")[0],
-    status: "present",
-    notes: "",
-  });
-
-  // === EXAM TARGETING STATES (REQUIRED FOR EXAMS MODAL) ===
-  const [examTargetProgram, setExamTargetProgram] = useState(""); // program_id (REQUIRED)
-  const [examTargetCohort, setExamTargetCohort] = useState({
-    academic_year: "",
-    year_of_study: 1,
-    semester: 1,
-  });
-  const [examCohortError, setExamCohortError] = useState(""); // ← This was missing!
-
-  const [examFilteredCourses, setExamFilteredCourses] = useState([]);
-
-  // Add this near other state declarations
-  const [selectedStudentForPicture, setSelectedStudentForPicture] =
-    useState(null);
-  const [showProfilePictureModal, setShowProfilePictureModal] = useState(false);
-  const [updatingStudentPicture, setUpdatingStudentPicture] = useState(false);
-  // Add these states near your other state declarations (around line 50-100)
-  const [showReversalMode, setShowReversalMode] = useState(false);
-  const [reversalFilters, setReversalFilters] = useState({
-    program_id: "",
-    academic_year: "",
-    year_of_study: 1,
-    semester: 1,
-  });
-  const [completedCourses, setCompletedCourses] = useState([]);
-  const [selectedCoursesForReversal, setSelectedCoursesForReversal] = useState(
-    [],
-  );
-  const [reversalInProgress, setReversalInProgress] = useState(false);
-// ===== NEW: Student-specific reversal states =====
-const [selectedStudentsForReversal, setSelectedStudentsForReversal] = useState([]);
-const [studentsInCompletedCourses, setStudentsInCompletedCourses] = useState([]);
-const [showStudentSelectionModal, setShowStudentSelectionModal] = useState(false);
-const [selectedCourseForStudentView, setSelectedCourseForStudentView] = useState(null);
-// ===== END NEW STATES =====
-  
-  // [students, lecturers, courses, etc...]
+  const [loading, setLoading] = useState({ dashboard: true });
   const [searchTerm, setSearchTerm] = useState("");
-
-  const [showCourseAssignmentModal, setShowCourseAssignmentModal] =
-    useState(false);
-  const [selectedLecturerForCourses, setSelectedLecturerForCourses] =
-    useState(null);
-
-  // === TUTORIALS UPLOAD STATES (FULLY UPDATED) ===
-  const [showTutorialsModal, setShowTutorialsModal] = useState(false);
-  const [tutorialTitle, setTutorialTitle] = useState("");
-  const [tutorialDescription, setTutorialDescription] = useState("");
-  const [tutorialFiles, setTutorialFiles] = useState([]);
-  const [uploadingTutorial, setUploadingTutorial] = useState(false);
-  const [tutorialUploadProgress, setTutorialUploadProgress] = useState(0);
-  const tutorialFileInputRef = useRef(null);
-
-  // NEW: Target program, course, and cohort
-  const [tutorialTargetProgram, setTutorialTargetProgram] = useState(""); // program_id
-  const [tutorialTargetCourse, setTutorialTargetCourse] = useState(""); // course_id
-  const [tutorialTargetCohort, setTutorialTargetCohort] = useState({
-    academic_year: "",
-    year_of_study: 1,
-    semester: 1,
-  });
-  const [tutorialCourses, setTutorialCourses] = useState([]); // courses for selected program
-
-  // New state for course completion
-  const [completionFilters, setCompletionFilters] = useState({
-    program_id: "",
-    academic_year: "",
-    year_of_study: 1,
-    semester: 1,
-  });
-  const [coursesForCompletion, setCoursesForCompletion] = useState([]);
-  const [studentsToComplete, setStudentsToComplete] = useState([]);
-  const [selectedCoursesForCompletion, setSelectedCoursesForCompletion] =
-    useState([]);
-  const [markingInProgress, setMarkingInProgress] = useState(false);
-
-  // === ADD THIS STATE NEAR OTHER STATES (around line 100) ===
-  const [showProgramModal, setShowProgramModal] = useState(false);
-  const [editingProgram, setEditingProgram] = useState(null);
-  const [newProgram, setNewProgram] = useState({
-    name: "",
-    code: "",
-  });
-
-  useEffect(() => {
-  setSelectedBucketFiles([]); // clear selection when changing bucket tab
-}, [activeBucketTab]);
-
-  // Check for expired bypasses every minute
-useEffect(() => {
-  const checkExpiredBypasses = async () => {
-    try {
-      const now = new Date();
-      const expiryTime = new Date(now.getTime() - 24 * 60 * 60 * 1000); // 24 hours ago
-      
-      // Find students with bypass enabled and timestamp older than 24 hours
-      const { data, error } = await supabase
-        .from("students")
-        .select("id, fees_clearance_bypassed, attendance_clearance_bypassed, exam_clearance_bypassed, bypass_timestamp")
-        .lt("bypass_timestamp", expiryTime.toISOString())
-        .or("fees_clearance_bypassed.eq.true,attendance_clearance_bypassed.eq.true,exam_clearance_bypassed.eq.true");
-      
-      if (error) {
-        console.error("Error checking expired bypasses:", error);
-        return;
-      }
-      
-      if (data && data.length > 0) {
-        console.log(`🔄 Found ${data.length} expired bypasses to reset`);
-        
-        for (const student of data) {
-          const updateData = {
-            fees_clearance_bypassed: false,
-            attendance_clearance_bypassed: false,
-            exam_clearance_bypassed: false,
-            bypass_timestamp: null
-          };
-          
-          const { error: updateError } = await supabase
-            .from("students")
-            .update(updateData)
-            .eq("id", student.id);
-            
-          if (updateError) {
-            console.error(`Failed to reset bypass for ${student.id}:`, updateError);
-          } else {
-            console.log(`✅ Reset expired bypass for student ${student.id}`);
-          }
-        }
-      }
-    } catch (err) {
-      console.error("Error in bypass expiry check:", err);
-    }
-  };
-  
-  // Check immediately on mount
-  checkExpiredBypasses();
-  
-  // Check every minute
-  const interval = setInterval(checkExpiredBypasses, 60000);
-  
-  return () => clearInterval(interval);
-}, []);
-
-  // === ADD THIS useEffect to load programs on mount and when tab opens ===
-  useEffect(() => {
-    if (activeTab === "programs" && isAdmin) {
-      fetchPrograms();
-    }
-  }, [activeTab, isAdmin]);
-
-  useEffect(() => {
-    if (activeTab === "all-files" && isAdmin) {
-      fetchAllBucketFiles();
-    }
-  }, [activeTab, isAdmin, activeAdminBucket]);
-
-useEffect(() => {
-  if (activeTab === "notes-upload" && isLecturer && profile?.id) {
-    fetchNoteCourses();
-  }
-}, [activeTab, isLecturer, profile?.id]);
-
-  // === ADD THIS useEffect to load files when tab opens ===
-  useEffect(() => {
-    if (activeTab === "my-files" && isLecturer && profile?.id) {
-      fetchBucketFiles();
-    }
-  }, [activeTab, isLecturer, profile?.id, activeBucketTab]);
-
-  // Load overall finance summary when entering Finance tab
-  useEffect(() => {
-    if (activeTab !== "finance" || !isAdmin) return;
-
-    const loadFinanceSummary = async () => {
-      setSummaryLoading(true);
-      try {
-        const { data, error } = await supabase
-          .from("financial_records")
-          .select("amount, status");
-
-        if (error) throw error;
-
-        const billed = data.reduce((sum, r) => sum + r.amount, 0);
-        const paid = data
-          .filter((r) => r.status === "paid")
-          .reduce((sum, r) => sum + r.amount, 0);
-        const outstanding = billed - paid;
-
-        setTotalBilled(billed);
-        setTotalBilledPaid(paid);
-        setTotalOutstanding(outstanding);
-      } catch (err) {
-        console.error("Error loading finance summary:", err);
-        alert("Failed to load revenue summary");
-      } finally {
-        setSummaryLoading(false);
-      }
-    };
-
-    loadFinanceSummary();
-  }, [activeTab, isAdmin]);
-  // Load finance students when search changes or tab opens
-  useEffect(() => {
-    if (activeTab !== "finance" || !isAdmin) return;
-
-    const loadStudents = async () => {
-      setFinanceLoading(true);
-      let query = supabase
-        .from("students")
-        .select("id, student_id, full_name, email, program, academic_year")
-        .order("full_name", { ascending: true });
-
-      if (financeSearch.trim()) {
-        query = query.or(
-          `full_name.ilike.%${financeSearch}%,student_id.ilike.%${financeSearch}%,email.ilike.%${financeSearch}%`,
-        );
-      }
-
-      const { data, error } = await query;
-      if (error) {
-        console.error("Error loading students:", error);
-        alert("Failed to load students");
-        setFinanceStudents([]);
-      } else {
-        setFinanceStudents(data || []);
-      }
-      setFinanceLoading(false);
-    };
-
-    loadStudents();
-  }, [activeTab, isAdmin, financeSearch]);
-
- const searchStudentForBypass = async () => {
-  if (!bypassSearch.trim()) {
-    setBypassError("Enter a student ID or name");
-    return;
-  }
-
-  setBypassLoading(true);
-  setBypassError("");
-  setBypassStudent(null);
-
-  try {
-    let query = supabase
-      .from("students")
-      .select(
-        "id, student_id, full_name, program, fees_clearance_bypassed, attendance_clearance_bypassed, exam_clearance_bypassed, bypass_timestamp",
-      );
-
-    if (bypassSearch.includes("-")) {
-      query = query.eq("student_id", bypassSearch.trim());
-    } else {
-      query = query.ilike("full_name", `%${bypassSearch.trim()}%`);
-    }
-
-    const { data, error } = await query.limit(1).single();
-
-    if (error || !data) {
-      setBypassError("Student not found");
-    } else {
-      // ⭐ Check if bypass has expired (24 hours)
-      let studentData = data;
-      let needsUpdate = false;
-      const updateData = {};
-      
-      if (data.bypass_timestamp) {
-        const bypassTime = new Date(data.bypass_timestamp);
-        const now = new Date();
-        const hoursDiff = (now - bypassTime) / (1000 * 60 * 60);
-        
-        // If more than 24 hours have passed, disable all bypasses
-        if (hoursDiff >= 24) {
-          console.log(`⏰ Bypass expired for ${data.full_name} (${hoursDiff.toFixed(1)} hours ago)`);
-          
-          // Check which bypasses are enabled
-          if (data.fees_clearance_bypassed) {
-            updateData.fees_clearance_bypassed = false;
-            studentData.fees_clearance_bypassed = false;
-            needsUpdate = true;
-          }
-          if (data.attendance_clearance_bypassed) {
-            updateData.attendance_clearance_bypassed = false;
-            studentData.attendance_clearance_bypassed = false;
-            needsUpdate = true;
-          }
-          if (data.exam_clearance_bypassed) {
-            updateData.exam_clearance_bypassed = false;
-            studentData.exam_clearance_bypassed = false;
-            needsUpdate = true;
-          }
-          
-          if (needsUpdate) {
-            updateData.bypass_timestamp = null;
-            studentData.bypass_timestamp = null;
-            
-            // Update the database
-            const { error: updateError } = await supabase
-              .from("students")
-              .update(updateData)
-              .eq("id", data.id);
-              
-            if (updateError) {
-              console.error("Failed to reset expired bypass:", updateError);
-            } else {
-              console.log("✅ Expired bypass reset successfully");
-            }
-          }
-        } else {
-          // Show remaining time
-          const remainingHours = 24 - hoursDiff;
-          const remainingMinutes = (remainingHours % 1) * 60;
-          studentData._bypassRemaining = `${Math.floor(remainingHours)}h ${Math.floor(remainingMinutes)}m`;
-        }
-      }
-      
-      setBypassStudent(studentData);
-    }
-  } catch (err) {
-    setBypassError("Search failed");
-  } finally {
-    setBypassLoading(false);
-  }
-};
-
-const handleToggleBypass = async (field) => {
-  if (!bypassStudent) return;
-
-  setBypassLoading(true);
-
-  const newValue = !bypassStudent[field];
-  const now = new Date().toISOString();
-
-  // Build update object
-  const updateData = { [field]: newValue };
-  
-  // If enabling any bypass, set timestamp
-  if (newValue === true) {
-    updateData.bypass_timestamp = now;
-  } else {
-    // Check if ALL bypasses are now disabled
-    let allDisabled = true;
-    if (field === 'fees_clearance_bypassed') {
-      allDisabled = !newValue && !bypassStudent.attendance_clearance_bypassed && !bypassStudent.exam_clearance_bypassed;
-    } else if (field === 'attendance_clearance_bypassed') {
-      allDisabled = !newValue && !bypassStudent.fees_clearance_bypassed && !bypassStudent.exam_clearance_bypassed;
-    } else if (field === 'exam_clearance_bypassed') {
-      allDisabled = !newValue && !bypassStudent.fees_clearance_bypassed && !bypassStudent.attendance_clearance_bypassed;
-    }
-    
-    if (allDisabled) {
-      updateData.bypass_timestamp = null;
-    }
-  }
-
-  const { error } = await supabase
-    .from("students")
-    .update(updateData)
-    .eq("id", bypassStudent.id);
-
-  if (error) {
-    alert("Failed to update: " + error.message);
-  } else {
-    const fieldName = field.replace(/_/g, " ").replace("bypassed", "").trim();
-    const expiryMessage = newValue 
-      ? "This will auto-reset after 24 hours." 
-      : "Bypass disabled.";
-    alert(
-      `${fieldName} ${newValue ? "enabled ✅" : "disabled ❌"} successfully!\n${expiryMessage}`,
-    );
-    // Refresh student data to get updated timestamp
-    await searchStudentForBypass();
-  }
-
-  setBypassLoading(false);
-};
-
-  const loadStudentFinance = async (studentId) => {
-    setFinanceLoading(true);
-    const { data, error } = await supabase
-      .from("financial_records")
-      .select("*")
-      .eq("student_id", studentId)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      console.error("Error:", error);
-      alert("Failed to load records");
-      setFinanceRecords([]);
-    } else {
-      setFinanceRecords(data || []);
-    }
-    setFinanceLoading(false);
-  };
-
-  const handleViewStudentFinance = (student) => {
-    setSelectedFinanceStudent(student);
-    loadStudentFinance(student.id);
-  };
-
-  const handleUpdateFinanceStatus = async (recordId, newStatus) => {
-    if (!window.confirm(`Mark as ${newStatus}?`)) return;
-
-    const updates = { status: newStatus };
-    if (newStatus === "paid") {
-      updates.payment_date = new Date().toISOString().split("T")[0];
-    }
-
-    const { error } = await supabase
-      .from("financial_records")
-      .update(updates)
-      .eq("id", recordId);
-
-    if (error) {
-      alert("Error: " + error.message);
-    } else {
-      alert("Updated successfully!");
-      if (selectedFinanceStudent) {
-        loadStudentFinance(selectedFinanceStudent.id);
-      }
-    }
-  };
-
-  // === NEW: Delete file from bucket ===
-  const handleDeleteFile = async (bucket, filePath) => {
-    if (
-      !window.confirm(
-        `Delete "${filePath.split("/").pop()}" permanently?\nThis cannot be undone.`,
-      )
-    )
-      return;
-
-    setDeletingFile(`${bucket}-${filePath}`);
-    try {
-      const { error } = await supabase.storage.from(bucket).remove([filePath]);
-
-      if (error) throw error;
-
-      alert("File deleted successfully!");
-      fetchBucketFiles(); // Refresh
-    } catch (err) {
-      console.error("Delete error:", err);
-      alert("Failed to delete file: " + err.message);
-    } finally {
-      setDeletingFile(null);
-    }
-  };
-
-  const fetchBucketFiles = async () => {
-    if (!profile?.id) {
-      console.warn("No profile.id - skipping file fetch");
-      return;
-    }
-
-    setBucketLoading(true);
-    try {
-      const results = {
-        lecturerbucket: [],
-        Tutorials: [],
-        "Lecturer exam": [],
-        Notes: [],
-      };
-
-      console.log("Starting private file fetch for lecturer:", profile.id);
-
-      // ================================================
-      // 1. Assignment Files - Private per lecturer
-      // ================================================
-      {
-        const prefix = `assignments/${profile.id}`;
-        console.log("Fetching Assignment Files from:", prefix);
-
-        const { data, error } = await supabase.storage
-          .from("lecturerbucket")
-          .list(prefix, { limit: 1000 });
-
-        if (error) {
-          console.error("Assignment Files error:", error);
-        } else if (data) {
-          results.lecturerbucket = data
-            .filter((f) => f.name && f.name !== ".emptyFolderPlaceholder")
-            .map((f) => {
-              const fullPath = `${prefix}/${f.name}`;
-              const { data: urlData } = supabase.storage
-                .from("lecturerbucket")
-                .getPublicUrl(fullPath);
-              return {
-                ...f,
-                fullPath,
-                publicUrl: urlData.publicUrl,
-                size: f.metadata?.size || 0,
-                bucket: "lecturerbucket",
-              };
-            });
-          console.log(
-            `Found ${results.lecturerbucket.length} private assignment files`,
-          );
-        }
-      }
-
-      // ================================================
-      // 2. Tutorials - Private per lecturer + Recursive
-      // ================================================
-      {
-        const allFiles = [];
-        const lecturerPrefix = `tutorials/${profile.id}`;
-        console.log("Fetching Tutorials from private folder:", lecturerPrefix);
-
-        const recurse = async (path = lecturerPrefix) => {
-          const { data: items, error } = await supabase.storage
-            .from("Tutorials")
-            .list(path, { limit: 1000 });
-
-          if (error) {
-            console.error(`Tutorials list error at "${path}":`, error);
-            return;
-          }
-
-          if (!items || items.length === 0) return;
-
-          for (const item of items) {
-            const fullPath =
-              path === lecturerPrefix
-                ? `${path}/${item.name}`
-                : `${path}/${item.name}`;
-
-            if (item.name && item.name !== ".emptyFolderPlaceholder") {
-              if (item.id) {
-                // It's a real file
-                const { data: urlData } = supabase.storage
-                  .from("Tutorials")
-                  .getPublicUrl(fullPath);
-                allFiles.push({
-                  ...item,
-                  fullPath,
-                  publicUrl: urlData.publicUrl,
-                  size: item.metadata?.size || 0,
-                  bucket: "Tutorials",
-                });
-              } else {
-                // It's a folder → go deeper
-                await recurse(fullPath);
-              }
-            }
-          }
-        };
-
-        await recurse();
-        results.Tutorials = allFiles;
-        console.log(`Found ${results.Tutorials.length} private tutorial files`);
-      }
-
-      // ================================================
-      // 3. Exam Papers - Already private (unchanged)
-      // ================================================
-      {
-        const prefix = `exams/${profile.id}`;
-        console.log("Fetching Exam Papers from:", prefix);
-
-        const { data, error } = await supabase.storage
-          .from("Lecturer exam")
-          .list(prefix, { limit: 1000 });
-
-        if (error) {
-          console.error("Exam Papers error:", error);
-        } else if (data) {
-          results["Lecturer exam"] = data
-            .filter((f) => f.name && f.name !== ".emptyFolderPlaceholder")
-            .map((f) => {
-              const fullPath = `${prefix}/${f.name}`;
-              const { data: urlData } = supabase.storage
-                .from("Lecturer exam")
-                .getPublicUrl(fullPath);
-              return {
-                ...f,
-                fullPath,
-                publicUrl: urlData.publicUrl,
-                size: f.metadata?.size || 0,
-                bucket: "Lecturer exam",
-              };
-            });
-          console.log(
-            `Found ${results["Lecturer exam"].length} private exam papers`,
-          );
-        }
-      }
-
-      // ================================================
-// 4. Notes - Private per lecturer + Recursive
-// ================================================
-{
-  const allFiles = [];
-  const lecturerPrefix = `notes/${profile.id}`;
-  console.log("Fetching Notes from private folder:", lecturerPrefix);
-
-  const recurse = async (path = lecturerPrefix) => {
-    const { data: items, error } = await supabase.storage
-      .from("Notes")
-      .list(path, { limit: 1000 });
-
-    if (error) {
-      console.error(`Notes list error at "${path}":`, error);
-      return;
-    }
-
-    if (!items || items.length === 0) return;
-
-    for (const item of items) {
-      if (!item.name || item.name === ".emptyFolderPlaceholder") continue;
-
-      const fullPath = path ? `${path}/${item.name}` : item.name;
-
-      // Folder: no id / no metadata size often — recurse if it looks like a folder
-      const isFolder = item.id === null || (item.metadata === null && !item.name.includes("."));
-
-      if (item.metadata || item.id) {
-        // File
-        const { data: urlData } = supabase.storage
-          .from("Notes")
-          .getPublicUrl(fullPath);
-        allFiles.push({
-          ...item,
-          fullPath,
-          publicUrl: urlData.publicUrl,
-          size: item.metadata?.size || 0,
-          bucket: "Notes",
-        });
-      } else {
-        // Folder → go deeper
-        await recurse(fullPath);
-      }
-    }
-  };
-
-  await recurse();
-  results.Notes = allFiles;
-  console.log(`Found ${results.Notes.length} private note files`);
-}
-
-
-      // Update state
-      setBucketFiles(results);
-
-   console.log("✅ SUCCESS - PRIVATE FILE COUNTS:", {
-  "Assignment Files": results.lecturerbucket.length,
-  Tutorials: results.Tutorials.length,
-  "Exam Papers": results["Lecturer exam"].length,
-  Notes: results.Notes.length,
-});
-    } catch (err) {
-      console.error("Unexpected error in fetchBucketFiles:", err);
-    } finally {
-      setBucketLoading(false);
-    }
-  };
-
-  const fetchAllBucketFiles = async () => {
-    if (!isAdmin) return;
-
-    setAdminBucketLoading(true);
-    try {
-      const results = {};
-
-      for (const bucket of adminBuckets) {
-        console.log(`🔍 Admin fetching ALL files from bucket: ${bucket}`);
-
-        const allFiles = [];
-        const recurse = async (path = "") => {
-          const { data: items, error } = await supabase.storage
-            .from(bucket)
-            .list(path, { limit: 1000 });
-
-          if (error) {
-            console.error(`Error listing ${bucket}/${path}:`, error);
-            return;
-          }
-
-          if (!items || items.length === 0) return;
-
-          for (const item of items) {
-            const fullPath = path ? `${path}/${item.name}` : item.name;
-
-            if (item.name && item.name !== ".emptyFolderPlaceholder") {
-              if (item.id) {
-                // Real file
-                const { data: urlData } = supabase.storage
-                  .from(bucket)
-                  .getPublicUrl(fullPath);
-
-                allFiles.push({
-                  name: item.name,
-                  fullPath,
-                  publicUrl: urlData.publicUrl,
-                  size: item.metadata?.size || 0,
-                  created_at: item.created_at,
-                  bucket,
-                });
-              } else {
-                // Folder
-                await recurse(fullPath);
-              }
-            }
-          }
-        };
-
-        await recurse();
-        results[bucket] = allFiles;
-        console.log(`Found ${allFiles.length} files in ${bucket}`);
-      }
-
-      setAdminBucketFiles(results);
-    } catch (err) {
-      console.error("Admin fetch error:", err);
-      alert("Failed to load files: " + err.message);
-    } finally {
-      setAdminBucketLoading(false);
-    }
-  };
-
-
-  // Open text answers modal
-const openTextAnswersModal = () => {
-  console.log("🔍 Opening text answers modal...");
-  console.log("📊 examSubmissions:", examSubmissions);
-  
-  const textSubmissions = examSubmissions.filter(
-    (sub) => sub.answer_text && sub.answer_text.length > 0
-  );
-  
-  console.log("📝 Text submissions found:", textSubmissions.length);
-  
-  if (textSubmissions.length === 0) {
-    alert("No text answers found to view.");
-    return;
-  }
-  
-  setShowTextAnswersModal(true);
-};
-
-  const toggleSelectBucketFile = (fullPath) => {
-  setSelectedBucketFiles((prev) =>
-    prev.includes(fullPath)
-      ? prev.filter((p) => p !== fullPath)
-      : [...prev, fullPath]
-  );
-};
-
-const toggleSelectAllBucketFiles = () => {
-  const files = bucketFiles[activeBucketTab] || [];
-  const allPaths = files.map((f) => f.fullPath);
-  if (
-    selectedBucketFiles.length === allPaths.length &&
-    allPaths.length > 0
-  ) {
-    setSelectedBucketFiles([]);
-  } else {
-    setSelectedBucketFiles(allPaths);
-  }
-};
-
-const handleBulkDeleteFiles = async () => {
-  if (selectedBucketFiles.length === 0) {
-    alert("Select at least one file");
-    return;
-  }
-
-  if (
-    !window.confirm(
-      `Delete ${selectedBucketFiles.length} selected file(s) permanently?\nThis cannot be undone.`
-    )
-  ) {
-    return;
-  }
-
-  setBulkDeleting(true);
-  try {
-    const { error } = await supabase.storage
-      .from(activeBucketTab)
-      .remove(selectedBucketFiles);
-
-    if (error) throw error;
-
-    alert(`✅ Deleted ${selectedBucketFiles.length} file(s)`);
-    setSelectedBucketFiles([]);
-    fetchBucketFiles();
-  } catch (err) {
-    console.error("Bulk delete error:", err);
-    alert("Failed to delete some files: " + err.message);
-    fetchBucketFiles();
-  } finally {
-    setBulkDeleting(false);
-  }
-};
-  // Toast helper functions
-const showToast = (message, type = 'success') => {
-  setToast({ show: true, message, type });
-  // Auto-hide after 4 seconds
-  setTimeout(() => {
-    setToast({ show: false, message: '', type: 'success' });
-  }, 4000);
-};
-
-const hideToast = () => {
-  setToast({ show: false, message: '', type: 'success' });
-};
-
-
-  // === ADD HANDLE SAVE PROGRAM FUNCTION ===
-  const handleSaveProgram = async () => {
-    if (!newProgram.name.trim() || !newProgram.code.trim()) {
-      alert("Both name and code are required");
-      return;
-    }
-
-    try {
-      if (editingProgram) {
-        const { error } = await supabase
-          .from("programs")
-          .update({
-            name: newProgram.name.trim(),
-            code: newProgram.code.trim().toUpperCase(),
-          })
-          .eq("id", editingProgram.id);
-        if (error) throw error;
-        alert("Program updated successfully!");
-      } else {
-        const { error } = await supabase.from("programs").insert([
-          {
-            name: newProgram.name.trim(),
-            code: newProgram.code.trim().toUpperCase(),
-          },
-        ]);
-        if (error) {
-          if (error.code === "23505") {
-            alert("A program with this code already exists!");
-          } else {
-            throw error;
-          }
-          return;
-        }
-        alert("Program added successfully!");
-      }
-
-      setShowProgramModal(false);
-      setEditingProgram(null);
-      setNewProgram({ name: "", code: "" });
-      fetchPrograms(); // Refresh list
-    } catch (err) {
-      alert("Error saving program: " + err.message);
-    }
-  };
-
-  // === ADD HANDLE DELETE PROGRAM ===
-  const handleDeleteProgram = async (programId, programName) => {
-    if (
-      !window.confirm(
-        `Delete program "${programName}"?\n\nThis cannot be undone and may affect students/courses.`,
-      )
-    ) {
-      return;
-    }
-
-    try {
-      const { error } = await supabase
-        .from("programs")
-        .delete()
-        .eq("id", programId);
-      if (error) throw error;
-      alert("Program deleted successfully");
-      fetchPrograms();
-    } catch (err) {
-      alert("Failed to delete program: " + err.message);
-    }
-  };
-
-  const validateCohort = () => {
-    // Adjust field names to match your state
-    if (!selectedCohort?.academic_year?.trim()) {
-      setCohortError("Academic Year required");
-      return false;
-    }
-    if (!selectedCohort?.year_of_study) {
-      setCohortError("Year of Study required");
-      return false;
-    }
-    if (!selectedCohort?.semester) {
-      setCohortError("Semester required");
-      return false;
-    }
-    setCohortError("");
-    return true;
-  };
-
-  // Add this function near other handler functions
-  const handleStudentPictureUpdate = (newPictureUrl) => {
-    // Update the student in the local state
-    setStudents((prevStudents) =>
-      prevStudents.map((s) =>
-        s.id === selectedStudentForPicture?.id
-          ? { ...s, profile_picture_url: newPictureUrl }
-          : s,
-      ),
-    );
-
-    // Refresh students list from database
-    fetchStudents();
-  };
-
-  // === NEW FUNCTIONS ===
-  const getAdminExamStatus = (exam) => {
-    const now = new Date();
-    const start = new Date(exam.start_time);
-    const end = new Date(exam.end_time);
-
-    if (now >= start && now <= end) return "active";
-    if (now < start) return "upcoming";
-    if (now > end) return "ended";
-    return "upcoming";
-  };
-
-  const getTimeUntilStart = (startTime) => {
-    const now = new Date();
-    const start = new Date(startTime);
-    const diffSeconds = Math.floor((start - now) / 1000);
-
-    if (diffSeconds <= 0) return "Started";
-
-    const hours = Math.floor(diffSeconds / 3600);
-    const minutes = Math.floor((diffSeconds % 3600) / 60);
-    return `${hours}h ${minutes}m`;
-  };
-
-  const fetchCoursesForCompletion = async () => {
-    if (!completionFilters.year_of_study || !completionFilters.semester) {
-      setCoursesForCompletion([]);
-      return;
-    }
-
-    try {
-      let query = supabase
-        .from("courses")
-        .select(
-          "id, course_code, course_name, program, department_code, program_code",
-        )
-        .eq("year", completionFilters.year_of_study)
-        .eq("semester", completionFilters.semester)
-        .eq("is_active", true);
-
-      // If a program is selected, filter by program_code (text field)
-      if (completionFilters.program_id) {
-        const { data: selectedProgram } = await supabase
-          .from("programs")
-          .select("code")
-          .eq("id", completionFilters.program_id)
-          .single();
-
-        if (selectedProgram?.code) {
-          query = query.eq("program_code", selectedProgram.code); // This matches BSCE, BSCS, etc.
-        }
-      }
-
-      const { data, error } = await query.order("course_code", {
-        ascending: true,
-      });
-
-      if (error) throw error;
-
-      setCoursesForCompletion(data || []);
-    } catch (err) {
-      console.error("Error loading courses:", err);
-      alert("Failed to load courses: " + err.message);
-      setCoursesForCompletion([]);
-    }
-  };
-
-  // Fetch students in the selected program and year
-  const fetchStudentsForCompletion = async () => {
-    if (!completionFilters.year_of_study || !completionFilters.academic_year) {
-      setStudentsToComplete([]);
-      return;
-    }
-
-    try {
-      let query = supabase
-        .from("students")
-        .select("id")
-        .eq("year_of_study", completionFilters.year_of_study)
-        .eq("academic_year", completionFilters.academic_year)
-        .eq("status", "active");
-
-      if (completionFilters.program_id) {
-        query = query.eq("program_id", completionFilters.program_id);
-      }
-
-      const { data, error } = await query;
-      if (error) throw error;
-
-      setStudentsToComplete(data || []);
-    } catch (err) {
-      console.error("Error loading students:", err);
-      alert("Failed to load students: " + err.message);
-      setStudentsToComplete([]);
-    }
-  };
-
-  // 1. Load immediately when tab is activated
-  useEffect(() => {
-    if (activeTab === "grade-assignments" && isLecturer && profile?.id) {
-      console.log("→ Grade Assignments tab opened – loading assignments");
-      fetchMyAssignments();
-    }
-  }, [activeTab, isLecturer, profile?.id]);
-
-  // 2. Pre-load on login so it's ready instantly (optional but great)
-  useEffect(() => {
-    if (isLecturer && profile?.id && myAssignments.length === 0) {
-      fetchMyAssignments();
-    }
-  }, [isLecturer, profile?.id]);
-  // CRITICAL FIX: Load assignments immediately when tab becomes active
-  useEffect(() => {
-    if (activeTab === "grade-assignments" && isLecturer && profile?.id) {
-      console.log("Grade Assignments tab activated → fetching assignments NOW");
-      fetchMyAssignments();
-    }
-  }, [activeTab, isLecturer, profile?.id]); // ← profile?.id ensures it runs when profile loads
-
-  // Run when filters change
-  useEffect(() => {
-    fetchCoursesForCompletion();
-    fetchStudentsForCompletion();
-  }, [completionFilters]);
-
-  // Load courses when a program is selected for tutorial targeting
-  // Load courses when a program is selected for tutorial targeting
-  // Updated: Only fetch courses assigned to the current lecturer
-  useEffect(() => {
-    const fetchCoursesForProgram = async () => {
-      if (!tutorialTargetProgram) {
-        setTutorialCourses([]);
-        return;
-      }
-      try {
-        // Get program code
-        const { data: selectedProgram, error: progError } = await supabase
-          .from("programs")
-          .select("code")
-          .eq("id", tutorialTargetProgram)
-          .single();
-        if (progError || !selectedProgram?.code) {
-          setTutorialCourses([]);
-          return;
-        }
-
-        // Fetch ONLY courses assigned to this lecturer in the selected program
-        const { data, error } = await supabase
-          .from("courses")
-          .select("id, course_code, course_name, department_code")
-          .eq("program_code", selectedProgram.code)
-          .eq("lecturer_id", profile.id) // ← THIS LINE IS NEW & CRITICAL
-          .eq("is_active", true)
-          .order("course_code");
-
-        if (error) throw error;
-
-        setTutorialCourses(data || []);
-        console.log(
-          `Found ${data?.length || 0} assigned courses for lecturer in program ${selectedProgram.code}`,
-        );
-      } catch (err) {
-        console.error("Error loading lecturer courses:", err);
-        alert("Failed to load your courses: " + err.message);
-        setTutorialCourses([]);
-      }
-    };
-
-    fetchCoursesForProgram();
-  }, [tutorialTargetProgram, profile.id]); // ← Added profile.id dependency
-  // Add this useEffect after your existing useEffect for completionFilters
-  useEffect(() => {
-    if (showReversalMode) {
-      fetchCompletedCourses();
-    } else {
-      fetchCoursesForCompletion();
-      fetchStudentsForCompletion();
-    }
-  }, [
-    showReversalMode,
-    reversalFilters.program_id,
-    reversalFilters.academic_year,
-    reversalFilters.year_of_study,
-    reversalFilters.semester,
-    completionFilters.program_id,
-    completionFilters.academic_year,
-    completionFilters.year_of_study,
-    completionFilters.semester,
-  ]);
-
-  const handleMarkSemesterCompleted = async () => {
-    if (selectedCoursesForCompletion.length === 0) {
-      alert("Please select at least one course to mark as completed");
-      return;
-    }
-
-    if (studentsToComplete.length === 0) {
-      alert("No active students found for this program/year");
-      return;
-    }
-
-    if (
-      !window.confirm(
-        '⚠️ IMPORTANT NOTICE: This will update existing enrollments to "completed" Are you sure you want to proceed?',
-      )
-    )
-      return;
-
-    setMarkingInProgress(true);
-
-    try {
-      console.log(
-        `Processing ${selectedCoursesForCompletion.length} courses for ${studentsToComplete.length} students`,
-      );
-
-      let processedCount = 0;
-      let skippedCount = 0;
-
-      for (const student of studentsToComplete) {
-        for (const courseId of selectedCoursesForCompletion) {
-          // 1. Check if enrollment already exists
-          const { data: existing, error: checkError } = await supabase
-            .from("student_courses")
-            .select("id")
-            .eq("student_id", student.id)
-            .eq("course_id", courseId)
-            .maybeSingle();
-
-          if (checkError) {
-            console.error("Check error:", checkError);
-            skippedCount++;
-            continue;
-          }
-
-          let recordId;
-
-          if (existing) {
-            // Already enrolled → just update status
-            recordId = existing.id;
-            const { error: updateError } = await supabase
-              .from("student_courses")
-              .update({
-                status: "completed",
-                // Add these only if columns exist:
-                // completion_date: new Date().toISOString().split('T')[0],
-                // updated_at: new Date().toISOString(),
-              })
-              .eq("id", recordId);
-
-            if (updateError) {
-              console.error("Update failed:", updateError);
-              skippedCount++;
-              continue;
-            }
-          } else {
-            // No enrollment → auto-enroll and mark as completed
-            const { data: inserted, error: insertError } = await supabase
-              .from("student_courses")
-              .insert({
-                student_id: student.id,
-                course_id: courseId,
-                status: "completed", // Directly set to completed
-                // Add any other required columns here, e.g.:
-                // enrollment_date: new Date().toISOString().split('T')[0],
-                // program_id: student.program_id, // if you have this
-                // department_code: student.department_code,
-              })
-              .select("id")
-              .single();
-
-            if (insertError) {
-              console.error(
-                `Auto-enroll failed for student ${student.id}, course ${courseId}:`,
-                insertError.message,
-              );
-              skippedCount++;
-              continue;
-            }
-
-            recordId = inserted.id;
-          }
-
-          processedCount++;
-          console.log(
-            `Success: Student ${student.id} → Course ${courseId} marked completed`,
-          );
-        }
-      }
-
-      alert(
-        `Operation completed!\n\n` +
-          `Processed: ${processedCount} records\n` +
-          `Skipped (failed): ${skippedCount} records\n\n` +
-          `All selected courses now marked as completed for enrolled students.`,
-      );
-
-      setSelectedCoursesForCompletion([]);
-      fetchDashboardStats();
-    } catch (err) {
-      console.error("Critical error:", err);
-      alert("Failed: " + (err.message || "Unknown error"));
-    } finally {
-      setMarkingInProgress(false);
-    }
-  };
-
-  // Add these functions after your handleMarkSemesterCompleted function (around line 300-400)
-
-  // Fetch courses that have been marked as completed
-  const fetchCompletedCourses = async () => {
-    if (!reversalFilters.year_of_study || !reversalFilters.semester) {
-      setCompletedCourses([]);
-      return;
-    }
-
-    try {
-      // First get all courses for this semester
-      let courseQuery = supabase
-        .from("courses")
-        .select(
-          "id, course_code, course_name, program, department_code, program_code",
-        )
-        .eq("year", reversalFilters.year_of_study)
-        .eq("semester", reversalFilters.semester)
-        .eq("is_active", true);
-
-      if (reversalFilters.program_id) {
-        const { data: selectedProgram } = await supabase
-          .from("programs")
-          .select("code")
-          .eq("id", reversalFilters.program_id)
-          .single();
-
-        if (selectedProgram?.code) {
-          courseQuery = courseQuery.eq("program_code", selectedProgram.code);
-        }
-      }
-
-      const { data: courses, error: coursesError } = await courseQuery.order(
-        "course_code",
-        { ascending: true },
-      );
-
-      if (coursesError) throw coursesError;
-
-      // Then check which ones have completions
-      const coursesWithCompletions = await Promise.all(
-        (courses || []).map(async (course) => {
-          const { data: completions, error: completionError } = await supabase
-            .from("student_courses")
-            .select("id")
-            .eq("course_id", course.id)
-            .eq("status", "completed")
-            .limit(1);
-
-          if (completionError) {
-            console.error("Error checking completions:", completionError);
-            return null;
-          }
-
-          // Return course only if it has completions
-          return completions && completions.length > 0 ? course : null;
-        }),
-      );
-
-      // Filter out null values
-      const validCourses = coursesWithCompletions.filter(
-        (course) => course !== null,
-      );
-      setCompletedCourses(validCourses);
-    } catch (err) {
-      console.error("Error loading completed courses:", err);
-      alert("Failed to load completed courses: " + err.message);
-      setCompletedCourses([]);
-    }
-  };
-
-
-// Fetch counts whenever completedCourses changes
-useEffect(() => {
-  if (completedCourses.length > 0) {
-    fetchStudentCounts(completedCourses);
-  }
-}, [completedCourses]);
-// ===== END NEW FUNCTION =====
-
-// ===== NEW: Toggle student selection =====
-const toggleStudentReversalSelection = (studentCourseId) => {
-  setSelectedStudentsForReversal((prev) =>
-    prev.includes(studentCourseId)
-      ? prev.filter((id) => id !== studentCourseId)
-      : [...prev, studentCourseId]
-  );
-};
-
-// ===== NEW: Select all students =====
-const selectAllStudentsForReversal = () => {
-  if (selectedStudentsForReversal.length === studentsInCompletedCourses.length) {
-    setSelectedStudentsForReversal([]);
-  } else {
-    setSelectedStudentsForReversal(studentsInCompletedCourses.map((s) => s.id));
-  }
-};
-
-// ===== FIXED: Handle reversing completion for selected students =====
-const handleReverseStudentCompletion = async () => {
-  if (selectedStudentsForReversal.length === 0) {
-    alert("Please select at least one student to reverse");
-    return;
-  }
-
-  if (
-    !window.confirm(
-      `⚠️ IMPORTANT: This will change ${selectedStudentsForReversal.length} student(s) from "completed" back to "enrolled" status for the selected course.\n\n` +
-        `These students will be able to submit assignments/exams for this course again.\n\n` +
-        `Are you sure you want to proceed?`,
-    )
-  )
-    return;
-
-  setReversalInProgress(true);
-
-  try {
-    let successCount = 0;
-    let errorCount = 0;
-    const errors = [];
-
-    // Process each selected student_course record
-    for (const studentCourseId of selectedStudentsForReversal) {
-      try {
-        // 1. Check for visible assignments - use student_course_id
-        const { data: visibleAssignments, error: vaFetchError } = await supabase
-          .from("student_visible_assignments")
-          .select("id")
-          .eq("student_course_id", studentCourseId);
-
-        if (vaFetchError) {
-          console.warn(`Could not check visible_assignments:`, vaFetchError);
-        } else if (visibleAssignments && visibleAssignments.length > 0) {
-          const vaIds = visibleAssignments.map(va => va.id);
-          const { error: vaDeleteError } = await supabase
-            .from("student_visible_assignments")
-            .delete()
-            .in("id", vaIds);
-          
-          if (vaDeleteError) {
-            console.warn(`Could not delete visible_assignments:`, vaDeleteError);
-          }
-        }
-
-        // 2. Update student_courses status
-        const { error: updateError } = await supabase
-          .from("student_courses")
-          .update({
-            status: "enrolled",
-            updated_at: new Date().toISOString(),
-            completion_date: null,
-          })
-          .eq("id", studentCourseId);
-
-        if (updateError) {
-          console.error(`Failed to update student_course ${studentCourseId}:`, updateError);
-          errors.push(`Failed to update record ${studentCourseId}: ${updateError.message}`);
-          errorCount++;
-        } else {
-          successCount++;
-          console.log(`✅ Reversed completion for student_course ${studentCourseId}`);
-        }
-
-      } catch (err) {
-        console.error(`Error processing student_course ${studentCourseId}:`, err);
-        errorCount++;
-        errors.push(`Error processing record: ${err.message}`);
-      }
-    }
-
-    // Show summary
-    if (successCount > 0) {
-      alert(
-        `✅ Successfully reversed ${successCount} student record(s) back to "enrolled" status!\n\n` +
-        (errorCount > 0 ? `⚠️ ${errorCount} record(s) failed.\n\nErrors:\n${errors.slice(0, 5).join('\n')}` : '')
-      );
-    } else {
-      alert(`❌ No records were reversed. Please check the console for errors.\n\n${errors.join('\n')}`);
-    }
-
-    // Reset selections and refresh data
-    setSelectedStudentsForReversal([]);
-    setShowStudentSelectionModal(false);
-    setSelectedCourseForStudentView(null);
-    fetchCompletedCourses();
-
-  } catch (err) {
-    console.error("Error reversing completion:", err);
-    alert("Failed to reverse completion: " + err.message);
-  } finally {
-    setReversalInProgress(false);
-  }
-};
-
-
-const fetchEnrolledStudentCounts = async (courses) => {
-  if (!courses?.length) {
-    setEnrolledStudentCounts({});
-    return;
-  }
-  try {
-    const counts = {};
-    for (const course of courses) {
-      // Get student_ids that are enrolled
-      const { data: rows } = await supabase
-        .from("student_courses")
-        .select("student_id")
-        .eq("course_id", course.id)
-        .eq("status", "enrolled");
-
-      if (!rows?.length) {
-        counts[course.id] = 0;
-        continue;
-      }
-
-      const ids = [
-        ...new Set(
-          rows
-            .map((r) => r.student_id)
-            .filter((id) => id != null)
-            .map((id) => String(id).trim())
-        ),
-      ];
-
-      // Count only those that exist in students
-      const { count: byId } = await supabase
-        .from("students")
-        .select("*", { count: "exact", head: true })
-        .in("id", ids);
-
-      const { count: byReg } = await supabase
-        .from("students")
-        .select("*", { count: "exact", head: true })
-        .in("student_id", ids);
-
-      // Approximate unique resolved count (good enough for badge)
-      counts[course.id] = Math.max(byId || 0, byReg || 0);
-    }
-    setEnrolledStudentCounts(counts);
-  } catch (err) {
-    console.error("Error fetching enrolled counts:", err);
-  }
-};
-
-const fetchStudentCounts = async (courses) => {
-  if (!courses?.length) {
-    setStudentCounts({});
-    return;
-  }
-  try {
-    const counts = {};
-    for (const course of courses) {
-      const { data: rows } = await supabase
-        .from("student_courses")
-        .select("student_id")
-        .eq("course_id", course.id)
-        .eq("status", "completed");
-
-      if (!rows?.length) {
-        counts[course.id] = 0;
-        continue;
-      }
-
-      const ids = [
-        ...new Set(
-          rows
-            .map((r) => r.student_id)
-            .filter((id) => id != null)
-            .map((id) => String(id).trim())
-        ),
-      ];
-
-      const { count: byId } = await supabase
-        .from("students")
-        .select("*", { count: "exact", head: true })
-        .in("id", ids);
-
-      const { count: byReg } = await supabase
-        .from("students")
-        .select("*", { count: "exact", head: true })
-        .in("student_id", ids);
-
-      counts[course.id] = Math.max(byId || 0, byReg || 0);
-    }
-    setStudentCounts(counts);
-  } catch (err) {
-    console.error("Error fetching student counts:", err);
-  }
-};
-
-// Call it when coursesForCompletion changes
-useEffect(() => {
-  if (coursesForCompletion.length > 0 && !showReversalMode) {
-    fetchEnrolledStudentCounts(coursesForCompletion);
-  }
-}, [coursesForCompletion, showReversalMode]);
-const fetchStudentsForCourseReversal = async (courseId) => {
-  try {
-    const { data: studentCourses, error: scError } = await supabase
-      .from("student_courses")
-      .select("id, student_id")
-      .eq("course_id", courseId)
-      .eq("status", "completed");
-
-    if (scError) throw scError;
-
-    if (!studentCourses?.length) {
-      alert("No students have completed this course.");
-      setStudentsInCompletedCourses([]);
-      setShowStudentSelectionModal(false);
-      return;
-    }
-
-    const rawIds = [
-      ...new Set(
-        studentCourses
-          .map((sc) => sc.student_id)
-          .filter((id) => id != null && String(id).trim() !== "")
-          .map((id) => String(id).trim())
-      ),
-    ];
-
-    const BATCH = 50;
-    const studentMap = {};
-
-    for (let i = 0; i < rawIds.length; i += BATCH) {
-      const batch = rawIds.slice(i, i + BATCH);
-
-      const { data: byId } = await supabase
-        .from("students")
-        .select("id, full_name, student_id, email, program, department_code")
-        .in("id", batch);
-
-      (byId || []).forEach((s) => {
-        studentMap[String(s.id)] = s;
-        if (s.student_id) studentMap[String(s.student_id).trim()] = s;
-      });
-
-      const { data: byReg } = await supabase
-        .from("students")
-        .select("id, full_name, student_id, email, program, department_code")
-        .in("student_id", batch);
-
-      (byReg || []).forEach((s) => {
-        studentMap[String(s.id)] = s;
-        if (s.student_id) studentMap[String(s.student_id).trim()] = s;
-      });
-    }
-
-    const combinedData = studentCourses.map((sc) => {
-      const key = sc.student_id != null ? String(sc.student_id).trim() : null;
-      const student = key ? studentMap[key] : null;
-
-      return {
-        id: sc.id,
-        student_id: sc.student_id,
-        students: student || {
-          id: sc.student_id,
-          full_name: `⚠️ Unlinked (${String(sc.student_id || "null").slice(0, 8)}…)`,
-          student_id: String(sc.student_id || "N/A"),
-          email: "—",
-          program: "—",
-          department_code: "—",
-        },
-        _unlinked: !student,
-      };
-    });
-
-    console.log(
-      `✅ Reversal list: ${combinedData.filter((r) => !r._unlinked).length} linked, ` +
-        `${combinedData.filter((r) => r._unlinked).length} unlinked, total ${combinedData.length}`
-    );
-
-    setStudentsInCompletedCourses(combinedData);
-    setSelectedCourseForStudentView(courseId);
-    setSelectedStudentsForReversal([]);
-    setShowStudentSelectionModal(true);
-  } catch (err) {
-    console.error("Error fetching students:", err);
-    alert("Failed to load students: " + err.message);
-  }
-};
-
-  const fetchStudentsForCourseCompletion = async (courseId) => {
-  try {
-    // 1. Always get raw student_courses first (source of truth for count)
-    const { data: studentCourses, error: scError } = await supabase
-      .from("student_courses")
-      .select("id, student_id")
-      .eq("course_id", courseId)
-      .eq("status", "enrolled");
-
-    if (scError) throw scError;
-
-    if (!studentCourses?.length) {
-      alert("No enrolled students found for this course.");
-      setStudentsInEnrolledCourses([]);
-      setShowStudentCompletionModal(false);
-      return;
-    }
-
-    // 2. Unique student_ids
-    const rawIds = [
-      ...new Set(
-        studentCourses
-          .map((sc) => sc.student_id)
-          .filter((id) => id != null && String(id).trim() !== "")
-          .map((id) => String(id).trim())
-      ),
-    ];
-
-    console.log(`🔍 Course ${courseId}: ${studentCourses.length} enrolled rows, ${rawIds.length} unique student_ids`);
-
-    // 3. Lookup students in batches (by UUID and by registration number)
-    const BATCH = 50;
-    const studentMap = {};
-
-    for (let i = 0; i < rawIds.length; i += BATCH) {
-      const batch = rawIds.slice(i, i + BATCH);
-
-      const { data: byId, error: e1 } = await supabase
-        .from("students")
-        .select(
-          "id, full_name, student_id, email, program, department_code, academic_year, year_of_study, semester"
-        )
-        .in("id", batch);
-
-      if (e1) console.warn("byId batch error:", e1);
-      (byId || []).forEach((s) => {
-        studentMap[String(s.id)] = s;
-        if (s.student_id) studentMap[String(s.student_id).trim()] = s;
-      });
-
-      const { data: byReg, error: e2 } = await supabase
-        .from("students")
-        .select(
-          "id, full_name, student_id, email, program, department_code, academic_year, year_of_study, semester"
-        )
-        .in("student_id", batch);
-
-      if (e2) console.warn("byReg batch error:", e2);
-      (byReg || []).forEach((s) => {
-        studentMap[String(s.id)] = s;
-        if (s.student_id) studentMap[String(s.student_id).trim()] = s;
-      });
-    }
-
-    // 4. Build list — keep EVERY row (resolved or not)
-    const combinedData = studentCourses.map((sc) => {
-      const key = sc.student_id != null ? String(sc.student_id).trim() : null;
-      const student = key ? studentMap[key] : null;
-
-      return {
-        id: sc.id, // student_courses.id (needed for update)
-        student_id: sc.student_id,
-        students: student || {
-          id: sc.student_id,
-          full_name: `⚠️ Unlinked (${String(sc.student_id || "null").slice(0, 8)}…)`,
-          student_id: String(sc.student_id || "N/A"),
-          email: "—",
-          program: "—",
-          department_code: "—",
-        },
-        _unlinked: !student, // flag for UI if you want
-      };
-    });
-
-    const linked = combinedData.filter((r) => !r._unlinked).length;
-    const unlinked = combinedData.length - linked;
-
-    console.log(`✅ Linked: ${linked} | Unlinked: ${unlinked} | Total shown: ${combinedData.length}`);
-
-    if (unlinked > 0) {
-      console.warn(
-        "Unlinked student_ids:",
-        combinedData.filter((r) => r._unlinked).map((r) => r.student_id)
-      );
-    }
-
-    setStudentsInEnrolledCourses(combinedData);
-    setSelectedCourseForStudentCompletion(courseId);
-    setSelectedStudentsForCompletion([]);
-    setShowStudentCompletionModal(true);
-  } catch (err) {
-    console.error("Error fetching students for completion:", err);
-    alert("Failed to load students: " + err.message);
-  }
-};
-
-const toggleStudentCompletionSelection = (studentCourseId) => {
-  setSelectedStudentsForCompletion((prev) =>
-    prev.includes(studentCourseId)
-      ? prev.filter((id) => id !== studentCourseId)
-      : [...prev, studentCourseId]
-  );
-};
-
-const selectAllStudentsForCompletion = () => {
-  if (selectedStudentsForCompletion.length === studentsInEnrolledCourses.length) {
-    setSelectedStudentsForCompletion([]);
-  } else {
-    setSelectedStudentsForCompletion(studentsInEnrolledCourses.map((s) => s.id));
-  }
-};
-
-// ===== NEW: Mark selected individual students as completed =====
-const handleMarkStudentCompletion = async () => {
-  if (selectedStudentsForCompletion.length === 0) {
-    alert("Please select at least one student to mark as completed");
-    return;
-  }
-
-  if (
-    !window.confirm(
-      `✅ This will mark ${selectedStudentsForCompletion.length} student(s) as "completed" for the selected course.\n\n` +
-        `Only the selected students will be affected.\n\n` +
-        `Are you sure you want to proceed?`
-    )
-  )
-    return;
-
-  setMarkingStudentsInProgress(true);
-
-  try {
-    let successCount = 0;
-    let errorCount = 0;
-    const errors = [];
-
-    for (const studentCourseId of selectedStudentsForCompletion) {
-      try {
-        const { error: updateError } = await supabase
-          .from("student_courses")
-          .update({
-            status: "completed",
-            updated_at: new Date().toISOString(),
-            // completion_date: new Date().toISOString().split("T")[0], // uncomment if column exists
-          })
-          .eq("id", studentCourseId);
-
-        if (updateError) {
-          console.error(`Failed to update student_course ${studentCourseId}:`, updateError);
-          errors.push(`Failed to update record ${studentCourseId}: ${updateError.message}`);
-          errorCount++;
-        } else {
-          successCount++;
-          console.log(`✅ Marked student_course ${studentCourseId} as completed`);
-        }
-      } catch (err) {
-        console.error(`Error processing student_course ${studentCourseId}:`, err);
-        errorCount++;
-        errors.push(`Error processing record: ${err.message}`);
-      }
-    }
-
-    if (successCount > 0) {
-      alert(
-        `✅ Successfully marked ${successCount} student(s) as completed!\n\n` +
-          (errorCount > 0
-            ? `⚠️ ${errorCount} record(s) failed.\n\nErrors:\n${errors.slice(0, 5).join("\n")}`
-            : "")
-      );
-    } else {
-      alert(`❌ No records were updated.\n\n${errors.join("\n")}`);
-    }
-
-    // Reset & refresh
-    setSelectedStudentsForCompletion([]);
-    setShowStudentCompletionModal(false);
-    setSelectedCourseForStudentCompletion(null);
-    fetchCoursesForCompletion();
-    fetchStudentsForCompletion();
-    fetchEnrolledStudentCounts(coursesForCompletion);
-  } catch (err) {
-    console.error("Error marking student completion:", err);
-    alert("Failed to mark completion: " + err.message);
-  } finally {
-    setMarkingStudentsInProgress(false);
-  }
-};
-// ===== END NEW FUNCTIONS =====
-// ===== END NEW FUNCTIONS =====
-
-// ===== REPLACE THIS FUNCTION =====
-const handleReverseCourseCompletion = async () => {
-  if (selectedCoursesForReversal.length === 0) {
-    alert("Please select at least one course to reverse");
-    return;
-  }
-
-  if (
-    !window.confirm(
-      `⚠️ IMPORTANT: This will change ${selectedCoursesForReversal.length} course(s) from "completed" back to "enrolled" status.\n\n` +
-        `ALL students in these courses will be affected.\n\n` +
-        `To reverse specific students only, use the "Select Students" button.\n\n` +
-        `Are you sure you want to proceed?`,
-    )
-  )
-    return;
-
-  setReversalInProgress(true);
-
-  try {
-    const { data, error } = await supabase
-      .from("student_courses")
-      .update({
-        status: "enrolled",
-        updated_at: new Date().toISOString(),
-      })
-      .eq("status", "completed")
-      .in("course_id", selectedCoursesForReversal);
-
-    if (error) {
-      if (error.message.includes("student_visible_assignments")) {
-        alert(
-          "⚠️ There's a database trigger that automatically creates visibility records.\n\n" +
-          "Please use the 'Select Students' option to reverse individual students instead."
-        );
-      } else {
-        throw error;
-      }
-    } else {
-      alert(
-        `✅ Successfully reversed ${selectedCoursesForReversal.length} course(s) back to "enrolled" status!`,
-      );
-    }
-
-    setSelectedCoursesForReversal([]);
-    fetchCompletedCourses();
-  } catch (err) {
-    console.error("Error reversing completion:", err);
-    alert("Failed to reverse completion: " + err.message);
-  } finally {
-    setReversalInProgress(false);
-  }
-};
-// ===== END REPLACEMENT =====
-
-  // Toggle course selection for reversal
-  const toggleCourseReversalSelection = (courseId) => {
-    setSelectedCoursesForReversal((prev) =>
-      prev.includes(courseId)
-        ? prev.filter((id) => id !== courseId)
-        : [...prev, courseId],
-    );
-  };
-
-  // Select all courses for reversal
-  const selectAllForReversal = () => {
-    if (selectedCoursesForReversal.length === completedCourses.length) {
-      setSelectedCoursesForReversal([]);
-    } else {
-      setSelectedCoursesForReversal(completedCourses.map((c) => c.id));
-    }
-  };
-
-  useEffect(() => {
-    const fetchLectures = async () => {
-      try {
-        // Get current logged-in student (adjust based on your auth context)
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) {
-          console.error("No user logged in");
-          setLectures([]);
-          return;
-        }
-
-        // Get student's cohort
-        const { data: student, error: studentError } = await supabase
-          .from("students")
-          .select("id, academic_year, year_of_study, semester")
-          .eq("auth_uid", user.id) // or .eq('id', user.id) if you link differently
-          .single();
-
-        if (studentError || !student) {
-          console.error("Student profile not found:", studentError);
-          setLectures([]);
-          return;
-        }
-
-        console.log("Student cohort:", {
-          academic_year: student.academic_year,
-          year: student.year_of_study,
-          semester: student.semester,
-        });
-
-        // Fetch only lectures matching student's cohort
-        const { data: lectures, error } = await supabase
-          .from("lectures")
-          .select(
-            `
-          *,
-          courses(course_code, course_name, department_code),
-          lecturers(full_name, google_meet_link)
-        `,
-          )
-          .eq("target_academic_year", student.academic_year)
-          .eq("target_year_of_study", student.year_of_study)
-          .eq("target_semester", student.semester)
-          .order("scheduled_date", { ascending: true })
-          .order("start_time", { ascending: true });
-
-        if (error) {
-          console.error("Error fetching lectures:", error);
-          setLectures([]);
-        } else {
-          console.log(
-            `Found ${lectures?.length || 0} lectures for this cohort`,
-          );
-          setLectures(lectures || []);
-        }
-      } catch (err) {
-        console.error("Unexpected error:", err);
-        setLectures([]);
-      }
-    };
-
-    fetchLectures();
-  }, []);
-
-  // Auto-select all when courses are loaded
-  useEffect(() => {
-    if (completedCourses.length > 0) {
-      setSelectedCoursesForReversal(completedCourses.map((c) => c.id));
-    }
-  }, [completedCourses]);
-
-  const toggleCourseCompletionSelection = (courseId) => {
-    setSelectedCoursesForCompletion((prev) =>
-      prev.includes(courseId)
-        ? prev.filter((id) => id !== courseId)
-        : [...prev, courseId],
-    );
-  };
-
-  const selectAllForCompletion = () => {
-    if (selectedCoursesForCompletion.length === coursesForCompletion.length) {
-      setSelectedCoursesForCompletion([]);
-    } else {
-      setSelectedCoursesForCompletion(coursesForCompletion.map((c) => c.id));
-    }
-  };
-
-  // In your component, after fetching courses
-  useEffect(() => {
-    if (coursesForCompletion.length > 0) {
-      // Auto-select ALL courses by default
-      setSelectedCoursesForCompletion(coursesForCompletion.map((c) => c.id));
-    }
-  }, [coursesForCompletion]);
-
-  // === TIMETABLE MANAGEMENT STATES ===
-  const [timetables, setTimetables] = useState([]);
-  const [expandedTimetableId, setExpandedTimetableId] = useState(null);
-  const [selectedTimetable, setSelectedTimetable] = useState(null);
-  const [showTimetableModal, setShowTimetableModal] = useState(false);
-  const [showSlotModal, setShowSlotModal] = useState(false);
-  const [editingSlot, setEditingSlot] = useState(null);
-  const [newTimetable, setNewTimetable] = useState({
-    program_id: "",
-    academic_year: "2024/2025",
-    semester: 1,
-    year_of_study: 1,
-    is_active: true,
-  });
-  const [newSlot, setNewSlot] = useState({
-    course_code: "",
-    course_name: "",
-    lecturer_id: "",
-    day_of_week: 1,
-    start_time: "08:00",
-    end_time: "10:00",
-    room_number: "",
-    building: "CS Building",
-    slot_type: "lecture",
-  });
-
-  // Statistics state
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
+  const subscriptionRef = useRef(null);
+
+  // ==================== DATA STATES ====================
+  const [students, setStudents] = useState([]);
+  const [lecturers, setLecturers] = useState([]);
+  const [deans, setDeans] = useState([]);
+  const [hods, setHODs] = useState([]);
+  const [financeOfficers, setFinanceOfficers] = useState([]);
+  const [courses, setCourses] = useState([]);
+  const [assignments, setAssignments] = useState([]);
+  const [exams, setExams] = useState([]);
+  const [financialRecords, setFinancialRecords] = useState([]);
+  const [lectures, setLectures] = useState([]);
+  const [programs, setPrograms] = useState([]);
+  const [programsLoading, setProgramsLoading] = useState(true);
+  const [faculties, setFaculties] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [loadingDeans, setLoadingDeans] = useState(false);
+  const [loadingHODs, setLoadingHODs] = useState(false);
+  const [loadingFinance, setLoadingFinance] = useState(false);
+
+  // ==================== CHAT STATES ====================
+  const [showChatModal, setShowChatModal] = useState(false);
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [selectedUserType, setSelectedUserType] = useState('');
+  const [chatMessages, setChatMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [sendingMessage, setSendingMessage] = useState(false);
+  const chatEndRef = useRef(null);
+  const [chatTab, setChatTab] = useState('all');
+  const [chatUserList, setChatUserList] = useState([]);
+  const [loadingChatUsers, setLoadingChatUsers] = useState(false);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
+
+  // ==================== NOTIFICATIONS STATE ====================
+  const [notifications, setNotifications] = useState([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const notificationSubscriptionRef = useRef(null);
+
+  // ==================== STATISTICS ====================
   const [stats, setStats] = useState({
     totalStudents: 0,
     totalLecturers: 0,
@@ -2407,87 +306,86 @@ const handleReverseCourseCompletion = async () => {
     pendingAssignments: 0,
     pendingPayments: 0,
     attendanceRate: 0,
-    // Lecturer specific stats
-    myAssignments: 0,
-    pendingGrading: 0,
-    gradedSubmissions: 0,
-    lateSubmissions: 0,
-    averageGrade: 0,
-    submissionRate: 0,
   });
 
-  // Data states
-  const [students, setStudents] = useState([]);
-  const [lecturers, setLecturers] = useState([]);
-  const [courses, setCourses] = useState([]);
-  const [assignments, setAssignments] = useState([]);
-  const [exams, setExams] = useState([]);
-  const [financialRecords, setFinancialRecords] = useState([]);
-  const [lectures, setLectures] = useState([]);
-
-  const [realtimeConnected, setRealtimeConnected] = useState(false);
-
-  // ASSIGNMENT MANAGEMENT STATES
-  const [myAssignments, setMyAssignments] = useState([]);
-  const [assignmentSubmissions, setAssignmentSubmissions] = useState([]);
-  const [selectedAssignment, setSelectedAssignment] = useState(null);
-  const [gradingInProgress, setGradingInProgress] = useState(false);
-  const [gradeForm, setGradeForm] = useState({});
-  const [bulkGrading, setBulkGrading] = useState(false);
-  const [selectedSubmissions, setSelectedSubmissions] = useState([]);
-
-  // File download states
-  const [downloadingFile, setDownloadingFile] = useState(null);
-  const [downloadProgress, setDownloadProgress] = useState({});
-  const [batchDownloading, setBatchDownloading] = useState(false);
-  const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
-// ===== NEW: Student-specific completion states (re-complete after reversal) =====
-const [selectedStudentsForCompletion, setSelectedStudentsForCompletion] = useState([]);
-const [studentsInEnrolledCourses, setStudentsInEnrolledCourses] = useState([]);
-const [showStudentCompletionModal, setShowStudentCompletionModal] = useState(false);
-const [selectedCourseForStudentCompletion, setSelectedCourseForStudentCompletion] = useState(null);
-const [enrolledStudentCounts, setEnrolledStudentCounts] = useState({});
-const [markingStudentsInProgress, setMarkingStudentsInProgress] = useState(false);
-// ===== END NEW STATES =====
-  // Modals and forms
-  const [showDepartmentModal, setShowDepartmentModal] = useState(false);
-  const [selectedLecturerForDept, setSelectedLecturerForDept] = useState(null);
+  // ==================== MODALS ====================
   const [showUserModal, setShowUserModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showMessageModal, setShowMessageModal] = useState(false);
+  const [showBulkMessageModal, setShowBulkMessageModal] = useState(false);
+  const [showProfilePictureModal, setShowProfilePictureModal] = useState(false);
   const [showCourseModal, setShowCourseModal] = useState(false);
-  const [showAssignmentModal, setShowAssignmentModal] = useState(false);
-  const [showAssignmentUploadModal, setShowAssignmentUploadModal] =
-    useState(false);
-  const [showSubmissionsModal, setShowSubmissionsModal] = useState(false);
-  const [showGradingModal, setShowGradingModal] = useState(false);
-  const [showLectureModal, setShowLectureModal] = useState(false);
-  const [showLectureDetailsModal, setShowLectureDetailsModal] = useState(false);
   const [showExamsModal, setShowExamsModal] = useState(false);
   const [showFinanceModal, setShowFinanceModal] = useState(false);
   const [showAttendanceModal, setShowAttendanceModal] = useState(false);
-  const [selectedUser, setSelectedUser] = useState(null);
-  const [selectedLecturerDetails, setSelectedLecturerDetails] = useState(null);
-  // Student Edit States
- const [editingStudent, setEditingStudent] = useState(null);
-const [editStudentForm, setEditStudentForm] = useState({
-  full_name: "",
-  email: "",
-  phone: "",
-  date_of_birth: "",
-  program_id: "",
-  program: "",
-  program_code: "",
-  year_of_study: 1,
-  semester: 1,
-  department: "",
-  department_code: "",
-  intake: "January",
-  academic_year: "",
-  status: "active",
-});
-  const [selectedCourse, setSelectedCourse] = useState(null);
-  const [selectedLecture, setSelectedLecture] = useState(null);
-  const [selectedExam, setSelectedExam] = useState(null);
-  const [selectedFinanceRecord, setSelectedFinanceRecord] = useState(null);
+  const [showDeptAssignmentModal, setShowDeptAssignmentModal] = useState(false);
+  const [showCourseAssignmentModal, setShowCourseAssignmentModal] = useState(false);
+  const [showTimetableModal, setShowTimetableModal] = useState(false);
+  const [showSlotModal, setShowSlotModal] = useState(false);
+  const [showProgramModal, setShowProgramModal] = useState(false);
+
+  // ==================== SELECTED ITEMS ====================
+  const [selectedStudentForPicture, setSelectedStudentForPicture] = useState(null);
+  const [selectedLecturerForDept, setSelectedLecturerForDept] = useState(null);
+  const [selectedLecturerForCourses, setSelectedLecturerForCourses] = useState(null);
+  const [selectedTimetable, setSelectedTimetable] = useState(null);
+  const [editingSlot, setEditingSlot] = useState(null);
+  const [editingProgram, setEditingProgram] = useState(null);
+  const [expandedTimetableId, setExpandedTimetableId] = useState(null);
+  const [messageText, setMessageText] = useState('');
+  const [bulkMessageRole, setBulkMessageRole] = useState('');
+  const [bulkMessageText, setBulkMessageText] = useState('');
+
+  // ==================== FORM STATES ====================
+  const [newUser, setNewUser] = useState({
+    full_name: "",
+    email: "",
+    phone: "",
+    role: "student",
+    program_id: "",
+    program: "",
+    department: "",
+    department_code: "",
+    program_code: "",
+    year_of_study: 1,
+    semester: 1,
+    intake: "January",
+    academic_year: "",
+    date_of_birth: "",
+    program_duration_years: 4,
+    specialization: "",
+    google_meet_link: "",
+    faculty_id: "",
+    department_id: "",
+    faculty_name: "",
+    department_name: "",
+    dean_title: "",
+    hod_title: "",
+    profile_picture_url: "",
+  });
+
+  const [editUser, setEditUser] = useState({
+    id: "",
+    full_name: "",
+    email: "",
+    phone: "",
+    role: "",
+    program: "",
+    department: "",
+    department_code: "",
+    program_code: "",
+    year_of_study: 1,
+    semester: 1,
+    academic_year: "",
+    specialization: "",
+    google_meet_link: "",
+    faculty_id: "",
+    department_id: "",
+    status: "active",
+    profile_picture_url: "",
+    contact_email: "",
+    contact_phone: "",
+  });
 
   const [newCourse, setNewCourse] = useState({
     course_code: "",
@@ -2503,55 +401,19 @@ const [editStudentForm, setEditStudentForm] = useState({
     is_core: true,
   });
 
-  const [newAssignment, setNewAssignment] = useState({
+  const [newExam, setNewExam] = useState({
     course_id: "",
     title: "",
     description: "",
-    instructions: "",
-    due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-      .toISOString()
-      .slice(0, 16),
+    exam_type: "midterm",
+    submission_type: "both",
+    start_time: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 16),
+    end_time: new Date(Date.now() + 25 * 60 * 60 * 1000).toISOString().slice(0, 16),
     total_marks: 100,
-    submission_type: "file",
-    max_file_size: 10,
-    allowed_formats: ["pdf", "doc", "docx", "zip"],
-    file_urls: [],
-  });
-
-  // ASSIGNMENT UPLOAD STATE
-  const [assignmentFiles, setAssignmentFiles] = useState([]);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadingFiles, setUploadingFiles] = useState(false);
-
-  const [newLecture, setNewLecture] = useState({
-    course_id: "",
-    title: "",
-    description: "",
-    google_meet_link: "",
-    scheduled_date: new Date().toISOString().slice(0, 10),
-    start_time: "09:00",
-    end_time: "11:00",
-    duration_minutes: 120,
-    materials_url: [],
+    venue: "Main Hall",
     status: "scheduled",
   });
 
-const [newExam, setNewExam] = useState({
-  course_id: "",
-  title: "",
-  description: "",
-  exam_type: "midterm",
-  submission_type: "both", // ⭐ NEW: "text", "file", or "both"
-  start_time: new Date(Date.now() + 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 16),
-  end_time: new Date(Date.now() + 25 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 16),
-  total_marks: 100,
-  venue: "Main Hall",
-  status: "scheduled",
-});
   const [newFinanceRecord, setNewFinanceRecord] = useState({
     student_id: "",
     description: "",
@@ -2561,138 +423,743 @@ const [newExam, setNewExam] = useState({
     receipt_number: `REC-${Date.now().toString().slice(-6)}`,
   });
 
-  const [newAttendanceRecord, setNewAttendanceRecord] = useState({
-    student_id: "",
-    lecture_id: "",
-    date: new Date().toISOString().slice(0, 10),
-    status: "present",
-    check_in_time: "09:00",
-    check_out_time: "11:00",
-    remarks: "",
+  const [newTimetable, setNewTimetable] = useState({
+    program_id: "",
+    academic_year: "2024/2025",
+    semester: 1,
+    year_of_study: 1,
+    is_active: true,
   });
 
-  // Edit states
-  const [editingLecture, setEditingLecture] = useState(null);
-  const [editLecture, setEditLecture] = useState({
-    title: "",
-    description: "",
-    google_meet_link: "",
-    scheduled_date: "",
-    start_time: "",
-    end_time: "",
+  const [newSlot, setNewSlot] = useState({
+    course_code: "",
+    course_name: "",
+    lecturer_id: "",
+    day_of_week: 1,
+    start_time: "08:00",
+    end_time: "10:00",
+    room_number: "",
+    building: "CS Building",
+    slot_type: "lecture",
   });
 
-  const [editingExam, setEditingExam] = useState(null);
-  const [editExam, setEditExam] = useState({
-    title: "",
-    description: "",
-    start_time: "",
-    end_time: "",
-    venue: "",
-    status: "",
+  const [newProgram, setNewProgram] = useState({
+    name: "",
+    code: "",
   });
 
-  // Refs
-  const subscriptionRef = useRef(null);
-  const fileInputRef = useRef(null);
-  const fileDownloadRef = useRef(null);
+  // ==================== TIMETABLE STATES ====================
+  const [timetables, setTimetables] = useState([]);
+  const [lecturersList, setLecturersList] = useState([]);
 
-  // =================== INITIALIZATION ===================
-  useEffect(() => {
-    if (!examTargetProgram) {
-      setExamFilteredCourses([]); // No program selected → no courses
-      return;
-    }
+  // ==================== TOAST ====================
+  const [toast, setToast] = useState({
+    show: false,
+    message: '',
+    type: 'success'
+  });
 
-    // Get the program code (e.g., BSCE, BSCS)
-    const selectedProg = programs.find((p) => p.id === examTargetProgram);
-    if (!selectedProg?.code) {
-      setExamFilteredCourses([]);
-      return;
-    }
+// ==================== CHAT FUNCTIONS (IMPROVED) ====================
+// ==================== CHAT FUNCTIONS (FULLY REAL-TIME) ====================
 
-    // Filter courses that match the program_code
-    const filtered = courses.filter(
-      (course) => course.program_code === selectedProg.code && course.is_active,
+const fetchChatMessages = useCallback(async (userEmail) => {
+  if (!profile?.email || !userEmail) return;
+
+  try {
+    const { data, error } = await supabase
+      .from('chat_messages')
+      .select('*')
+      .or(
+        `and(sender_email.eq.${profile.email},receiver_email.eq.${userEmail}),` +
+        `and(sender_email.eq.${userEmail},receiver_email.eq.${profile.email})`
+      )
+      .order('created_at', { ascending: true })
+      .limit(200);
+
+    if (error) throw error;
+
+    setChatMessages(data || []);
+
+    // Mark unread as read
+    const unread = (data || []).filter(
+      (msg) => msg.receiver_email === profile.email && !msg.is_read
     );
 
-    setExamFilteredCourses(filtered);
-    console.log(
-      `Filtered ${filtered.length} courses for program ${selectedProg.code}`,
+    if (unread.length > 0) {
+      await Promise.all(
+        unread.map((msg) =>
+          supabase.from('chat_messages').update({ is_read: true }).eq('id', msg.id)
+        )
+      );
+      fetchUnreadCount();
+      fetchNotifications();
+    }
+
+    setTimeout(() => {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 80);
+  } catch (err) {
+    console.error('[CHAT] Error fetching messages:', err);
+  }
+}, [profile?.email]);
+
+const sendChatMessage = async () => {
+  if (!newMessage.trim() || !selectedUser?.email) {
+    showToast('Please enter a message', 'error');
+    return;
+  }
+
+  const tempId = `temp-${Date.now()}`;
+  const messageText = newMessage.trim();
+
+  // Optimistic message
+  const optimisticMsg = {
+    id: tempId,
+    sender_email: profile.email,
+    sender_role: 'admin',
+    sender_name: profile.full_name || 'System Admin',
+    receiver_email: selectedUser.email,
+    receiver_role: selectedUserType || selectedUser.role || 'user',
+    message: messageText,
+    is_read: false,
+    created_at: new Date().toISOString(),
+  };
+
+  setChatMessages((prev) => [...prev, optimisticMsg]);
+  setNewMessage('');
+  setSendingMessage(true);
+
+  setTimeout(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, 30);
+
+  try {
+    const { data, error } = await supabase
+      .from('chat_messages')
+      .insert([{
+        sender_id: profile?.id || null,
+        sender_email: profile.email,
+        sender_role: 'admin',
+        sender_name: profile.full_name || 'System Admin',
+        receiver_email: selectedUser.email,
+        receiver_role: selectedUserType || selectedUser.role || 'user',
+        message: messageText,
+        faculty_id: selectedUser.faculty_id || null,
+        department_id: selectedUser.department_id || null,
+        is_read: false,
+      }])
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // Replace temp with real message
+    setChatMessages((prev) =>
+      prev.map((m) => (m.id === tempId ? data : m))
     );
-  }, [examTargetProgram, programs, courses]);
+
+    fetchChatUsers();
+    fetchUnreadCount();
+    showToast('Message sent', 'success');
+  } catch (err) {
+    console.error('[CHAT] Send error:', err);
+    // Remove optimistic message on failure
+    setChatMessages((prev) => prev.filter((m) => m.id !== tempId));
+    showToast('Failed to send message: ' + err.message, 'error');
+  } finally {
+    setSendingMessage(false);
+  }
+};
+
+const openChatWithUser = (user, type) => {
+  if (!user?.email) return;
+
+  setSelectedUser({
+    email: user.email,
+    role: type || user.role || 'user',
+    name: user.display_name || user.full_name || user.name || user.email,
+    display_name: user.display_name || user.full_name || user.name || user.email,
+    faculty_id: user.faculty_id || null,
+    department_id: user.department_id || null,
+    id: user.id || null,
+  });
+  setSelectedUserType(type || user.role || 'user');
+  setShowChatModal(true);
+  setChatMessages([]);
+  fetchChatMessages(user.email);
+};
+
+const openChatFromNotification = (notif) => {
+  if (!notif?.sender_email) return;
+
+  markNotificationRead(notif.id);
+
+  const user = {
+    email: notif.sender_email,
+    role: notif.sender_role || 'user',
+    name: notif.sender_name || notif.sender_email,
+    display_name: notif.sender_name || notif.sender_email,
+    faculty_id: notif.faculty_id || null,
+    department_id: notif.department_id || null,
+  };
+
+  setSelectedUser(user);
+  setSelectedUserType(notif.sender_role || 'user');
+  setShowChatModal(true);
+  setChatMessages([]);
+  fetchChatMessages(notif.sender_email);
+};
+
+
+
 
  
-useEffect(() => {
-  console.log('🔄 Auth state changed:', { 
-    authLoading, 
-    hasProfile: !!profile,
-    isAdmin,
-    isLecturer,
-    isFinance
-  });
 
-  // Don't redirect while still loading
-  if (authLoading) {
-    console.log('⏳ Auth still loading, waiting...');
-    return;
-  }
-
-  // If auth is done loading and there's no profile, redirect to login
-  if (!authLoading && !profile) {
-    console.log('⚠️ No profile found, redirecting to login');
-    navigate('/login');
-    return;
-  }
-
-  // Profile exists, initialize dashboard
-  if (profile) {
-    console.log('✅ Profile loaded, initializing dashboard');
-    initializeDashboard();
-    setupRealtimeSubscription();
-  }
-
-  // Cleanup subscription on unmount
-  return () => {
-    if (subscriptionRef.current) {
-      subscriptionRef.current.unsubscribe();
-    }
-  };
-}, [profile, authLoading, navigate, isAdmin, isLecturer, isFinance]);
-
-  useEffect(() => {
-    if (activeTab === "timetables" && isAdmin) {
-      fetchProgramTimetables();
-      fetchPrograms();
-      fetchLecturersList();
-    }
-  }, [activeTab, isAdmin]);
-  const initializeDashboard = async () => {
+  const fetchUnreadCount = useCallback(async () => {
+    if (!profile?.email) return;
+    
     try {
-      setLoading((prev) => ({ ...prev, dashboard: true }));
+      const { data, error } = await supabase
+        .from('chat_messages')
+        .select('id')
+        .eq('receiver_email', profile.email)
+        .eq('is_read', false);
 
-      await Promise.all([
-        fetchDashboardStats(),
-        fetchStudents(),
-        fetchLecturers(),
-        fetchCourses(),
-        fetchAssignments(),
-        fetchExams(),
-        fetchFinancialRecords(),
-        fetchLectures(),
-        fetchAttendanceData(),
-      ]);
-
-      // Fetch lecturer-specific data if lecturer
-      if (isLecturer) {
-        await Promise.all([fetchMyAssignments(), fetchLecturerStatistics()]);
-      }
+      if (error) throw error;
+      const count = data?.length || 0;
+      setChatUnreadCount(count);
+      setUnreadCount(count);
     } catch (error) {
-      console.error("Initialization error:", error);
+      console.error('Error fetching unread count:', error);
+    }
+  }, [profile?.email]);
+
+  const fetchChatUsers = useCallback(async () => {
+    console.log("💬 [DEBUG] fetchChatUsers called with profile?.email:", profile?.email);
+    
+    if (!profile?.email) {
+      console.log("⚠️ [DEBUG] No profile email, skipping fetchChatUsers");
+      return;
+    }
+    
+    setLoadingChatUsers(true);
+    try {
+      // Get all unique users who have chatted with the admin
+      console.log("💬 [DEBUG] Fetching chat messages...");
+      const { data, error } = await supabase
+        .from('chat_messages')
+        .select('sender_email, sender_role, sender_name, receiver_email, receiver_role, message, created_at')
+        .or(`sender_email.eq.${profile.email},receiver_email.eq.${profile.email}`)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error("❌ [DEBUG] Error fetching chat messages:", error);
+        throw error;
+      }
+      console.log(`💬 [DEBUG] Got ${data?.length || 0} chat messages`);
+
+      const userMap = new Map();
+      
+      data?.forEach(msg => {
+        let userEmail, userRole, userName, lastMessage;
+        if (msg.sender_email === profile.email) {
+          userEmail = msg.receiver_email;
+          userRole = msg.receiver_role;
+          userName = msg.sender_name;
+          lastMessage = msg.message;
+        } else {
+          userEmail = msg.sender_email;
+          userRole = msg.sender_role;
+          userName = msg.sender_name;
+          lastMessage = msg.message;
+        }
+        
+        if (!userMap.has(userEmail)) {
+          userMap.set(userEmail, {
+            email: userEmail,
+            role: userRole || 'user',
+            name: userName || userEmail,
+            display_name: userName || userEmail,
+            last_message: lastMessage || '',
+            last_message_time: msg.created_at
+          });
+        }
+      });
+
+      // Also fetch all users by role for the chat tabs
+      console.log("💬 [DEBUG] Fetching deans from user_roles...");
+      const { data: deansData, error: deansError } = await supabase
+        .from('user_roles')
+        .select('id, email, role, faculty_id')
+        .eq('role', 'dean')
+        .limit(50);
+      
+      if (deansError) {
+        console.error("❌ [DEBUG] Error fetching deans:", deansError);
+      } else {
+        console.log(`💬 [DEBUG] Got ${deansData?.length || 0} deans`);
+        deansData?.forEach(d => {
+          if (!userMap.has(d.email)) {
+            userMap.set(d.email, {
+              email: d.email,
+              role: 'dean',
+              name: d.email?.split('@')[0] || 'Dean',
+              display_name: d.email?.split('@')[0] || 'Dean',
+              faculty_id: d.faculty_id,
+              last_message: '',
+              last_message_time: null
+            });
+          }
+        });
+      }
+
+      // Fetch HODs
+      console.log("💬 [DEBUG] Fetching HODs from user_roles...");
+      const { data: hodsData, error: hodsError } = await supabase
+        .from('user_roles')
+        .select('id, email, role, department_id, faculty_id')
+        .eq('role', 'hod')
+        .limit(50);
+      
+      if (hodsError) {
+        console.error("❌ [DEBUG] Error fetching HODs:", hodsError);
+      } else {
+        console.log(`💬 [DEBUG] Got ${hodsData?.length || 0} HODs`);
+        hodsData?.forEach(d => {
+          if (!userMap.has(d.email)) {
+            userMap.set(d.email, {
+              email: d.email,
+              role: 'hod',
+              name: d.email?.split('@')[0] || 'HOD',
+              display_name: d.email?.split('@')[0] || 'HOD',
+              department_id: d.department_id,
+              faculty_id: d.faculty_id,
+              last_message: '',
+              last_message_time: null
+            });
+          }
+        });
+      }
+
+      // Fetch lecturers
+      console.log("💬 [DEBUG] Fetching lecturers from lecturers table...");
+      const { data: lecturersData, error: lecturersError } = await supabase
+        .from('lecturers')
+        .select('id, email, full_name')
+        .limit(50);
+      
+      if (lecturersError) {
+        console.error("❌ [DEBUG] Error fetching lecturers:", lecturersError);
+      } else {
+        console.log(`💬 [DEBUG] Got ${lecturersData?.length || 0} lecturers`);
+        lecturersData?.forEach(d => {
+          if (!userMap.has(d.email)) {
+            userMap.set(d.email, {
+              email: d.email,
+              role: 'lecturer',
+              name: d.full_name || d.email?.split('@')[0] || 'Lecturer',
+              display_name: d.full_name || d.email?.split('@')[0] || 'Lecturer',
+              last_message: '',
+              last_message_time: null
+            });
+          }
+        });
+      }
+
+      // Fetch finance officers
+      console.log("💬 [DEBUG] Fetching finance officers from finance_officers table...");
+      const { data: financeData, error: financeError } = await supabase
+        .from('finance_officers')
+        .select('id, email, full_name')
+        .limit(50);
+      
+      if (financeError) {
+        console.error("❌ [DEBUG] Error fetching finance officers:", financeError);
+      } else {
+        console.log(`💬 [DEBUG] Got ${financeData?.length || 0} finance officers`);
+        financeData?.forEach(d => {
+          if (!userMap.has(d.email)) {
+            userMap.set(d.email, {
+              email: d.email,
+              role: 'finance',
+              name: d.full_name || d.email?.split('@')[0] || 'Finance Officer',
+              display_name: d.full_name || d.email?.split('@')[0] || 'Finance Officer',
+              last_message: '',
+              last_message_time: null
+            });
+          }
+        });
+      }
+
+      // Fetch students
+      console.log("💬 [DEBUG] Fetching students from students table...");
+      const { data: studentsData, error: studentsError } = await supabase
+        .from('students')
+        .select('id, email, full_name')
+        .limit(50);
+      
+      if (studentsError) {
+        console.error("❌ [DEBUG] Error fetching students:", studentsError);
+      } else {
+        console.log(`💬 [DEBUG] Got ${studentsData?.length || 0} students`);
+        studentsData?.forEach(d => {
+          if (!userMap.has(d.email)) {
+            userMap.set(d.email, {
+              email: d.email,
+              role: 'student',
+              name: d.full_name || d.email?.split('@')[0] || 'Student',
+              display_name: d.full_name || d.email?.split('@')[0] || 'Student',
+              last_message: '',
+              last_message_time: null
+            });
+          }
+        });
+      }
+
+      const users = Array.from(userMap.values());
+      console.log(`💬 [DEBUG] Total chat users: ${users.length}`);
+      setChatUserList(users);
+      
+    } catch (error) {
+      console.error('❌ [DEBUG] Error fetching chat users:', error);
     } finally {
-      setLoading((prev) => ({ ...prev, dashboard: false }));
+      setLoadingChatUsers(false);
+      console.log("💬 [DEBUG] fetchChatUsers complete");
+    }
+  }, [profile?.email]);
+
+  const getFilteredChatUsers = () => {
+    if (chatTab === 'all') return chatUserList;
+    return chatUserList.filter(user => user.role === chatTab);
+  };
+
+
+  // ==================== NOTIFICATION FUNCTIONS ====================
+  const fetchNotifications = useCallback(async () => {
+    console.log("🔔 [DEBUG] fetchNotifications called with profile?.email:", profile?.email);
+    
+    if (!profile?.email) {
+      console.log("⚠️ [DEBUG] No profile email, skipping fetchNotifications");
+      return;
+    }
+    
+    try {
+      console.log("🔔 [DEBUG] Fetching notifications from chat_messages...");
+      const { data, error } = await supabase
+        .from('chat_messages')
+        .select('*')
+        .eq('receiver_email', profile.email)
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (error) {
+        console.error("❌ [DEBUG] Error fetching notifications:", error);
+        throw error;
+      }
+      
+      console.log(`🔔 [DEBUG] Got ${data?.length || 0} notifications`);
+      setNotifications(data || []);
+      const unread = data?.filter(n => !n.is_read)?.length || 0;
+      setUnreadCount(unread);
+      setChatUnreadCount(unread);
+    } catch (error) {
+      console.error('❌ [DEBUG] Error fetching notifications:', error);
+    }
+  }, [profile?.email]);
+
+  const setupNotificationSubscription = () => {
+    try {
+      if (notificationSubscriptionRef.current) {
+        notificationSubscriptionRef.current.unsubscribe();
+      }
+
+      const subscription = supabase
+        .channel('admin-notifications')
+        .on('postgres_changes', {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'chat_messages',
+          filter: `receiver_email=eq.${profile?.email}`,
+        }, (payload) => {
+          fetchNotifications();
+          fetchUnreadCount();
+          fetchChatUsers();
+          showToast(`📩 New message from ${payload.new.sender_name || payload.new.sender_email}`, 'info');
+        })
+        .subscribe();
+
+      notificationSubscriptionRef.current = subscription;
+    } catch (error) {
+      console.error('Notification subscription error:', error);
     }
   };
+
+  const markNotificationRead = async (id) => {
+    try {
+      await supabase
+        .from('chat_messages')
+        .update({ is_read: true })
+        .eq('id', id);
+      fetchNotifications();
+      fetchUnreadCount();
+    } catch (error) {
+      console.error('Error marking read:', error);
+    }
+  };
+
+  const markAllNotificationsRead = async () => {
+    try {
+      await supabase
+        .from('chat_messages')
+        .update({ is_read: true })
+        .eq('receiver_email', profile?.email)
+        .eq('is_read', false);
+      fetchNotifications();
+      fetchUnreadCount();
+      showToast('✅ All messages marked as read', 'success');
+    } catch (error) {
+      console.error('Error marking all read:', error);
+    }
+  };
+
+  // ==================== MESSAGE FUNCTIONS ====================
+  const handleSendMessage = async () => {
+    if (!selectedUser || !messageText.trim()) {
+      showToast('Please enter a message', 'error');
+      return;
+    }
+
+    try {
+      const messageData = {
+        sender_id: profile.id,
+        sender_email: profile.email,
+        sender_role: 'admin',
+        sender_name: profile.full_name || 'System Admin',
+        receiver_id: selectedUser.id,
+        receiver_email: selectedUser.email,
+        receiver_role: selectedUserType === 'dean' ? 'dean' : 
+                       selectedUserType === 'hod' ? 'hod' : 
+                       selectedUserType === 'lecturer' ? 'lecturer' : 
+                       selectedUserType === 'finance' ? 'finance' : 'student',
+        message: messageText.trim(),
+        is_read: false,
+        created_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from('chat_messages')
+        .insert([messageData]);
+
+      if (error) throw error;
+
+      showToast(`✅ Message sent to ${selectedUser.full_name || selectedUser.email}`, 'success');
+      setMessageText('');
+      setShowMessageModal(false);
+      setSelectedUser(null);
+      
+      // Refresh chat users and notifications
+      fetchChatUsers();
+      fetchNotifications();
+      fetchUnreadCount();
+    } catch (error) {
+      console.error('Error sending message:', error);
+      showToast('❌ Failed to send message: ' + error.message, 'error');
+    }
+  };
+
+  const handleSendBulkMessage = async () => {
+    if (!bulkMessageText.trim() || !bulkMessageRole) {
+      showToast('Please enter a message and select a role', 'error');
+      return;
+    }
+
+    let users = [];
+    if (bulkMessageRole === 'dean') users = deans;
+    else if (bulkMessageRole === 'hod') users = hods;
+    else if (bulkMessageRole === 'lecturer') users = lecturers;
+    else if (bulkMessageRole === 'finance') users = financeOfficers;
+    else if (bulkMessageRole === 'student') users = students;
+
+    if (users.length === 0) {
+      showToast(`No ${bulkMessageRole}s found to message`, 'error');
+      return;
+    }
+
+    if (!window.confirm(`Send message to all ${users.length} ${bulkMessageRole}(s)?`)) return;
+
+    try {
+      const messages = users.map(user => ({
+        sender_id: profile.id,
+        sender_email: profile.email,
+        sender_role: 'admin',
+        sender_name: profile.full_name || 'System Admin',
+        receiver_id: user.id,
+        receiver_email: user.email,
+        receiver_role: bulkMessageRole,
+        message: bulkMessageText.trim(),
+        is_read: false,
+        created_at: new Date().toISOString(),
+      }));
+
+      const { error } = await supabase
+        .from('chat_messages')
+        .insert(messages);
+
+      if (error) throw error;
+
+      showToast(`✅ Message sent to all ${users.length} ${bulkMessageRole}(s)!`, 'success');
+      setBulkMessageText('');
+      setBulkMessageRole('');
+      setShowBulkMessageModal(false);
+      fetchChatUsers();
+      fetchNotifications();
+      fetchUnreadCount();
+    } catch (error) {
+      console.error('Error sending bulk message:', error);
+      showToast('❌ Failed to send messages: ' + error.message, 'error');
+    }
+  };
+
+  // ==================== PROFILE PICTURE FUNCTIONS ====================
+  const handleProfilePictureUpdate = async (file, userId, userType) => {
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `profile-${userId}-${Date.now()}.${fileExt}`;
+      const filePath = `${userId}/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('admin profiles')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: true,
+        });
+
+      if (uploadError) {
+        showToast('❌ Upload failed: ' + uploadError.message, 'error');
+        return;
+      }
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('admin profiles')
+        .getPublicUrl(filePath);
+
+      const { error: roleUpdateError } = await supabase
+        .from('user_roles')
+        .update({ profile_picture_url: publicUrl })
+        .eq('id', userId);
+
+      if (roleUpdateError) {
+        console.error('Role update error:', roleUpdateError);
+      }
+
+      if (userType === 'lecturer') {
+        const { error: updateError } = await supabase
+          .from('lecturers')
+          .update({ profile_picture_url: publicUrl })
+          .eq('id', userId);
+        if (updateError) throw updateError;
+      } else if (userType === 'finance') {
+        const { error: updateError } = await supabase
+          .from('finance_officers')
+          .update({ profile_picture_url: publicUrl })
+          .eq('id', userId);
+        if (updateError) throw updateError;
+      }
+
+      showToast('✅ Profile picture updated successfully!', 'success');
+      
+      if (userType === 'lecturer') fetchLecturers();
+      else if (userType === 'dean') fetchDeans();
+      else if (userType === 'hod') fetchHODs();
+      else if (userType === 'finance') fetchFinanceOfficers();
+      else if (userType === 'student') fetchStudents();
+
+    } catch (error) {
+      console.error('Error updating profile picture:', error);
+      showToast('❌ Failed to update profile picture: ' + error.message, 'error');
+    }
+  };
+
+  // ==================== DATA FETCHING ====================
+  const initializeDashboard = async () => {
+    console.log("🚀 [DEBUG] ========================================");
+    console.log("🚀 [DEBUG] STARTING DASHBOARD INITIALIZATION");
+    console.log("🚀 [DEBUG] Profile:", profile);
+    console.log("🚀 [DEBUG] Profile email:", profile?.email);
+    console.log("🚀 [DEBUG] Is admin:", isAdmin);
+    console.log("🚀 [DEBUG] ========================================");
+    
+    try {
+      setLoading(prev => ({ ...prev, dashboard: true }));
+      
+      console.log("📊 [DEBUG] Fetching dashboard stats...");
+      await fetchDashboardStats();
+      console.log("✅ [DEBUG] Dashboard stats complete");
+      
+      console.log("👥 [DEBUG] Fetching students...");
+      await fetchStudents();
+      console.log("✅ [DEBUG] Students complete");
+      
+      console.log("👨‍🏫 [DEBUG] Fetching lecturers...");
+      await fetchLecturers();
+      console.log("✅ [DEBUG] Lecturers complete");
+      
+      console.log("📖 [DEBUG] Fetching courses...");
+      await fetchCourses();
+      console.log("✅ [DEBUG] Courses complete");
+      
+      console.log("📝 [DEBUG] Fetching assignments...");
+      await fetchAssignments();
+      console.log("✅ [DEBUG] Assignments complete");
+      
+      console.log("🎯 [DEBUG] Fetching exams...");
+      await fetchExams();
+      console.log("✅ [DEBUG] Exams complete");
+      
+      console.log("💰 [DEBUG] Fetching financial records...");
+      await fetchFinancialRecords();
+      console.log("✅ [DEBUG] Financial records complete");
+      
+      console.log("📅 [DEBUG] Fetching lectures...");
+      await fetchLectures();
+      console.log("✅ [DEBUG] Lectures complete");
+      
+      console.log("🔔 [DEBUG] Fetching notifications...");
+      await fetchNotifications();
+      console.log("✅ [DEBUG] Notifications complete");
+      
+      console.log("👨‍🎓 [DEBUG] Fetching deans...");
+      await fetchDeans();
+      console.log("✅ [DEBUG] Deans complete");
+      
+      console.log("🏢 [DEBUG] Fetching HODs...");
+      await fetchHODs();
+      console.log("✅ [DEBUG] HODs complete");
+      
+      console.log("💰 [DEBUG] Fetching finance officers...");
+      await fetchFinanceOfficers();
+      console.log("✅ [DEBUG] Finance officers complete");
+      
+      console.log("💬 [DEBUG] Fetching chat users...");
+      await fetchChatUsers();
+      console.log("✅ [DEBUG] Chat users complete");
+      
+      console.log("📬 [DEBUG] Fetching unread count...");
+      await fetchUnreadCount();
+      console.log("✅ [DEBUG] Unread count complete");
+      
+      console.log("🎉 [DEBUG] ALL FETCHES COMPLETE!");
+      
+    } catch (error) {
+      console.error("❌ [DEBUG] Initialization error:", error);
+      console.error("❌ [DEBUG] Error stack:", error.stack);
+      showToast("Error loading dashboard: " + error.message, 'error');
+    } finally {
+      console.log("🏁 [DEBUG] Setting loading.dashboard to false");
+      setLoading(prev => ({ ...prev, dashboard: false }));
+    }
+  };
+
   const setupRealtimeSubscription = () => {
     try {
       if (subscriptionRef.current) {
@@ -2700,54 +1167,23 @@ useEffect(() => {
       }
 
       const subscription = supabase
-        .channel("dashboard-changes")
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "assignment_submissions" },
-          () => {
-            if (isLecturer && selectedAssignment) {
-              fetchAssignmentSubmissions(selectedAssignment.id);
-            }
-            fetchDashboardStats();
-            if (isLecturer) {
-              fetchLecturerStatistics();
-            }
-          },
-        )
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "assignments" },
-          () => {
-            fetchAssignments();
-            if (isLecturer) {
-              fetchMyAssignments();
-            }
-          },
-        )
-        // ← NEW: Realtime updates for exam submissions
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "exam_submissions" },
-          (payload) => {
-            console.log("Realtime exam submission change:", payload);
-            if (
-              selectedExamForGrading &&
-              payload.new?.exam_id === selectedExamForGrading.exam_id
-            ) {
-              // Refetch submissions for the currently viewed exam
-              fetchExamSubmissions(selectedExamForGrading.exam_id);
-            }
-          },
-        )
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "attendance_records" },
-          (payload) => {
-            console.log("Realtime attendance change detected:", payload);
-            fetchAttendanceData();
-            fetchDashboardStats(); // Updates the rate instantly
-          },
-        )
+        .channel("admin-dashboard-changes")
+        .on("postgres_changes", { event: "*", schema: "public", table: "students" }, () => {
+          fetchStudents();
+          fetchDashboardStats();
+        })
+        .on("postgres_changes", { event: "*", schema: "public", table: "lecturers" }, () => {
+          fetchLecturers();
+          fetchDashboardStats();
+        })
+        .on("postgres_changes", { event: "*", schema: "public", table: "courses" }, () => {
+          fetchCourses();
+          fetchDashboardStats();
+        })
+        .on("postgres_changes", { event: "*", schema: "public", table: "assignments" }, () => {
+          fetchAssignments();
+          fetchDashboardStats();
+        })
         .subscribe((status) => {
           setRealtimeConnected(status === "SUBSCRIBED");
         });
@@ -2758,2003 +1194,9 @@ useEffect(() => {
     }
   };
 
-  // Load programs from database (for both admin AND lecturer)
-  useEffect(() => {
-    const loadPrograms = async () => {
-      // Always load programs — needed for tutorial uploads by lecturers
-      try {
-        setProgramsLoading(true);
-        const { data, error } = await supabase
-          .from("programs")
-          .select("id, name, code")
-          .order("name", { ascending: true });
-        if (error) {
-          console.error("Error loading programs:", error);
-          alert("Failed to load programs");
-          setPrograms([]);
-        } else {
-          setPrograms(data || []);
-          console.log("✅ Programs loaded:", data);
-        }
-      } catch (err) {
-        console.error("Unexpected error loading programs:", err);
-        setPrograms([]);
-      } finally {
-        setProgramsLoading(false);
-      }
-    };
-    loadPrograms();
-  }, []); // Run once on mount — no dependency on isAdmin
-  // =================== FILE DOWNLOAD FUNCTIONS ===================
-const downloadFile = async (fileUrl, fileName, submissionId = null, bucket = null) => {
-  try {
-    const downloadKey = submissionId
-      ? `${submissionId}_${fileName}`
-      : fileName;
-    setDownloadingFile(downloadKey);
-
-    console.log("📥 Download attempt:", { fileUrl, fileName, submissionId, bucket });
-
-    // If fileUrl is already a full URL, open it directly
-    if (fileUrl.startsWith("http")) {
-      console.log("🔗 File is already a full URL, opening directly");
-      window.open(fileUrl, "_blank");
-      setDownloadingFile(null);
-      return;
-    }
-
-    // Determine which bucket to use
-    let bucketName = "assignments"; // default
-    let filePath = fileUrl;
-
-    // Check if the URL contains a bucket name
-    if (fileUrl.includes("/storage/v1/object/public/")) {
-      // Extract bucket and path from full URL
-      const match = fileUrl.match(/\/storage\/v1\/object\/public\/([^/]+)\/(.+)/);
-      if (match) {
-        bucketName = match[1];
-        filePath = match[2];
-        console.log(`📂 Extracted from URL: bucket=${bucketName}, path=${filePath}`);
-      } else {
-        // Try to extract just the path
-        const pathMatch = fileUrl.match(/public\/(.+)/);
-        if (pathMatch) {
-          filePath = pathMatch[1];
-        }
-      }
-    } else if (fileUrl.includes("assignments/")) {
-      // Extract everything after "assignments/"
-      const match = fileUrl.match(/assignments\/(.*)/);
-      if (match && match[1]) {
-        filePath = match[1];
-        bucketName = "assignments";
-        console.log(`📂 Extracted from assignments: path=${filePath}`);
-      }
-    } else if (fileUrl.includes("Student exam/")) {
-      const match = fileUrl.match(/Student exam\/(.*)/);
-      if (match && match[1]) {
-        filePath = match[1];
-        bucketName = "Student exam";
-        console.log(`📂 Extracted from Student exam: path=${filePath}`);
-      }
-    } else if (fileUrl.includes("Lecturer exam/")) {
-      const match = fileUrl.match(/Lecturer exam\/(.*)/);
-      if (match && match[1]) {
-        filePath = match[1];
-        bucketName = "Lecturer exam";
-        console.log(`📂 Extracted from Lecturer exam: path=${filePath}`);
-      }
-    }
-
-    // If a specific bucket was passed, use it
-    if (bucket) {
-      bucketName = bucket;
-    }
-
-    // Clean the file path
-    filePath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
-
-    if (!filePath || filePath.length < 3) {
-      console.error("❌ Invalid file path:", filePath);
-      // Try to use the original URL as fallback
-      if (fileUrl.startsWith("http")) {
-        window.open(fileUrl, "_blank");
-        setDownloadingFile(null);
-        return;
-      }
-      alert("Invalid file path");
-      setDownloadingFile(null);
-      return;
-    }
-
-    console.log(`📂 Final: bucket=${bucketName}, path=${filePath}`);
-
-    // Get public URL
-    const { data: publicUrlData } = supabase.storage
-      .from(bucketName)
-      .getPublicUrl(filePath);
-
-    const publicUrl = publicUrlData.publicUrl;
-    console.log("🌐 Generated public URL:", publicUrl);
-
-    // Try to download using the public URL
-    try {
-      console.log("🔧 Trying to download from public URL...");
-      const response = await fetch(publicUrl);
-
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = fileName || filePath.split("/").pop() || "download";
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-        console.log("✅ Download successful from public URL");
-        setDownloadingFile(null);
-        return;
-      } else {
-        console.warn("⚠️ Public URL download failed, trying storage API...");
-        throw new Error(`HTTP ${response.status}`);
-      }
-    } catch (fetchError) {
-      console.warn("⚠️ Fetch error:", fetchError.message);
-
-      // Try Supabase storage API
-      try {
-        console.log("🔧 Trying storage API download...");
-        const { data, error: downloadError } = await supabase.storage
-          .from(bucketName)
-          .download(filePath);
-
-        if (downloadError) {
-          console.error("❌ Storage API error:", downloadError);
-          // Last resort: open in new tab
-          console.log("🔄 Opening public URL in new tab...");
-          window.open(publicUrl, "_blank");
-        } else {
-          const url = window.URL.createObjectURL(data);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = fileName || filePath.split("/").pop() || "download";
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          window.URL.revokeObjectURL(url);
-          console.log("✅ Storage API download successful");
-        }
-      } catch (storageError) {
-        console.error("❌ Storage error:", storageError);
-        // Final fallback
-        window.open(publicUrl, "_blank");
-      }
-    }
-
-    // Update download count for assignment submissions
-    if (submissionId && bucketName === "assignments") {
-      try {
-        await supabase
-          .from("assignment_submissions")
-          .update({
-            download_count:
-              (assignmentSubmissions.find(
-                (s) => s.submission_id === submissionId,
-              )?.download_count || 0) + 1,
-          })
-          .eq("id", submissionId);
-      } catch (countError) {
-        console.warn("⚠️ Could not update download count:", countError);
-      }
-    }
-  } catch (error) {
-    console.error("❌ Download error:", error);
-    alert("Error downloading file: " + error.message);
-  } finally {
-    setDownloadingFile(null);
-  }
-};
-  // =================== DEBUG FUNCTIONS ===================
-  const debugStudentRelationship = async () => {
-    console.log("🔍 Debugging student-submission relationship...");
-
-    try {
-      // 1. Check the schema of assignment_submissions
-      const { data: submissionSchema } = await supabase
-        .from("assignment_submissions")
-        .select("*")
-        .limit(1);
-
-      console.log("📋 assignment_submissions schema sample:", submissionSchema);
-
-      // 2. Check the schema of students
-      const { data: studentSchema } = await supabase
-        .from("students")
-        .select("*")
-        .limit(1);
-
-      console.log("📋 students schema sample:", studentSchema);
-
-      // 3. Try to find a matching student
-      if (submissionSchema && submissionSchema.length > 0) {
-        const submission = submissionSchema[0];
-        console.log("📝 Sample submission student_id:", submission.student_id);
-
-        // Try to find this student
-        const { data: matchingStudent } = await supabase
-          .from("students")
-          .select("*")
-          .eq("id", submission.student_id)
-          .single();
-
-        console.log("👤 Student found by UUID:", matchingStudent);
-
-        // If not found by UUID, try by student_id field
-        if (!matchingStudent) {
-          // Check if student_id might be stored as a string ID
-          const { data: studentByStringId } = await supabase
-            .from("students")
-            .select("*")
-            .ilike("student_id", `%${submission.student_id}%`)
-            .limit(5);
-
-          console.log(
-            "🔤 Students found by string ID search:",
-            studentByStringId,
-          );
-        }
-      }
-
-      // 4. Check if there are any students at all
-      const { data: allStudents, count: studentCount } = await supabase
-        .from("students")
-        .select("*", { count: "exact", head: false });
-
-      console.log(`👥 Total students in database: ${studentCount}`);
-      console.log("📊 First 3 students:", allStudents?.slice(0, 3));
-
-      alert(
-        `Debug complete. Check console for details.\nTotal students: ${studentCount}`,
-      );
-    } catch (error) {
-      console.error("❌ Debug error:", error);
-      alert("Debug failed: " + error.message);
-    }
-  };
-
-  const testBucketAccess = async () => {
-    console.log("🧪 Testing bucket access...");
-
-    try {
-      // Test 1: List files in assignments bucket
-      const { data: files, error: listError } = await supabase.storage
-        .from("assignments")
-        .list();
-
-      console.log("📁 Bucket files:", files);
-      console.log("📊 Total files:", files?.length || 0);
-
-      if (listError) {
-        console.error("❌ Bucket listing error:", listError);
-        alert(`Cannot access bucket: ${listError.message}`);
-        return;
-      }
-
-      // Test 2: Try to download a sample file if exists
-      if (files && files.length > 0) {
-        const testFile = files[0].name;
-        console.log("📄 Testing with file:", testFile);
-
-        // Test public URL
-        const { data: publicUrlData } = supabase.storage
-          .from("assignments")
-          .getPublicUrl(testFile);
-
-        console.log("🔗 Public URL:", publicUrlData.publicUrl);
-
-        // Test download
-        const { data: fileData, error: downloadError } = await supabase.storage
-          .from("assignments")
-          .download(testFile);
-
-        if (downloadError) {
-          console.warn("⚠️ Test download failed:", downloadError);
-          alert(
-            `Bucket exists but download failed: ${downloadError.message}\n\nTry making the bucket public in Supabase Dashboard.`,
-          );
-        } else {
-          console.log("✅ Test download successful!");
-          alert(
-            `Bucket access successful! Found ${files.length} files.\n\nPublic URL for "${testFile}":\n${publicUrlData.publicUrl}`,
-          );
-        }
-      } else {
-        console.log("📭 Bucket is empty");
-        alert("Bucket exists but is empty.");
-      }
-    } catch (error) {
-      console.error("❌ Bucket test error:", error);
-      alert("Bucket test failed: " + error.message);
-    }
-  };
-
-  const testSpecificFile = async () => {
-    const testFilePath =
-      "e26efb58-2093-4619-9cc9-4f0de6f8648c/b190625d-9fca-401a-8102-9ce82d3266a2/1766055967374_0_https.docx";
-
-    console.log("🧪 Testing specific file path:", testFilePath);
-
-    try {
-      // Test 1: List to see if the file exists in that path
-      const { data: listData, error: listError } = await supabase.storage
-        .from("assignments")
-        .list(
-          "e26efb58-2093-4619-9cc9-4f0de6f8648c/b190625d-9fca-401a-8102-9ce82d3266a2",
-        );
-
-      console.log("📁 Files in subfolder:", listData);
-
-      // Test 2: Get public URL
-      const { data: publicUrlData } = supabase.storage
-        .from("assignments")
-        .getPublicUrl(testFilePath);
-
-      console.log("🔗 Public URL:", publicUrlData.publicUrl);
-
-      // Test 3: Try to download
-      const { data: fileData, error: downloadError } = await supabase.storage
-        .from("assignments")
-        .download(testFilePath);
-
-      if (downloadError) {
-        console.error("❌ Download test failed:", downloadError);
-        alert(
-          `Cannot download: ${downloadError.message}\n\nTry checking bucket policies for nested folders.`,
-        );
-      } else {
-        console.log("✅ Download test successful!");
-        alert(
-          `File exists at path: ${testFilePath}\n\nPublic URL:\n${publicUrlData.publicUrl}`,
-        );
-      }
-    } catch (error) {
-      console.error("❌ Test error:", error);
-      alert("Test failed: " + error.message);
-    }
-  };
-
-  const testStudentDataRetrieval = async () => {
-    console.log("🔍 Testing student data retrieval...");
-
-    try {
-      // Get all submissions to see what student IDs we have
-      const { data: submissions } = await supabase
-        .from("assignment_submissions")
-        .select("student_id")
-        .limit(5);
-
-      console.log("📋 Sample submissions with student IDs:", submissions);
-
-      if (submissions && submissions.length > 0) {
-        // Try to get these students
-        const studentIds = submissions
-          .map((s) => s.student_id)
-          .filter((id) => id);
-        console.log("👥 Student IDs to look up:", studentIds);
-
-        // Try by UUID first
-        const { data: studentsByUuid, error: uuidError } = await supabase
-          .from("students")
-          .select("*")
-          .in("id", studentIds);
-
-        console.log("👤 Students found by UUID:", studentsByUuid);
-        console.log("❌ UUID error:", uuidError);
-
-        // Try by student_id string
-        const studentIdStrings = studentIds.filter(
-          (id) => typeof id === "string" && id.includes("-"),
-        );
-        if (studentIdStrings.length > 0) {
-          const { data: studentsByStringId, error: stringError } =
-            await supabase
-              .from("students")
-              .select("*")
-              .in("student_id", studentIdStrings);
-
-          console.log("🔤 Students found by string ID:", studentsByStringId);
-          console.log("❌ String ID error:", stringError);
-        }
-      }
-
-      // Count total students
-      const { data: allStudents, count: totalStudents } = await supabase
-        .from("students")
-        .select("*", { count: "exact", head: false });
-
-      console.log(`👥 Total students in database: ${totalStudents}`);
-      console.log("📊 Sample students:", allStudents?.slice(0, 3));
-
-      alert(
-        `Student data test complete.\nTotal students: ${totalStudents}\nCheck console for details.`,
-      );
-    } catch (error) {
-      console.error("❌ Student test error:", error);
-      alert("Student test failed: " + error.message);
-    }
-  };
-
-  const downloadAllFilesForSubmission = async (submission) => {
-    if (
-      !submission.file_download_urls ||
-      submission.file_download_urls.length === 0
-    ) {
-      alert("No files to download");
-      return;
-    }
-
-    setBatchDownloading(true);
-    setBatchProgress({
-      current: 0,
-      total: submission.file_download_urls.length,
-    });
-
-    try {
-      for (let i = 0; i < submission.file_download_urls.length; i++) {
-        const url = submission.file_download_urls[i];
-        const originalUrl = submission.file_urls[i];
-        const fileExt = getFileExtension(originalUrl || url);
-        const fileName =
-          `${submission.student_name}_${submission.assignment_title}_file${i + 1}.${fileExt}`.replace(
-            /[^a-zA-Z0-9._-]/g,
-            "_",
-          );
-
-        setBatchProgress({
-          current: i + 1,
-          total: submission.file_download_urls.length,
-        });
-
-        await downloadFile(url, fileName, submission.submission_id);
-
-        // Add delay between downloads
-        if (i < submission.file_download_urls.length - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 500));
-        }
-      }
-
-      alert(
-        `All ${submission.file_download_urls.length} files downloaded successfully!`,
-      );
-    } catch (error) {
-      console.error("Batch download error:", error);
-      alert("Error downloading files: " + error.message);
-    } finally {
-      setBatchDownloading(false);
-      setBatchProgress({ current: 0, total: 0 });
-    }
-  };
-
-  const downloadAllSubmissions = async () => {
-    if (assignmentSubmissions.length === 0) {
-      alert("No submissions to download");
-      return;
-    }
-
-    const submissionsWithFiles = assignmentSubmissions.filter(
-      (sub) => sub.file_download_urls && sub.file_download_urls.length > 0,
-    );
-
-    if (submissionsWithFiles.length === 0) {
-      alert("No files found in submissions");
-      return;
-    }
-
-    setBatchDownloading(true);
-    setBatchProgress({ current: 0, total: submissionsWithFiles.length });
-
-    try {
-      for (let i = 0; i < submissionsWithFiles.length; i++) {
-        const submission = submissionsWithFiles[i];
-        setBatchProgress({
-          current: i + 1,
-          total: submissionsWithFiles.length,
-        });
-
-        for (let j = 0; j < submission.file_download_urls.length; j++) {
-          const url = submission.file_download_urls[j];
-          const originalUrl = submission.file_urls[j];
-          const fileExt = getFileExtension(originalUrl || url);
-          const fileName =
-            `${submission.student_name}_${submission.assignment_title}_${i + 1}_${j + 1}.${fileExt}`.replace(
-              /[^a-zA-Z0-9._-]/g,
-              "_",
-            );
-
-          await downloadFile(url, fileName, submission.submission_id);
-
-          // Small delay between files
-          await new Promise((resolve) => setTimeout(resolve, 300));
-        }
-
-        // Delay between students
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-
-      alert(
-        `All files from ${submissionsWithFiles.length} submissions downloaded!`,
-      );
-    } catch (error) {
-      console.error("All submissions download error:", error);
-      alert("Error downloading submissions: " + error.message);
-    } finally {
-      setBatchDownloading(false);
-      setBatchProgress({ current: 0, total: 0 });
-    }
-  };
-
-  const getFileExtension = (url) => {
-    if (!url) return "txt";
-    const urlWithoutParams = url.split("?")[0];
-    const parts = urlWithoutParams.split(".");
-    return parts.length > 1 ? parts.pop().toLowerCase() : "txt";
-  };
-
-  const getFileNameFromUrl = (url) => {
-    if (!url) return "file";
-    const urlWithoutParams = url.split("?")[0];
-    return urlWithoutParams.split("/").pop() || "file";
-  };
-
-  // =================== ASSIGNMENT MANAGEMENT FUNCTIONS ===================
-  const fetchMyAssignments = async () => {
-    if (!isLecturer || !profile?.id) return;
-    console.log("DEBUG: Fetching assignments for lecturer:", profile.id);
-
-    try {
-      // === Try RPC first (your existing logic) ===
-      const { data, error } = await supabase.rpc("get_lecturer_assignments", {
-        p_lecturer_id: profile.id,
-      });
-
-      let processedAssignments = [];
-
-      if (!error && data && data.length > 0) {
-        processedAssignments = data;
-      } else {
-        console.warn("RPC failed or no data, falling back to direct query");
-
-        // === Fallback: Direct query ===
-        const { data: directData, error: directError } = await supabase
-          .from("assignments")
-          .select(
-            `
-          id,
-          title,
-          description,
-          due_date,
-          total_marks,
-          status,
-          course_id,
-          courses!inner (
-            course_code,
-            course_name,
-            department_code
-          )
-        `,
-          )
-          .eq("lecturer_id", profile.id);
-
-        if (directError) throw directError;
-
-        // Process submission stats for each assignment
-        processedAssignments = await Promise.all(
-          (directData || []).map(async (assignment) => {
-            const { data: subs } = await supabase
-              .from("assignment_submissions")
-              .select("id, status")
-              .eq("assignment_id", assignment.id);
-
-            const submittedCount =
-              subs?.filter(
-                (s) => s.status === "submitted" || s.status === "graded",
-              ).length || 0;
-            const gradedCount =
-              subs?.filter((s) => s.status === "graded").length || 0;
-
-            const { data: enrolled } = await supabase
-              .from("student_courses")
-              .select("student_id")
-              .eq("course_id", assignment.course_id);
-
-            const totalStudents = enrolled?.length || 0;
-
-            return {
-              assignment_id: assignment.id,
-              title: assignment.title,
-              description: assignment.description,
-              due_date: assignment.due_date,
-              total_marks: assignment.total_marks,
-              status: assignment.status,
-              course_code: assignment.courses?.course_code || "N/A",
-              course_name: assignment.courses?.course_name || "N/A",
-              department_code: assignment.courses?.department_code || "N/A",
-              submitted_count: submittedCount,
-              graded_count: gradedCount,
-              not_submitted_count: totalStudents - submittedCount,
-              total_students: totalStudents,
-              submission_rate:
-                totalStudents > 0
-                  ? Math.round((submittedCount / totalStudents) * 100)
-                  : 0,
-            };
-          }),
-        );
-      }
-
-      // === CLIENT-SIDE SORTING: Today first, then newest → oldest ===
-      const now = new Date();
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      const sortedAssignments = processedAssignments.sort((a, b) => {
-        const dueA = new Date(a.due_date);
-        const dueB = new Date(b.due_date);
-
-        const isTodayA = dueA.toDateString() === today.toDateString();
-        const isTodayB = dueB.toDateString() === today.toDateString();
-
-        // Today’s assignments on top
-        if (isTodayA && !isTodayB) return -1;
-        if (!isTodayA && isTodayB) return 1;
-
-        // Otherwise: newest due date first
-        return dueB - dueA;
-      });
-
-      console.log("✅ Assignments sorted (today on top):", sortedAssignments);
-      setMyAssignments(sortedAssignments);
-    } catch (error) {
-      console.error("Error in fetchMyAssignments:", error);
-      setMyAssignments([]);
-    }
-  };
-
-  const fetchAssignmentSubmissions = async (assignmentId) => {
-    if (!assignmentId) {
-      console.error("No assignment ID provided");
-      setAssignmentSubmissions([]);
-      return;
-    }
-
-    try {
-      console.log("Fetching submissions for assignment:", assignmentId);
-
-      const { data: submissions, error } = await supabase
-        .from("assignment_submissions")
-        .select(
-          "id, assignment_id, student_id, submission_date, status, file_urls, marks_obtained, feedback, graded_at, graded_by",
-        )
-        .eq("assignment_id", assignmentId)
-        .order("submission_date", { ascending: false });
-
-      if (error) throw error;
-
-      if (!submissions || submissions.length === 0) {
-        setAssignmentSubmissions([]);
-        setGradeForm({});
-        console.log("No submissions found");
-        return;
-      }
-
-      // === Fetch student details ===
-      const studentUuids = [...new Set(submissions.map((s) => s.student_id))];
-      console.log("Looking up students:", studentUuids);
-
-      const { data: students, error: studentError } = await supabase
-        .from("students")
-        .select("id, full_name, email, student_id")
-        .in("id", studentUuids);
-
-      if (studentError) {
-        console.error("Error fetching students:", studentError);
-      }
-
-      const studentMap = {};
-      students?.forEach((stu) => {
-        studentMap[String(stu.id)] = {
-          name: stu.full_name || "Unknown Student",
-          email: stu.email || "No email",
-          reg: stu.student_id || "N/A",
-        };
-      });
-
-      // === Generate proper public download URLs ===
-      const projectRef = supabase.supabaseUrl.split("//")[1].split(".")[0];
-
-      const processedSubmissions = submissions.map((sub) => {
-        const studentInfo = studentMap[String(sub.student_id)] || {
-          name: "Unknown Student",
-          email: "No email",
-          reg: "N/A",
-        };
-
-        const fileDownloadUrls = (sub.file_urls || [])
-          .map((filePath) => {
-            if (!filePath) return "";
-            if (filePath.startsWith("http")) return filePath;
-
-            const cleanPath = filePath.startsWith("/")
-              ? filePath.slice(1)
-              : filePath;
-            return `https://${projectRef}.supabase.co/storage/v1/object/public/assignments/${cleanPath}`;
-          })
-          .filter((url) => url);
-
-        return {
-          submission_id: sub.id, // ← Safe UUID (used everywhere)
-          student_id: sub.student_id,
-          student_name: studentInfo.name,
-          student_email: studentInfo.email,
-          registration_number: studentInfo.reg,
-          submission_date: sub.submission_date,
-          status: sub.status || "submitted",
-          file_urls: sub.file_urls || [],
-          file_download_urls: fileDownloadUrls, // ← Now correctly generated
-          marks_obtained: sub.marks_obtained,
-          feedback: sub.feedback,
-          graded_at: sub.graded_at,
-        };
-      });
-
-      console.log(
-        "Processed submissions with download URLs:",
-        processedSubmissions,
-      );
-      setAssignmentSubmissions(processedSubmissions);
-
-      // === Initialize grading form using safe submission_id ===
-      const initialForm = {};
-      processedSubmissions.forEach((sub) => {
-        initialForm[sub.submission_id] = {
-          marks: sub.marks_obtained?.toString() || "",
-          feedback: sub.feedback || "",
-        };
-      });
-      setGradeForm(initialForm);
-    } catch (err) {
-      console.error("Error in fetchAssignmentSubmissions:", err);
-      alert("Failed to load submissions: " + err.message);
-      setAssignmentSubmissions([]);
-      setGradeForm({});
-    }
-  };
-
-const fetchExamSubmissions = async (examId) => {
-  if (!examId) {
-    setExamSubmissions([]);
-    return;
-  }
-  
-  try {
-    console.log("📝 Fetching submissions for exam:", examId);
-    
-    // Fetch submissions
-    const { data: submissions, error } = await supabase
-      .from("exam_submissions")
-      .select("*")
-      .eq("exam_id", examId)
-      .order("submitted_at", { ascending: false });
-
-    if (error) {
-      console.error("Error fetching submissions:", error);
-      setExamSubmissions([]);
-      return;
-    }
-
-    if (!submissions || submissions.length === 0) {
-      console.log("No submissions found for this exam");
-      setExamSubmissions([]);
-      return;
-    }
-
-    // Get unique student UUIDs
-    const studentUuids = [...new Set(submissions.map((s) => s.student_id))];
-    console.log(`Found ${submissions.length} submissions from ${studentUuids.length} students`);
-
-    // Fetch student details
-    const { data: students, error: studentError } = await supabase
-      .from("students")
-      .select("id, full_name, email, student_id")
-      .in("id", studentUuids);
-
-    if (studentError) {
-      console.error("Error fetching students:", studentError);
-    }
-
-    const studentMap = {};
-    students?.forEach((stu) => {
-      studentMap[stu.id] = {
-        full_name: stu.full_name || "Unknown Student",
-        email: stu.email || "No email",
-        registration_number: stu.student_id || "N/A",
-      };
-    });
-
-    // Process submissions with student info
-    const processed = submissions.map((sub) => {
-      const student = studentMap[sub.student_id] || {
-        full_name: "Unknown Student",
-        email: "No email",
-        registration_number: "N/A",
-      };
-
-      // ⭐ FIXED: Generate download URLs for answer files (submitted by students)
-      const answerFileUrls = (sub.answer_files || [])
-        .map((filePath) => {
-          if (!filePath) return null;
-          if (filePath.startsWith("http")) return filePath;
-          
-          // Clean path
-          const cleanPath = filePath.startsWith("/") ? filePath.slice(1) : filePath;
-          try {
-            const { data: urlData } = supabase.storage
-              .from("Student exam")
-              .getPublicUrl(cleanPath);
-            return urlData.publicUrl;
-          } catch (err) {
-            console.warn("Error generating URL for:", filePath, err);
-            return null;
-          }
-        })
-        .filter((url) => url);
-
-      console.log(`Student ${student.full_name} has ${answerFileUrls.length} answer files`);
-
-      return {
-        id: sub.id,
-        student_name: student.full_name,
-        student_email: student.email,
-        registration_number: student.registration_number,
-        submitted_at: sub.submitted_at,
-        status: sub.status || "submitted",
-        answer_files: sub.answer_files || [],
-        file_download_urls: answerFileUrls,
-        answer_text: sub.answer_text || "",
-        total_marks_obtained: sub.total_marks_obtained || null,
-        feedback: sub.feedback || "",
-        graded_at: sub.graded_at || null,
-      };
-    });
-
-    setExamSubmissions(processed);
-    console.log(`✅ Processed ${processed.length} submissions with files`);
-    
-    // Initialize grading form
-    const initialForm = {};
-    processed.forEach((sub) => {
-      initialForm[sub.id] = {
-        marks: sub.total_marks_obtained?.toString() || "",
-        feedback: sub.feedback || "",
-      };
-    });
-    setExamGradeForm(initialForm);
-    
-  } catch (err) {
-    console.error("Error in fetchExamSubmissions:", err);
-    setExamSubmissions([]);
-  }
-};
-
-const fetchMyExams = async () => {
-  if (!isLecturer || !profile?.id) {
-    console.log("fetchMyExams: Not a lecturer or no profile");
-    setMyExams([]);
-    return;
-  }
-  console.log("🔍 Starting fetchMyExams for lecturer:", profile.id);
-
-  try {
-    // === Step 1: Get course IDs taught by this lecturer ===
-    let courseIds = [];
-    
-    const { data: lecturerCourses, error: lecturerCoursesError } = await supabase
-      .from("courses")
-      .select("id")
-      .eq("lecturer_id", profile.id);
-
-    if (lecturerCoursesError) {
-      console.error("Error fetching lecturer courses:", lecturerCoursesError);
-    } else if (lecturerCourses?.length > 0) {
-      courseIds = lecturerCourses.map((c) => c.id);
-      console.log(`Found ${courseIds.length} courses assigned to lecturer`);
-    }
-
-    if (courseIds.length === 0 && departmentCodes?.length > 0) {
-      console.log("No direct course assignments, checking department courses...");
-      const { data: deptCourses, error: deptCoursesError } = await supabase
-        .from("courses")
-        .select("id")
-        .in("department_code", departmentCodes);
-
-      if (deptCoursesError) {
-        console.error("Error fetching department courses:", deptCoursesError);
-      } else if (deptCourses?.length > 0) {
-        courseIds = deptCourses.map((c) => c.id);
-        console.log(`Found ${courseIds.length} courses in departments:`, departmentCodes);
-      }
-    }
-
-    if (courseIds.length === 0) {
-      console.log("No courses found for this lecturer");
-      setMyExams([]);
-      return;
-    }
-
-    // === Step 2: Fetch exams for these courses with ALL fields ===
-    const { data: exams, error: examsError } = await supabase
-      .from("examinations")
-      .select(`
-        id,
-        title,
-        description,
-        start_time,
-        end_time,
-        total_marks,
-        exam_type,
-        venue,
-        status,
-        course_id,
-        exam_files,
-        target_academic_year,
-        target_year_of_study,
-        target_semester,
-        target_program_id,
-        courses!inner (
-          course_code,
-          course_name,
-          department_code
-        )
-      `)
-      .in("course_id", courseIds)
-      .order("start_time", { ascending: true });
-
-    if (examsError) {
-      console.error("Error fetching exams:", examsError);
-      setMyExams([]);
-      return;
-    }
-
-    if (!exams || exams.length === 0) {
-      console.log("No exams found for these courses");
-      setMyExams([]);
-      return;
-    }
-
-    console.log(`Found ${exams.length} exams`);
-
-    // === Step 3: Fetch submission stats ===
-    const examIds = exams.map((e) => e.id);
-    const { data: submissions, error: submissionsError } = await supabase
-      .from("exam_submissions")
-      .select("exam_id, status")
-      .in("exam_id", examIds);
-
-    if (submissionsError) {
-      console.warn("Error fetching submissions:", submissionsError);
-    }
-
-    const statsMap = {};
-    examIds.forEach((id) => {
-      statsMap[id] = { submitted: 0, graded: 0, pending: 0 };
-    });
-
-    (submissions || []).forEach((sub) => {
-      const stats = statsMap[sub.exam_id];
-      if (stats) {
-        if (sub.status === "submitted" || sub.status === "graded") {
-          stats.submitted++;
-        }
-        if (sub.status === "graded") {
-          stats.graded++;
-        }
-        stats.pending = stats.submitted - stats.graded;
-      }
-    });
-
-    // === Step 4: Process exams ===
-    const now = new Date();
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const processedExams = exams.map((exam) => {
-      const startDate = new Date(exam.start_time);
-      const endDate = new Date(exam.end_time);
-      const isActive = now >= startDate && now <= endDate;
-      const isToday = startDate.toDateString() === today.toDateString();
-      
-      // ⭐ Log exam files
-      console.log(`📎 Exam ${exam.title} has ${exam.exam_files?.length || 0} files attached:`, exam.exam_files);
-      
-      return {
-        exam_id: exam.id,
-        title: exam.title || "Untitled Exam",
-        description: exam.description || "",
-        course_code: exam.courses?.course_code || "N/A",
-        course_name: exam.courses?.course_name || "N/A",
-        department_code: exam.courses?.department_code || "N/A",
-        start_time: exam.start_time,
-        end_time: exam.end_time,
-        total_marks: exam.total_marks || 100,
-        exam_type: exam.exam_type || "online",
-        venue: exam.venue || "Online",
-        status: exam.status || "published",
-        exam_files: exam.exam_files || [], // ⭐ This contains the uploaded exam files
-        target_academic_year: exam.target_academic_year,
-        target_year_of_study: exam.target_year_of_study,
-        target_semester: exam.target_semester,
-        submitted: statsMap[exam.id]?.submitted || 0,
-        graded: statsMap[exam.id]?.graded || 0,
-        pending: statsMap[exam.id]?.pending || 0,
-        isActive: isActive,
-        isToday: isToday,
-        _startDate: startDate,
-        _endDate: endDate,
-      };
-    });
-
-    // Sort exams
-    const sortedExams = processedExams.sort((a, b) => {
-      if (a.isActive && !b.isActive) return -1;
-      if (!a.isActive && b.isActive) return 1;
-      if (a.isToday && !b.isToday) return -1;
-      if (!a.isToday && b.isToday) return 1;
-      if (a._startDate > today && b._startDate > today) {
-        return a._startDate - b._startDate;
-      }
-      return b._endDate - a._endDate;
-    });
-
-    console.log(`✅ Processed ${sortedExams.length} exams`);
-    setMyExams(sortedExams);
-    
-  } catch (error) {
-    console.error("Error in fetchMyExams:", error);
-    setMyExams([]);
-  } finally {
-    setLoadingAssignments(false);
-  }
-};
-
-  useEffect(() => {
-    if (activeTab === "grade-exams" && isLecturer && profile?.id) {
-      setLoadingAssignments(true);
-      fetchMyExams().finally(() => setLoadingAssignments(false));
-    }
-  }, [activeTab, isLecturer, profile?.id]);
-
-  useEffect(() => {
-    if (activeTab === "attendance") {
-      console.log("Attendance tab opened → fetching fresh records");
-      fetchAttendanceData();
-      fetchDashboardStats(); // Keeps rate accurate
-    }
-  }, [activeTab]);
-
-  const handleViewExamSubmissions = (exam) => {
-    console.log("🎯 Viewing submissions for exam:", {
-      exam_id: exam.exam_id,
-      title: exam.title,
-    });
-
-    // Set the selected exam
-    setSelectedExamForGrading(exam);
-
-    // Switch to the grade-exams tab
-    setActiveTab("grade-exams");
-
-    // Clear old data
-    setExamSubmissions([]);
-    setExamGradeForm({});
-
-    // Immediately load submissions
-    fetchExamSubmissions(exam.exam_id);
-  };
-
-  const validateExamCohort = () => {
-    if (!examTargetProgram) {
-      setExamCohortError("Please select a Program");
-      return false;
-    }
-    if (!examTargetCohort.academic_year.trim()) {
-      setExamCohortError("Please enter Academic Year (e.g. 2025/2029)");
-      return false;
-    }
-    if (!examTargetCohort.year_of_study) {
-      setExamCohortError("Please select Year of Study");
-      return false;
-    }
-    if (!examTargetCohort.semester) {
-      setExamCohortError("Please select Semester");
-      return false;
-    }
-    setExamCohortError("");
-    return true;
-  };
-
-  // Helper function to process submissions when student data is unavailable
-  const processSubmissionsWithoutStudents = (submissions, assignmentId) => {
-    // This function creates a basic submission object without student details
-    return submissions.map((sub) => {
-      const submissionDate = sub.submission_date
-        ? new Date(sub.submission_date)
-        : null;
-
-      // Generate download URLs
-      const fileDownloadUrls = (sub.file_urls || [])
-        .map((url) => {
-          if (url && url.startsWith("http")) return url;
-
-          if (!url) return "";
-
-          const projectRef = supabase.supabaseUrl.split("//")[1].split(".")[0];
-          return `https://${projectRef}.supabase.co/storage/v1/object/public/assignments/${url}`;
-        })
-        .filter((url) => url && url !== "");
-
-      return {
-        submission_id: sub.id,
-        student_id: sub.student_id || "Unknown ID",
-        student_name: "Unknown Student",
-        student_email: "No email",
-        student_program: "N/A",
-        student_department: "N/A",
-        submission_date: sub.submission_date,
-        submitted_text: sub.submitted_text,
-        file_urls: sub.file_urls || [],
-        file_download_urls: fileDownloadUrls,
-        status: sub.status || "submitted",
-        marks_obtained: sub.marks_obtained,
-        feedback: sub.feedback,
-        graded_at: sub.graded_at,
-        late_submission: false,
-        days_late: 0,
-        assignment_title: selectedAssignment?.title,
-        assignment_total_marks: selectedAssignment?.total_marks || 100,
-      };
-    });
-  };
-
-  const getGradeFromMarks = (marks) => {
-    if (!marks && marks !== 0) return "N/A";
-    const numericMarks = parseFloat(marks);
-    if (isNaN(numericMarks)) return "N/A";
-
-    if (numericMarks >= 90) return "A+";
-    if (numericMarks >= 80) return "A";
-    if (numericMarks >= 75) return "B+";
-    if (numericMarks >= 70) return "B";
-    if (numericMarks >= 65) return "C+";
-    if (numericMarks >= 60) return "C";
-    if (numericMarks >= 55) return "D+";
-    if (numericMarks >= 50) return "D";
-    return "F"; // Below 50%
-  };
-
-  const getGradePoints = (grade) => {
-    if (!grade) return 0.0;
-    const gradeMap = {
-      "A+": 5.0,
-      A: 5.0,
-      "B+": 4.5,
-      B: 4.0,
-      "C+": 3.5,
-      C: 3.0,
-      "D+": 2.5,
-      D: 2.0,
-      F: 0.0,
-    };
-    return gradeMap[grade.toUpperCase()] || 0.0;
-  };
-
-  const fetchLecturerStatistics = async () => {
-    if (!isLecturer) return;
-
-    try {
-      const { data, error } = await supabase.rpc("get_lecturer_statistics", {
-        p_lecturer_id: profile.id,
-      });
-
-      if (error) throw error;
-
-      if (data && data.length > 0) {
-        setStats((prev) => ({
-          ...prev,
-          myAssignments: data[0].total_assignments || 0,
-          pendingGrading: data[0].pending_submissions || 0,
-          gradedSubmissions: data[0].graded_submissions || 0,
-          averageGrade: data[0].average_grading_time_hours || 0,
-          submissionRate:
-            data[0].total_assignments > 0
-              ? Math.round(
-                  (data[0].graded_submissions / data[0].total_assignments) *
-                    100,
-                )
-              : 0,
-        }));
-      }
-    } catch (error) {
-      console.error("Error fetching lecturer stats:", error);
-    }
-  };
-  const uploadAssignmentFiles = async (files) => {
-    if (!files || files.length === 0) return [];
-    const uploadedPaths = [];
-    setUploadingFiles(true);
-    setUploadProgress(0);
-    try {
-      const lecturerFolder = `assignments/${profile.id}`;
-      console.log("📤 Uploading to private folder:", lecturerFolder);
-
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const originalName = file.name;
-        const timestamp = Date.now();
-        const randomStr = Math.random().toString(36).substring(2, 8);
-        const safeName = originalName.replace(/[^a-zA-Z0-9.]/g, "_");
-        const fileName = `${timestamp}_${randomStr}_${safeName}`;
-        const filePath = `${lecturerFolder}/${fileName}`; // ← PRIVATE PATH
-
-        setUploadProgress(Math.round(((i + 1) / files.length) * 100));
-
-        const { data, error } = await supabase.storage
-          .from("lecturerbucket")
-          .upload(filePath, file, {
-            cacheControl: "3600",
-            upsert: false,
-          });
-
-        if (error) {
-          console.error(`❌ Failed to upload ${originalName}:`, error.message);
-          alert(`Failed to upload "${originalName}": ${error.message}`);
-          continue;
-        }
-
-        uploadedPaths.push(filePath);
-      }
-
-      alert(
-        `✅ Successfully uploaded ${uploadedPaths.length} assignment file(s)!`,
-      );
-      return uploadedPaths;
-    } catch (error) {
-      console.error("❌ Upload error:", error);
-      alert("Upload failed: " + error.message);
-      return [];
-    } finally {
-      setUploadingFiles(false);
-      setUploadProgress(0);
-    }
-  };
-
-  const uploadTutorialFiles = async (files) => {
-    if (!files || files.length === 0) return [];
-    const uploadedPaths = [];
-
-    if (!tutorialTargetProgram || !tutorialTargetCourse) {
-      alert("Please select program and course");
-      return [];
-    }
-
-    setUploadingTutorial(true);
-    setTutorialUploadProgress(0);
-
-    try {
-      const [{ data: program }, { data: course }] = await Promise.all([
-        supabase
-          .from("programs")
-          .select("code")
-          .eq("id", tutorialTargetProgram)
-          .single(),
-        supabase
-          .from("courses")
-          .select("course_code")
-          .eq("id", tutorialTargetCourse)
-          .single(),
-      ]);
-
-      const programCode = program?.code || "GENERAL";
-      const courseCode = course?.course_code || "NOCOURSE";
-
-      const lecturerFolder = `tutorials/${profile.id}`;
-      const baseFolder = `${lecturerFolder}/${programCode}/${courseCode}/${tutorialTargetCohort.academic_year.trim()}/Year${tutorialTargetCohort.year_of_study}_Sem${tutorialTargetCohort.semester}`;
-
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const timestamp = Date.now();
-        const randomStr = Math.random().toString(36).substring(2, 8);
-        const safeName = file.name.replace(/[^a-zA-Z0-9.]/g, "_");
-        const fileName = `${timestamp}_${randomStr}_${safeName}`;
-        const filePath = `${baseFolder}/${fileName}`;
-
-        setTutorialUploadProgress(Math.round(((i + 1) / files.length) * 100));
-
-        const { error } = await supabase.storage
-          .from("Tutorials")
-          .upload(filePath, file, { upsert: false });
-
-        if (error) {
-          console.error(`Failed to upload ${file.name}:`, error);
-          alert(`Failed to upload "${file.name}"`);
-          continue;
-        }
-
-        const { data: publicUrlData } = supabase.storage
-          .from("Tutorials")
-          .getPublicUrl(filePath);
-
-        uploadedPaths.push({
-          path: filePath,
-          url: publicUrlData.publicUrl,
-          name: file.name,
-        });
-      }
-
-      alert(
-        `✅ Successfully uploaded ${uploadedPaths.length} tutorial file(s)!`,
-      );
-      return uploadedPaths;
-    } catch (error) {
-      console.error("Upload error:", error);
-      alert("Upload failed: " + error.message);
-      return [];
-    } finally {
-      setUploadingTutorial(false);
-      setTutorialUploadProgress(0);
-    }
-  };
-  // NEW: Upload exam files to 'Lecturer exam' bucket
-  const uploadExamFiles = async (files) => {
-    if (!files || files.length === 0) return [];
-    const uploadedPaths = [];
-    setUploadingExamFiles(true);
-    setExamUploadProgress(0);
-
-    try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const originalName = file.name;
-        const timestamp = Date.now();
-        const safeName = originalName.replace(/[^a-zA-Z0-9.]/g, "_");
-        const fileName = `${timestamp}_${safeName}`;
-        const filePath = `exams/${profile.id}/${fileName}`; // organized by lecturer ID
-
-        setExamUploadProgress(Math.round(((i + 1) / files.length) * 100));
-
-        const { error } = await supabase.storage
-          .from("Lecturer exam") // ← Exact bucket name with space and capital L
-          .upload(filePath, file, {
-            upsert: false,
-            contentType: file.type || "application/octet-stream",
-          });
-
-        if (error) {
-          console.error(`Failed to upload ${originalName}:`, error);
-          alert(`Failed to upload "${originalName}"`);
-          continue;
-        }
-
-        uploadedPaths.push(filePath);
-      }
-      alert(`Successfully uploaded ${uploadedPaths.length} exam file(s)!`);
-      return uploadedPaths;
-    } catch (error) {
-      console.error("Exam files upload error:", error);
-      alert("Upload failed: " + error.message);
-      return [];
-    } finally {
-      setUploadingExamFiles(false);
-      setExamUploadProgress(0);
-    }
-  };
-
-  const handleCreateAssignment = async () => {
-    try {
-      setLoading((prev) => ({ ...prev, creatingAssignment: true }));
-
-      // Upload files
-      let fileUrls = [];
-      if (assignmentFiles.length > 0) {
-        fileUrls = await uploadAssignmentFiles(assignmentFiles);
-        if (fileUrls.length !== assignmentFiles.length) {
-          alert(
-            "⚠️ Some files failed to upload. Continuing with successful ones.",
-          );
-        }
-      }
-
-      // Validation
-      if (!newAssignment.course_id) return alert("Please select a course");
-      if (!newAssignment.title.trim()) return alert("Please enter a title");
-
-      // === COHORT VALIDATION ===
-      if (!selectedCohort.academic_year?.trim()) {
-        alert("Please enter Academic Year (e.g. 2025/2029)");
-        return;
-      }
-      if (!selectedCohort.year_of_study) {
-        alert("Please select Year of Study");
-        return;
-      }
-      if (!selectedCohort.semester) {
-        alert("Please select Semester");
-        return;
-      }
-
-      const lecturerId = profile?.id;
-      if (!lecturerId)
-        return alert("Authentication error – please log in again");
-
-      const assignmentData = {
-        course_id: newAssignment.course_id,
-        lecturer_id: lecturerId,
-        title: newAssignment.title.trim(),
-        description: newAssignment.description?.trim() || null,
-        instructions: newAssignment.instructions?.trim() || null,
-        due_date: newAssignment.due_date,
-        total_marks: Number(newAssignment.total_marks) || 100,
-        submission_type: newAssignment.submission_type || "file",
-        max_file_size: Number(newAssignment.max_file_size) || 10,
-        allowed_formats: newAssignment.allowed_formats || [
-          "pdf",
-          "doc",
-          "docx",
-          "zip",
-        ],
-        file_urls: fileUrls,
-        status: "published",
-        // === ADD COHORT FIELDS ===
-        academic_year: selectedCohort.academic_year.trim(),
-        year_of_study: selectedCohort.year_of_study,
-        semester: selectedCohort.semester,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-
-      const { data: insertedAssignment, error } = await supabase
-        .from("assignments")
-        .insert([assignmentData])
-        .select()
-        .single();
-
-      if (error) {
-        console.error("Insert error:", error);
-        alert(`Failed: ${error.message}`);
-        return;
-      }
-
-      console.log("✅ Assignment created with ID:", insertedAssignment.id);
-
-      // Get student count for info message (optional)
-      try {
-        const { data: courseDetails } = await supabase
-          .from("courses")
-          .select("program_code")
-          .eq("id", newAssignment.course_id)
-          .single();
-
-        if (courseDetails?.program_code) {
-          const { data: cohortStudents } = await supabase
-            .from("students")
-            .select("id")
-            .eq("program_code", courseDetails.program_code)
-            .eq("academic_year", selectedCohort.academic_year.trim())
-            .eq("year_of_study", selectedCohort.year_of_study)
-            .eq("semester", selectedCohort.semester)
-            .eq("status", "active");
-
-          const studentCount = cohortStudents?.length || 0;
-          alert(
-            `✅ Assignment created successfully!\n\nTarget cohort: ${selectedCohort.academic_year}, Year ${selectedCohort.year_of_study}, Semester ${selectedCohort.semester}\n\n${studentCount} students will be able to see this assignment.`,
-          );
-        } else {
-          alert("✅ Assignment created successfully!");
-        }
-      } catch (infoErr) {
-        console.log("Info fetch error (non-critical):", infoErr);
-        alert("✅ Assignment created successfully!");
-      }
-
-      // Reset form
-      setNewAssignment({
-        course_id: "",
-        title: "",
-        description: "",
-        instructions: "",
-        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-          .toISOString()
-          .slice(0, 16),
-        total_marks: 100,
-        submission_type: "file",
-        max_file_size: 10,
-        allowed_formats: ["pdf", "doc", "docx", "zip"],
-        file_urls: [],
-      });
-      setAssignmentFiles([]);
-      setSelectedCohort({
-        academic_year: "",
-        year_of_study: 1,
-        semester: 1,
-      });
-      setCohortError("");
-      setShowAssignmentUploadModal(false);
-
-      await fetchMyAssignments();
-      await fetchDashboardStats();
-    } catch (err) {
-      console.error("Unexpected error:", err);
-      alert("Unexpected error: " + err.message);
-    } finally {
-      setLoading((prev) => ({ ...prev, creatingAssignment: false }));
-    }
-  };
-  const handleGradeSubmission = async (submissionId, marks, feedback) => {
-    try {
-      setGradingInProgress(true);
-
-      const { error } = await supabase
-        .from("assignment_submissions")
-        .update({
-          marks_obtained: marks,
-          feedback: feedback,
-          status: "graded",
-          graded_at: new Date().toISOString(),
-        })
-        .eq("id", submissionId);
-
-      if (error) throw error;
-
-      // Refresh submissions
-      if (selectedAssignment) {
-        fetchAssignmentSubmissions(selectedAssignment.id);
-      }
-
-      // Refresh stats
-      fetchLecturerStatistics();
-
-      return true;
-    } catch (error) {
-      console.error("Error grading submission:", error);
-      alert("Error grading submission: " + error.message);
-      return false;
-    } finally {
-      setGradingInProgress(false);
-    }
-  };
-
-  const handleBulkGrade = async () => {
-    if (selectedSubmissions.length === 0) {
-      alert("Please select submissions to grade");
-      return;
-    }
-
-    try {
-      setGradingInProgress(true);
-
-      const updates = selectedSubmissions
-        .map((submissionId) => {
-          const gradeData = gradeForm[submissionId];
-          if (gradeData && gradeData.marks !== "") {
-            return {
-              id: submissionId,
-              marks_obtained: parseFloat(gradeData.marks),
-              feedback: gradeData.feedback || "",
-              status: "graded",
-              graded_at: new Date().toISOString(),
-            };
-          }
-          return null;
-        })
-        .filter((update) => update !== null);
-
-      if (updates.length === 0) {
-        alert("Please enter marks for selected submissions");
-        return;
-      }
-
-      // Update each submission
-      for (const update of updates) {
-        const { error } = await supabase
-          .from("assignment_submissions")
-          .update({
-            marks_obtained: update.marks_obtained,
-            feedback: update.feedback,
-            status: "graded",
-            graded_at: update.graded_at,
-          })
-          .eq("id", update.id);
-
-        if (error) {
-          console.error("Error grading submission:", update.id, error);
-        }
-      }
-
-      // Refresh data
-      if (selectedAssignment) {
-        fetchAssignmentSubmissions(selectedAssignment.id);
-      }
-      fetchLecturerStatistics();
-
-      // Reset
-      setSelectedSubmissions([]);
-      setGradeForm({});
-      setBulkGrading(false);
-
-      alert(`${updates.length} submissions graded successfully!`);
-    } catch (error) {
-      console.error("Error bulk grading:", error);
-      alert("Error grading submissions: " + error.message);
-    } finally {
-      setGradingInProgress(false);
-    }
-  };
-
-  const handleUpdateAssignmentStatus = async (assignmentId, status) => {
-    if (!window.confirm(`Change assignment status to "${status}"?`)) return;
-
-    try {
-      const { error } = await supabase
-        .from("assignments")
-        .update({ status })
-        .eq("id", assignmentId)
-        .eq("lecturer_id", profile.id);
-
-      if (error) throw error;
-
-      // Refresh data
-      fetchMyAssignments();
-      fetchDashboardStats();
-
-      alert(`Assignment status updated to "${status}"`);
-    } catch (error) {
-      console.error("Error updating assignment status:", error);
-      alert("Error updating assignment status: " + error.message);
-    }
-  };
-
-  const downloadSubmissionsCSV = () => {
-    if (assignmentSubmissions.length === 0) {
-      alert("No submissions to download");
-      return;
-    }
-
-    const headers = [
-      "Student Name",
-      "Student Email",
-      "Program",
-      "Submission Date",
-      "Status",
-      "Marks",
-      "Feedback",
-      "Late Submission",
-      "Files",
-    ];
-
-    const csvData = assignmentSubmissions.map((sub) => [
-      sub.student_name,
-      sub.student_email,
-      sub.student_program || "N/A",
-      sub.submission_date
-        ? new Date(sub.submission_date).toLocaleString()
-        : "Not Submitted",
-      sub.status,
-      sub.marks_obtained || "Not Graded",
-      sub.feedback || "No feedback",
-      sub.late_submission ? "Yes" : "No",
-      sub.file_urls ? sub.file_urls.join("; ") : "No files",
-    ]);
-
-    const csvContent = [
-      headers.join(","),
-      ...csvData.map((row) => row.map((cell) => `"${cell}"`).join(",")),
-    ].join("\n");
-
-    const blob = new Blob([csvContent], { type: "text/csv" });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `submissions_${selectedAssignment?.title || "assignment"}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
-  };
-
-  const downloadTextAnswersAsWord = async () => {
-  // Filter only submissions with text answers
-  const textSubmissions = examSubmissions.filter(
-    (sub) => sub.answer_text && sub.answer_text.length > 0
-  );
-
-  if (textSubmissions.length === 0) {
-    alert("No text answers found to export.");
-    return;
-  }
-
-  try {
-    // Dynamically import docx
-    const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, Table, TableRow, TableCell, BorderStyle, WidthType } = await import('docx');
-
-    // Build the document
-    const doc = new Document({
-      sections: [{
-        properties: {},
-        children: [
-          // Title
-          new Paragraph({
-            children: [
-              new TextRun({
-                text: `Exam Text Answers - ${selectedExamForGrading?.title || "Exam"}`,
-                size: 28,
-                bold: true,
-                font: "Arial",
-              }),
-            ],
-            alignment: AlignmentType.CENTER,
-            spacing: { after: 400 },
-          }),
-
-          // Exam Info
-          new Paragraph({
-            children: [
-              new TextRun({
-                text: `Course: ${selectedExamForGrading?.course_code || "N/A"} - ${selectedExamForGrading?.course_name || "N/A"}`,
-                size: 22,
-                font: "Arial",
-              }),
-            ],
-            spacing: { after: 200 },
-          }),
-
-          new Paragraph({
-            children: [
-              new TextRun({
-                text: `Total Submissions with Text: ${textSubmissions.length}`,
-                size: 22,
-                font: "Arial",
-              }),
-            ],
-            spacing: { after: 400 },
-          }),
-
-          // Separator line
-          new Paragraph({
-            children: [
-              new TextRun({
-                text: "=".repeat(80),
-                size: 18,
-                font: "Arial",
-              }),
-            ],
-            spacing: { after: 400 },
-          }),
-
-          // Each submission
-          ...textSubmissions.flatMap((sub, index) => {
-            const children = [];
-
-            // Student header
-            children.push(
-              new Paragraph({
-                children: [
-                  new TextRun({
-                    text: `${index + 1}. ${sub.student_name || "Unknown Student"}`,
-                    size: 24,
-                    bold: true,
-                    font: "Arial",
-                  }),
-                ],
-                spacing: { before: 400, after: 100 },
-              })
-            );
-
-            // Student info
-            children.push(
-              new Paragraph({
-                children: [
-                  new TextRun({
-                    text: `   Registration: ${sub.registration_number || "N/A"}  |  Email: ${sub.student_email || "N/A"}  |  Submitted: ${sub.submitted_at ? new Date(sub.submitted_at).toLocaleString() : "N/A"}`,
-                    size: 18,
-                    font: "Arial",
-                    color: "666666",
-                  }),
-                ],
-                spacing: { after: 200 },
-              })
-            );
-
-            // Answer text
-            children.push(
-              new Paragraph({
-                children: [
-                  new TextRun({
-                    text: `   Answer:`,
-                    size: 20,
-                    bold: true,
-                    font: "Arial",
-                  }),
-                ],
-                spacing: { after: 100 },
-              })
-            );
-
-            // Answer content with preserved formatting
-            const answerLines = (sub.answer_text || "").split("\n");
-            answerLines.forEach((line, lineIndex) => {
-              if (line.trim() === "") {
-                children.push(
-                  new Paragraph({
-                    children: [
-                      new TextRun({
-                        text: "",
-                        size: 20,
-                        font: "Arial",
-                      }),
-                    ],
-                    spacing: { after: 50 },
-                  })
-                );
-              } else {
-                children.push(
-                  new Paragraph({
-                    children: [
-                      new TextRun({
-                        text: `   ${line}`,
-                        size: 20,
-                        font: "Arial",
-                      }),
-                    ],
-                    spacing: { after: 50 },
-                  })
-                );
-              }
-            });
-
-            // Status
-            const statusText = sub.status === "graded" 
-              ? `✓ Graded (${sub.total_marks_obtained || 0} marks)` 
-              : "⏳ Pending Grading";
-            
-            children.push(
-              new Paragraph({
-                children: [
-                  new TextRun({
-                    text: `   Status: ${statusText}`,
-                    size: 18,
-                    font: "Arial",
-                    color: sub.status === "graded" ? "00aa00" : "cc8800",
-                  }),
-                ],
-                spacing: { before: 100, after: 200 },
-              })
-            );
-
-            // Separator between submissions
-            if (index < textSubmissions.length - 1) {
-              children.push(
-                new Paragraph({
-                  children: [
-                    new TextRun({
-                      text: "-".repeat(60),
-                      size: 16,
-                      font: "Arial",
-                      color: "cccccc",
-                    }),
-                  ],
-                  spacing: { before: 200, after: 200 },
-                })
-              );
-            }
-
-            return children;
-          }),
-
-          // Footer
-          new Paragraph({
-            children: [
-              new TextRun({
-                text: `Generated on: ${new Date().toLocaleString()}`,
-                size: 16,
-                font: "Arial",
-                color: "999999",
-              }),
-            ],
-            spacing: { before: 600, after: 100 },
-            alignment: AlignmentType.CENTER,
-          }),
-        ],
-      }],
-    });
-
-    // Generate the document
-    const blob = await Packer.toBlob(doc);
-    
-    // Download the file
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `Text_Answers_${selectedExamForGrading?.title || "exam"}_${new Date().toISOString().split("T")[0]}.docx`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(link.href);
-
-    alert(`✅ ${textSubmissions.length} text answers exported successfully!`);
-
-  } catch (error) {
-    console.error("Error exporting Word document:", error);
-    
-    // Fallback: Try a simpler approach using Blob
-    try {
-      console.log("Trying fallback export method...");
-      let content = `Exam Text Answers - ${selectedExamForGrading?.title || "Exam"}\n`;
-      content += `="=".repeat(60)}\n\n`;
-      content += `Course: ${selectedExamForGrading?.course_code || "N/A"} - ${selectedExamForGrading?.course_name || "N/A"}\n`;
-      content += `Total Submissions: ${textSubmissions.length}\n\n`;
-      content += `-`.repeat(60) + `\n\n`;
-
-      textSubmissions.forEach((sub, index) => {
-        content += `${index + 1}. ${sub.student_name || "Unknown Student"}\n`;
-        content += `   Registration: ${sub.registration_number || "N/A"}\n`;
-        content += `   Email: ${sub.student_email || "N/A"}\n`;
-        content += `   Submitted: ${sub.submitted_at ? new Date(sub.submitted_at).toLocaleString() : "N/A"}\n`;
-        content += `   Answer:\n   ${sub.answer_text || "No answer provided"}\n\n`;
-        content += `   Status: ${sub.status === "graded" ? "Graded" : "Pending Grading"}\n`;
-        content += `\n` + `-`.repeat(40) + `\n\n`;
-      });
-
-      content += `\nGenerated on: ${new Date().toLocaleString()}`;
-
-      const blob = new Blob([content], { type: "text/plain" });
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = `Text_Answers_${selectedExamForGrading?.title || "exam"}_${new Date().toISOString().split("T")[0]}.txt`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(link.href);
-
-      alert(`✅ ${textSubmissions.length} text answers exported as TXT file!`);
-    } catch (fallbackError) {
-      console.error("Fallback export also failed:", fallbackError);
-      alert("Failed to export. Please try again.");
-    }
-  }
-};
-
-
-  // =================== EXISTING FUNCTIONS ===================
   const fetchDashboardStats = async () => {
+    console.log("  📊 [fetchDashboardStats] Starting...");
     try {
-      // Student counts
-      let studentQuery = supabase
-        .from("students")
-        .select("*", { count: "exact", head: true });
-
-      if (isLecturer && departmentCodes.length > 0) {
-        studentQuery = studentQuery.in("department_code", departmentCodes);
-      }
-
-      // Course counts
-      let courseQuery = supabase
-        .from("courses")
-        .select("*", { count: "exact", head: true });
-
-      if (isLecturer && departmentCodes.length > 0) {
-        courseQuery = courseQuery.in("department_code", departmentCodes);
-      }
-
-      // Execute all queries
       const [
         studentsRes,
         lecturersRes,
@@ -4762,51 +1204,34 @@ const fetchMyExams = async () => {
         assignmentsRes,
         examsRes,
         financialRes,
-        attendanceRes,
         lecturesRes,
+        pendingExams,
+        pendingAssignments,
+        pendingPayments,
       ] = await Promise.all([
-        studentQuery,
+        supabase.from("students").select("*", { count: "exact", head: true }),
         supabase.from("lecturers").select("*", { count: "exact", head: true }),
-        courseQuery,
-        supabase
-          .from("assignments")
-          .select("*", { count: "exact", head: true }),
-        supabase
-          .from("examinations")
-          .select("*", { count: "exact", head: true }),
-        supabase
-          .from("financial_records")
-          .select("*", { count: "exact", head: true }),
-        supabase.from("attendance_records").select("status"),
+        supabase.from("courses").select("*", { count: "exact", head: true }),
+        supabase.from("assignments").select("*", { count: "exact", head: true }),
+        supabase.from("examinations").select("*", { count: "exact", head: true }),
+        supabase.from("financial_records").select("*", { count: "exact", head: true }),
         supabase.from("lectures").select("*", { count: "exact", head: true }),
+        supabase.from("examinations").select("*", { count: "exact", head: true }).eq("status", "published"),
+        supabase.from("assignments").select("*", { count: "exact", head: true }).gt("due_date", new Date().toISOString()),
+        supabase.from("financial_records").select("*", { count: "exact", head: true }).eq("status", "pending"),
       ]);
 
-      // Additional stats
-      const [pendingExams, pendingAssignments, pendingPayments] =
-        await Promise.all([
-          supabase
-            .from("examinations")
-            .select("*", { count: "exact", head: true })
-            .eq("status", "published"),
-          supabase
-            .from("assignments")
-            .select("*", { count: "exact", head: true })
-            .gt("due_date", new Date().toISOString()),
-          supabase
-            .from("financial_records")
-            .select("*", { count: "exact", head: true })
-            .eq("status", "pending"),
-        ]);
+      console.log("  📊 [fetchDashboardStats] Results:", {
+        students: studentsRes.count,
+        lecturers: lecturersRes.count,
+        courses: coursesRes.count,
+        assignments: assignmentsRes.count,
+        exams: examsRes.count,
+        financialRecords: financialRes.count,
+        lectures: lecturesRes.count,
+      });
 
-      const presentAttendance =
-        attendanceRes.data?.filter((a) => a.status === "present").length || 0;
-      const totalAttendance = attendanceRes.data?.length || 1;
-      const attendanceRate = Math.round(
-        (presentAttendance / totalAttendance) * 100,
-      );
-
-      setStats((prev) => ({
-        ...prev,
+      setStats({
         totalStudents: studentsRes.count || 0,
         totalLecturers: lecturersRes.count || 0,
         totalCourses: coursesRes.count || 0,
@@ -4817,301 +1242,449 @@ const fetchMyExams = async () => {
         pendingExams: pendingExams.count || 0,
         pendingAssignments: pendingAssignments.count || 0,
         pendingPayments: pendingPayments.count || 0,
-        attendanceRate,
-      }));
+        attendanceRate: 0,
+      });
+      console.log("  ✅ [fetchDashboardStats] Complete");
     } catch (error) {
-      console.error("Error fetching stats:", error);
+      console.error("  ❌ [fetchDashboardStats] Error:", error);
+      throw error;
     }
   };
 
   const fetchStudents = async () => {
+    console.log("  👥 [fetchStudents] Starting...");
     try {
       let query = supabase
         .from("students")
         .select("*")
-        .limit(50)
+        .limit(100)
         .order("created_at", { ascending: false });
 
       if (searchTerm) {
         query = query.or(
-          `full_name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,student_id.ilike.%${searchTerm}%`,
+          `full_name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,student_id.ilike.%${searchTerm}%`
         );
       }
 
-      if (isLecturer && departmentCodes.length > 0) {
-        query = query.in("department_code", departmentCodes);
-      }
-
+      console.log("  👥 [fetchStudents] Executing query...");
       const { data, error } = await query;
-
-      if (error) throw error;
+      
+      if (error) {
+        console.error("  ❌ [fetchStudents] Error:", error);
+        throw error;
+      }
+      
+      console.log(`  ✅ [fetchStudents] Got ${data?.length || 0} students`);
       setStudents(data || []);
     } catch (error) {
-      console.error("Error fetching students:", error);
+      console.error("  ❌ [fetchStudents] Exception:", error);
+      throw error;
     }
   };
 
   const fetchLecturers = async () => {
+    console.log("  👨‍🏫 [fetchLecturers] Starting...");
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from("lecturers")
-        .select("*, lecturer_departments(department_code, department_name)")
-        .limit(50)
+        .select("*")
+        .limit(100)
         .order("created_at", { ascending: false });
 
-      if (error) throw error;
-      setLecturers(data || []);
+      if (searchTerm) {
+        query = query.or(
+          `full_name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,lecturer_id.ilike.%${searchTerm}%`
+        );
+      }
+
+      console.log("  👨‍🏫 [fetchLecturers] Executing query...");
+      const { data, error } = await query;
+      
+      if (error) {
+        console.error("  ❌ [fetchLecturers] Error:", error);
+        throw error;
+      }
+
+      if (!data || data.length === 0) {
+        console.log("  👨‍🏫 [fetchLecturers] No lecturers found");
+        setLecturers([]);
+        return;
+      }
+
+      console.log(`  👨‍🏫 [fetchLecturers] Got ${data.length} lecturers, fetching departments...`);
+      
+      const lecturersWithDepts = await Promise.all(
+        data.map(async (lecturer) => {
+          const { data: deptData, error: deptError } = await supabase
+            .from("lecturer_departments")
+            .select("department_code, department_name")
+            .eq("lecturer_id", lecturer.id)
+            .eq("is_active", true);
+
+          if (deptError) {
+            console.warn(`  ⚠️ [fetchLecturers] Dept fetch error for ${lecturer.id}:`, deptError);
+            return {
+              ...lecturer,
+              lecturer_departments: []
+            };
+          }
+
+          return {
+            ...lecturer,
+            lecturer_departments: deptData || []
+          };
+        })
+      );
+
+      console.log(`  ✅ [fetchLecturers] Complete, ${lecturersWithDepts.length} lecturers`);
+      setLecturers(lecturersWithDepts);
     } catch (error) {
-      console.error("Error fetching lecturers:", error);
+      console.error("  ❌ [fetchLecturers] Error:", error);
+      throw error;
+    }
+  };
+
+  const fetchDeans = async () => {
+    console.log("  👨‍🎓 [fetchDeans] Starting...");
+    try {
+      setLoadingDeans(true);
+      
+      const { data: deansData, error: deansError } = await supabase
+        .from("user_roles")
+        .select("*")
+        .eq("role", "dean")
+        .order("created_at", { ascending: false });
+
+      if (deansError) {
+        console.error("  ❌ [fetchDeans] Error:", deansError);
+        throw deansError;
+      }
+
+      if (!deansData || deansData.length === 0) {
+        console.log("  👨‍🎓 [fetchDeans] No deans found");
+        setDeans([]);
+        return;
+      }
+
+      console.log(`  👨‍🎓 [fetchDeans] Got ${deansData.length} deans, fetching faculties...`);
+
+      const facultyIds = deansData.map(d => d.faculty_id).filter(id => id);
+      let facultiesMap = {};
+      
+      if (facultyIds.length > 0) {
+        const { data: facultiesData, error: facultiesError } = await supabase
+          .from("faculties")
+          .select("*")
+          .in("id", facultyIds);
+
+        if (!facultiesError && facultiesData) {
+          facultiesMap = facultiesData.reduce((acc, f) => {
+            acc[f.id] = f;
+            return acc;
+          }, {});
+        }
+      }
+
+      const deansWithFaculty = deansData.map(dean => {
+        const faculty = dean.faculty_id ? facultiesMap[dean.faculty_id] || null : null;
+        return {
+          ...dean,
+          faculties: faculty,
+          display_name: faculty?.dean || (dean.email ? dean.email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : dean.email),
+          full_name: faculty?.dean || (dean.email ? dean.email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : dean.email)
+        };
+      });
+
+      console.log(`  ✅ [fetchDeans] Complete, ${deansWithFaculty.length} deans`);
+      setDeans(deansWithFaculty);
+    } catch (error) {
+      console.error("  ❌ [fetchDeans] Error:", error);
+      throw error;
+    } finally {
+      setLoadingDeans(false);
+    }
+  };
+
+  const fetchHODs = async () => {
+    console.log("  🏢 [fetchHODs] Starting...");
+    try {
+      setLoadingHODs(true);
+      
+      const { data: hodsData, error: hodsError } = await supabase
+        .from("user_roles")
+        .select("*")
+        .eq("role", "hod")
+        .order("created_at", { ascending: false });
+
+      if (hodsError) {
+        console.error("  ❌ [fetchHODs] Error:", hodsError);
+        throw hodsError;
+      }
+
+      if (!hodsData || hodsData.length === 0) {
+        console.log("  🏢 [fetchHODs] No HODs found");
+        setHODs([]);
+        return;
+      }
+
+      console.log(`  🏢 [fetchHODs] Got ${hodsData.length} HODs, fetching departments...`);
+
+      const deptIds = hodsData.map(d => d.department_id).filter(id => id);
+      let departmentsMap = {};
+      let facultiesMap = {};
+      
+      if (deptIds.length > 0) {
+        const { data: deptsData, error: deptsError } = await supabase
+          .from("departments")
+          .select("*")
+          .in("id", deptIds);
+
+        if (!deptsError && deptsData) {
+          departmentsMap = deptsData.reduce((acc, d) => {
+            acc[d.id] = d;
+            return acc;
+          }, {});
+          
+          const facultyIds = deptsData.map(d => d.faculty_id).filter(id => id);
+          if (facultyIds.length > 0) {
+            const { data: facsData, error: facsError } = await supabase
+              .from("faculties")
+              .select("id, faculty_name, faculty_code")
+              .in("id", facultyIds);
+            
+            if (!facsError && facsData) {
+              facultiesMap = facsData.reduce((acc, f) => {
+                acc[f.id] = f;
+                return acc;
+              }, {});
+            }
+          }
+        }
+      }
+
+      const hodsWithDetails = hodsData.map(hod => {
+        const dept = hod.department_id ? departmentsMap[hod.department_id] || null : null;
+        return {
+          ...hod,
+          departments: dept,
+          faculties: dept?.faculty_id ? facultiesMap[dept.faculty_id] || null : null,
+          display_name: dept?.head_of_department || (hod.email ? hod.email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : hod.email),
+          full_name: dept?.head_of_department || (hod.email ? hod.email.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : hod.email)
+        };
+      });
+
+      console.log(`  ✅ [fetchHODs] Complete, ${hodsWithDetails.length} HODs`);
+      setHODs(hodsWithDetails);
+    } catch (error) {
+      console.error("  ❌ [fetchHODs] Error:", error);
+      throw error;
+    } finally {
+      setLoadingHODs(false);
+    }
+  };
+
+  const fetchFinanceOfficers = async () => {
+    console.log("  💰 [fetchFinanceOfficers] Starting...");
+    try {
+      setLoadingFinance(true);
+      
+      const { data, error } = await supabase
+        .from("finance_officers")
+        .select("*")
+        .limit(100)
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        console.error("  ❌ [fetchFinanceOfficers] Error:", error);
+        throw error;
+      }
+
+      if (!data || data.length === 0) {
+        console.log("  💰 [fetchFinanceOfficers] No finance officers found");
+        setFinanceOfficers([]);
+        return;
+      }
+
+      console.log(`  💰 [fetchFinanceOfficers] Got ${data.length} finance officers`);
+
+      const officersWithPics = await Promise.all(
+        data.map(async (officer) => {
+          let profilePic = null;
+          const { data: roleData, error: roleError } = await supabase
+            .from("user_roles")
+            .select("profile_picture_url")
+            .eq("email", officer.email)
+            .maybeSingle();
+          
+          if (!roleError && roleData) {
+            profilePic = roleData.profile_picture_url;
+          }
+          
+          return {
+            ...officer,
+            profile_picture_url: profilePic || null,
+            display_name: officer.full_name || officer.email?.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()) || officer.email,
+            full_name: officer.full_name || officer.email?.split('@')[0].replace(/\./g, ' ').replace(/\b\w/g, l => l.toUpperCase()) || officer.email,
+            status: 'active'
+          };
+        })
+      );
+
+      console.log(`  ✅ [fetchFinanceOfficers] Complete, ${officersWithPics.length} officers`);
+      setFinanceOfficers(officersWithPics);
+    } catch (error) {
+      console.error("  ❌ [fetchFinanceOfficers] Error:", error);
+      throw error;
+    } finally {
+      setLoadingFinance(false);
     }
   };
 
   const fetchCourses = async () => {
+    console.log("  📖 [fetchCourses] Starting...");
     try {
       let query = supabase
         .from("courses")
         .select("*")
-        .limit(50)
+        .limit(100)
         .order("year")
         .order("semester");
 
       if (searchTerm) {
         query = query.or(
-          `course_code.ilike.%${searchTerm}%,course_name.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%`,
+          `course_code.ilike.%${searchTerm}%,course_name.ilike.%${searchTerm}%,description.ilike.%${searchTerm}%`
         );
       }
 
-      if (isLecturer) {
-        query = query.eq("lecturer_id", profile.id);
-      } else if (isLecturer && departmentCodes.length > 0) {
-        // Fallback if no direct assignment
-        query = query.in("department_code", departmentCodes);
-      }
-
       const { data, error } = await query;
-
-      if (error) throw error;
+      
+      if (error) {
+        console.error("  ❌ [fetchCourses] Error:", error);
+        throw error;
+      }
+      
+      console.log(`  ✅ [fetchCourses] Got ${data?.length || 0} courses`);
       setCourses(data || []);
     } catch (error) {
-      console.error("Error fetching courses:", error);
+      console.error("  ❌ [fetchCourses] Error:", error);
+      throw error;
     }
   };
 
   const fetchAssignments = async () => {
+    console.log("  📝 [fetchAssignments] Starting...");
     try {
-      let query = supabase
+      const { data, error } = await supabase
         .from("assignments")
-        .select(
-          `
-          *,
-          courses (course_code, course_name, department_code),
-          lecturers (full_name)
-        `,
-        )
-        .limit(50)
+        .select(`*, courses (course_code, course_name, department_code), lecturers (full_name)`)
+        .limit(100)
         .order("due_date", { ascending: true });
-
-      if (isLecturer) {
-        query = query.eq("lecturer_id", profile.id);
+      
+      if (error) {
+        console.error("  ❌ [fetchAssignments] Error:", error);
+        throw error;
       }
-
-      const { data, error } = await query;
-
-      if (error) throw error;
+      
+      console.log(`  ✅ [fetchAssignments] Got ${data?.length || 0} assignments`);
       setAssignments(data || []);
     } catch (error) {
-      console.error("Error fetching assignments:", error);
+      console.error("  ❌ [fetchAssignments] Error:", error);
+      throw error;
     }
   };
 
   const fetchExams = async () => {
+    console.log("  🎯 [fetchExams] Starting...");
     try {
-      let query = supabase
+      const { data, error } = await supabase
         .from("examinations")
-        .select(
-          `
-          *,
-          courses (course_code, course_name, department_code)
-        `,
-        )
-        .limit(50)
+        .select(`*, courses (course_code, course_name, department_code)`)
+        .limit(100)
         .order("start_time", { ascending: true });
-
-      if (isLecturer && departmentCodes.length > 0) {
-        // Get courses in lecturer's departments
-        const { data: deptCourses } = await supabase
-          .from("courses")
-          .select("id")
-          .in("department_code", departmentCodes);
-
-        const courseIds = deptCourses?.map((c) => c.id) || [];
-        if (courseIds.length > 0) {
-          query = query.in("course_id", courseIds);
-        }
+      
+      if (error) {
+        console.error("  ❌ [fetchExams] Error:", error);
+        throw error;
       }
-
-      const { data, error } = await query;
-
-      if (error) throw error;
+      
+      console.log(`  ✅ [fetchExams] Got ${data?.length || 0} exams`);
       setExams(data || []);
     } catch (error) {
-      console.error("Error fetching exams:", error);
+      console.error("  ❌ [fetchExams] Error:", error);
+      throw error;
     }
   };
 
   const fetchFinancialRecords = async () => {
+    console.log("  💰 [fetchFinancialRecords] Starting...");
     try {
-      let query = supabase
+      const { data, error } = await supabase
         .from("financial_records")
         .select("*")
-        .limit(50)
+        .limit(100)
         .order("created_at", { ascending: false });
-
-      const { data, error } = await query;
-
-      if (error) throw error;
+      
+      if (error) {
+        console.error("  ❌ [fetchFinancialRecords] Error:", error);
+        throw error;
+      }
+      
+      console.log(`  ✅ [fetchFinancialRecords] Got ${data?.length || 0} records`);
       setFinancialRecords(data || []);
     } catch (error) {
-      console.error("Error fetching financial records:", error);
+      console.error("  ❌ [fetchFinancialRecords] Error:", error);
+      throw error;
     }
   };
 
   const fetchLectures = async () => {
+    console.log("  📅 [fetchLectures] Starting...");
     try {
-      console.log("=== DEBUG: START FETCHING LECTURES ===");
-      console.log("Current time:", new Date().toLocaleString());
-      console.log("Profile ID:", profile?.id);
-
-      // Fetch lectures with course and lecturer details
-      let query = supabase
+      const { data, error } = await supabase
         .from("lectures")
-        .select(
-          `
-          *,
-          courses (id, course_code, course_name, department_code),
-          lecturers (id, full_name, email, google_meet_link)
-        `,
-        )
+        .select(`*, courses (id, course_code, course_name, department_code), lecturers (id, full_name, email, google_meet_link)`)
+        .limit(100)
         .order("scheduled_date", { ascending: true })
         .order("start_time", { ascending: true });
-
-      if (isLecturer) {
-        console.log("DEBUG: Filtering for lecturer with ID:", profile.id);
-        query = query.eq("lecturer_id", profile.id);
-      }
-
-      const { data, error } = await query;
-
+      
       if (error) {
-        console.error("DEBUG: Error fetching lectures:", error);
+        console.error("  ❌ [fetchLectures] Error:", error);
         throw error;
       }
-
-      console.log("DEBUG: Found lectures:", data?.length || 0);
-
-      // Process lectures to categorize them
-      const processedLectures = (data || []).map((lecture) => {
-        const now = new Date();
-        const today = now.toISOString().split("T")[0];
-
-        // Create date strings for comparison (using local time)
-        const lectureDateStr = lecture.scheduled_date;
-        const isToday = lectureDateStr === today;
-
-        // Parse times carefully
-        const parseTimeToMinutes = (timeStr) => {
-          if (!timeStr) return 0;
-          const [hours, minutes] = timeStr.split(":").map(Number);
-          return hours * 60 + minutes;
-        };
-
-        const startMinutes = parseTimeToMinutes(lecture.start_time);
-        const endMinutes = parseTimeToMinutes(lecture.end_time);
-        const nowMinutes = now.getHours() * 60 + now.getMinutes();
-
-        // Determine status - ONLY use database status, don't auto-update
-        let status = lecture.status || "scheduled";
-
-        // Only check if it's today and times make sense
-        if (isToday && lecture.status === "scheduled") {
-          if (nowMinutes >= startMinutes && nowMinutes <= endMinutes) {
-            status = "ongoing";
-          }
-          // Don't automatically mark as completed - let the lecturer do that manually
-        }
-
-        // Format date and time for display
-        const lectureDate = new Date(lecture.scheduled_date);
-        const formattedDate = lectureDate.toLocaleDateString("en-US", {
-          weekday: "long",
-          year: "numeric",
-          month: "long",
-          day: "numeric",
-        });
-
-        // Format time properly - handle 12:00 AM correctly
-        const formatTimeDisplay = (timeStr) => {
-          if (!timeStr) return "TBD";
-          const [hours, minutes] = timeStr.split(":");
-          const hourNum = parseInt(hours);
-          const minuteStr = minutes || "00";
-          const ampm = hourNum >= 12 ? "PM" : "AM";
-          const displayHour = hourNum % 12 || 12;
-          return `${displayHour}:${minuteStr.padStart(2, "0")} ${ampm}`;
-        };
-
-        return {
-          ...lecture,
-          formattedDate: formattedDate,
-          formattedTime: `${formatTimeDisplay(lecture.start_time)} - ${formatTimeDisplay(lecture.end_time)}`,
-          status: status,
-          isLiveNow: status === "ongoing",
-          department_code:
-            lecture.lecturer_department_code ||
-            lecture.courses?.department_code ||
-            "",
-          meetLink:
-            lecture.google_meet_link || lecture.lecturers?.google_meet_link,
-          // Add debug info
-          _debug: {
-            scheduled_date: lecture.scheduled_date,
-            start_time: lecture.start_time,
-            end_time: lecture.end_time,
-            db_status: lecture.status,
-            calculated_status: status,
-            now: now.toLocaleString(),
-            today: today,
-            isToday: isToday,
-            startMinutes: startMinutes,
-            endMinutes: endMinutes,
-            nowMinutes: nowMinutes,
-          },
-        };
-      });
-
-      console.log("DEBUG: Processed lectures with statuses:");
-      processedLectures.forEach((lecture, idx) => {
-        console.log(` Lecture ${idx + 1}:`, {
-          title: lecture.title,
-          date: lecture.scheduled_date,
-          time: `${lecture.start_time} - ${lecture.end_time}`,
-          formattedTime: lecture.formattedTime,
-          status: lecture.status,
-          debug: lecture._debug,
-        });
-      });
-
-      console.log(
-        "DEBUG: Setting lectures state with:",
-        processedLectures.length,
-        "lectures",
-      );
-      setLectures(processedLectures);
-
-      console.log("=== DEBUG: END FETCHING LECTURES ===");
+      
+      console.log(`  ✅ [fetchLectures] Got ${data?.length || 0} lectures`);
+      setLectures(data || []);
     } catch (error) {
-      console.error("DEBUG: Error in fetchLectures:", error);
-      setLectures([]);
+      console.error("  ❌ [fetchLectures] Error:", error);
+      throw error;
+    }
+  };
+
+  const fetchPrograms = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("programs")
+        .select("id, name, code")
+        .order("name");
+      if (error) throw error;
+      setPrograms(data || []);
+      setProgramsLoading(false);
+    } catch (err) {
+      console.error("Error loading programs:", err);
+      setProgramsLoading(false);
+    }
+  };
+
+  const fetchLecturersList = async () => {
+    try {
+      const { data, error } = await supabase
+        .from("lecturers")
+        .select("id, full_name")
+        .order("full_name");
+      if (error) throw error;
+      setLecturersList(data || []);
+    } catch (err) {
+      console.error("Error loading lecturers:", err);
     }
   };
 
@@ -5119,8 +1692,7 @@ const fetchMyExams = async () => {
     try {
       const { data, error } = await supabase
         .from("program_timetables")
-        .select(
-          `
+        .select(`
           id,
           program_id,
           academic_year,
@@ -5141,11 +1713,9 @@ const fetchMyExams = async () => {
             slot_type,
             lecturers (full_name)
           )
-        `,
-        )
+        `)
         .order("academic_year", { ascending: false })
         .order("year_of_study");
-
       if (error) throw error;
       setTimetables(data || []);
     } catch (err) {
@@ -5154,1301 +1724,246 @@ const fetchMyExams = async () => {
     }
   };
 
-  const refreshCurrentTimetableSlots = async () => {
-    if (!selectedTimetable) return;
-
+  const fetchFaculties = async () => {
     try {
       const { data, error } = await supabase
-        .from("program_timetable_slots")
-        .select(
-          `
-          id,
-          course_code,
-          course_name,
-          lecturer_id,
-          day_of_week,
-          start_time,
-          end_time,
-          room_number,
-          building,
-          slot_type,
-          lecturers (full_name)
-        `,
-        )
-        .eq("program_timetable_id", selectedTimetable.id)
-        .order("day_of_week")
-        .order("start_time");
-
+        .from("faculties")
+        .select("*")
+        .order("faculty_name");
       if (error) throw error;
-
-      // Update only the slots in the selected timetable
-      setTimetables((prev) =>
-        prev.map((tt) =>
-          tt.id === selectedTimetable.id
-            ? { ...tt, program_timetable_slots: data || [] }
-            : tt,
-        ),
-      );
-
-      // Also update selectedTimetable directly for instant refresh
-      setSelectedTimetable((prev) => ({
-        ...prev,
-        program_timetable_slots: data || [],
-      }));
+      setFaculties(data || []);
     } catch (err) {
-      console.error("Error refreshing slots:", err);
-      alert("Failed to refresh slots");
+      console.error("Error loading faculties:", err);
     }
   };
 
-  const [programsLoading, setProgramsLoading] = useState(true);
-  const [lecturersList, setLecturersList] = useState([]);
-
-  const fetchPrograms = async () => {
+  const fetchDepartments = async () => {
     try {
       const { data, error } = await supabase
-        .from("programs")
-        .select("id, name, code")
-        .order("name");
+        .from("departments")
+        .select("*")
+        .order("department_name");
       if (error) throw error;
-      setPrograms(data || []);
+      setDepartments(data || []);
     } catch (err) {
-      console.error("Error loading programs:", err);
+      console.error("Error loading departments:", err);
     }
   };
 
-  const fetchLecturersList = async () => {
-    try {
-      const { data, error } = await supabase
-        .from("lecturers")
-        .select("id, full_name")
-        .order("full_name");
-      if (error) throw error;
-      setLecturersList(data || []);
-    } catch (err) {
-      console.error("Error loading lecturers:", err);
-    }
-  };
-
-  const handleSaveTimetable = async () => {
-    if (!newTimetable.program_id) {
-      alert("Please select a program");
-      return;
-    }
-
-    try {
-      if (selectedTimetable) {
-        // Editing existing — safe to update
-        const { error } = await supabase
-          .from("program_timetables")
-          .update({
-            academic_year: newTimetable.academic_year,
-            semester: newTimetable.semester,
-            year_of_study: newTimetable.year_of_study,
-            is_active: newTimetable.is_active,
-          })
-          .eq("id", selectedTimetable.id);
-
-        if (error) throw error;
-        alert("Timetable updated successfully!");
-      } else {
-        // Creating new — FIRST check if one already exists
-        const { data: existing, error: checkError } = await supabase
-          .from("program_timetables")
-          .select("id")
-          .eq("program_id", newTimetable.program_id)
-          .eq("academic_year", newTimetable.academic_year)
-          .eq("semester", newTimetable.semester)
-          .eq("year_of_study", newTimetable.year_of_study)
-          .limit(1);
-
-        if (checkError) throw checkError;
-
-        if (existing && existing.length > 0) {
-          // Duplicate found!
-          const confirmOverwrite = window.confirm(
-            `A timetable already exists for this program, year, semester, and academic year.\n\n` +
-              `Do you want to activate the existing one instead? (Recommended)\n\n` +
-              `Click Cancel to choose different values.`,
-          );
-
-          if (confirmOverwrite) {
-            // Activate the existing one
-            const { error: activateError } = await supabase
-              .from("program_timetables")
-              .update({ is_active: true })
-              .eq("id", existing[0].id);
-
-            if (activateError) throw activateError;
-
-            alert("Existing timetable reactivated!");
-          } else {
-            // User cancelled — don't create
-            return;
-          }
-        } else {
-          // No duplicate — safe to insert
-          const { error } = await supabase.from("program_timetables").insert([
-            {
-              program_id: newTimetable.program_id,
-              academic_year: newTimetable.academic_year,
-              semester: newTimetable.semester,
-              year_of_study: newTimetable.year_of_study,
-              is_active: true,
-            },
-          ]);
-
-          if (error) throw error;
-          alert("New timetable created successfully!");
-        }
-      }
-
-      setShowTimetableModal(false);
-      setSelectedTimetable(null);
-      await fetchProgramTimetables(); // Refresh list
-    } catch (err) {
-      console.error("Error saving timetable:", err);
-      alert("Error saving timetable: " + err.message);
-    }
-  };
-  const handleDeleteSlot = async (slotId) => {
-    // Safety check
-    if (!slotId) {
-      alert("Error: No slot selected for deletion");
-      return;
-    }
-
-    if (
-      !window.confirm(
-        "Are you sure you want to delete this time slot?\nThis cannot be undone.",
-      )
-    ) {
-      return;
-    }
-
-    try {
-      console.log("Deleting slot with ID:", slotId); // Debug line
-
-      const { error } = await supabase
-        .from("program_timetable_slots")
-        .delete()
-        .eq("id", slotId);
-
-      if (error) {
-        console.error("Supabase delete error:", error);
-        throw error;
-      }
-
-      alert("Time slot deleted successfully!");
-
-      // Refresh only current timetable — stays in view
-      await refreshCurrentTimetableSlots();
-    } catch (err) {
-      console.error("Delete failed:", err);
-      alert("Failed to delete slot: " + err.message);
-    }
-  };
-
-  const handleSaveSlot = async () => {
-    if (!newSlot.course_code.trim() || !newSlot.course_name.trim()) {
-      alert("Please enter both Course Code and Course Name");
-      return;
-    }
-
-    try {
-      if (editingSlot) {
-        // Edit existing slot
-        const { error } = await supabase
-          .from("program_timetable_slots")
-          .update({
-            course_code: newSlot.course_code.trim(),
-            course_name: newSlot.course_name.trim(),
-            lecturer_id: newSlot.lecturer_id || null,
-            day_of_week: parseInt(newSlot.day_of_week),
-            start_time: newSlot.start_time,
-            end_time: newSlot.end_time,
-            room_number: newSlot.room_number.trim(),
-            building: newSlot.building.trim(),
-            slot_type: newSlot.slot_type,
-          })
-          .eq("id", editingSlot.id);
-
-        if (error) throw error;
-        alert("Slot updated successfully!");
-      } else {
-        // Add new slot
-        const { error } = await supabase
-          .from("program_timetable_slots")
-          .insert([
-            {
-              program_timetable_id: selectedTimetable.id,
-              course_code: newSlot.course_code.trim(),
-              course_name: newSlot.course_name.trim(),
-              lecturer_id: newSlot.lecturer_id || null,
-              day_of_week: parseInt(newSlot.day_of_week),
-              start_time: newSlot.start_time,
-              end_time: newSlot.end_time,
-              room_number: newSlot.room_number.trim(),
-              building: newSlot.building.trim(),
-              slot_type: newSlot.slot_type,
-              is_active: true,
-            },
-          ]);
-
-        if (error) throw error;
-        alert("New slot added successfully!");
-      }
-
-      // Close modal and reset form
-      setShowSlotModal(false);
-      setEditingSlot(null);
-      setNewSlot({
-        course_code: "",
-        course_name: "",
-        lecturer_id: "",
-        day_of_week: 1,
-        start_time: "08:00",
-        end_time: "10:00",
-        room_number: "",
-        building: "CS Building",
-        slot_type: "lecture",
-      });
-
-      // Refresh only current view — user stays in detailed view!
-      await refreshCurrentTimetableSlots();
-    } catch (err) {
-      console.error("Error saving slot:", err);
-      alert("Failed to save slot: " + err.message);
-    }
-  };
-  
-  // =================== NOTES MANAGEMENT FUNCTIONS ===================
-const fetchNoteCourses = async () => {
-  if (!profile?.id) return;
-  
-  try {
-    const { data, error } = await supabase
-      .from('courses')
-      .select('id, course_code, course_name, department_code')
-      .eq('lecturer_id', profile.id)
-      .eq('is_active', true)
-      .order('course_code');
-
-    if (error) throw error;
-    setNoteCourses(data || []);
-  } catch (err) {
-    console.error('Error fetching courses for notes:', err);
-  }
-};
-
-const formatFileSize = (bytes) => {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
-
-const getFileIcon = (fileName) => {
-  const ext = fileName.split('.').pop().toLowerCase();
-  const iconMap = {
-    pdf: '📄', doc: '📝', docx: '📝', ppt: '📊', pptx: '📊',
-    xls: '📊', xlsx: '📊', txt: '📃', zip: '📦', rar: '📦',
-    jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️',
-    mp4: '🎬', mp3: '🎵',
-  };
-  return iconMap[ext] || '📎';
-};
-
-const fetchUploadedNotes = async () => {
-  if (!profile?.id) return;
-  
-  setLoadingNotes(true);
-  try {
-    console.log('📚 Fetching notes for lecturer:', profile.id);
+  // ==================== EDIT FUNCTIONS ====================
+  const openEditModal = (user, type) => {
+    let facultyId = '';
+    let departmentId = '';
+    let contactEmail = '';
+    let contactPhone = '';
     
-    // Fetch from Notes bucket
-    const { data: notesFiles, error: notesError } = await supabase.storage
-      .from('Notes')
-      .list('', { limit: 1000 });
-
-    // Fetch from Tutorials bucket
-    const { data: videoFiles, error: videoError } = await supabase.storage
-      .from('Tutorials')
-      .list('', { limit: 1000 });
-
-    if (notesError && videoError) {
-      console.error('Error listing files:', notesError, videoError);
-      setUploadedNotes([]);
-      setLoadingNotes(false);
-      return;
-    }
-
-    console.log('📁 Notes bucket files:', notesFiles?.length || 0);
-    console.log('📁 Tutorials bucket files:', videoFiles?.length || 0);
-
-    // ⭐ CRITICAL FIX: Properly merge and process files
-    const allFiles = [];
-    
-    // Process Notes bucket files
-    if (notesFiles) {
-      notesFiles.forEach(file => {
-        if (file.name === '.emptyFolderPlaceholder') return;
-        allFiles.push({
-          ...file,
-          _bucket: 'Notes',
-          _isVideo: false
-        });
-      });
+    if (type === 'dean') {
+      facultyId = user.faculty_id || '';
+      contactEmail = user.faculties?.contact_email || user.contact_email || '';
+      contactPhone = user.faculties?.contact_phone || user.contact_phone || '';
+    } else if (type === 'hod') {
+      departmentId = user.department_id || '';
+      contactEmail = user.departments?.contact_email || user.contact_email || '';
+      contactPhone = user.departments?.contact_phone || user.contact_phone || '';
     }
     
-    // Process Tutorials bucket files
-    if (videoFiles) {
-      videoFiles.forEach(file => {
-        if (file.name === '.emptyFolderPlaceholder') return;
-        allFiles.push({
-          ...file,
-          _bucket: 'Tutorials',
-          _isVideo: true // ⭐ Mark as video
-        });
-      });
-    }
-    
-    if (allFiles.length === 0) {
-      setUploadedNotes([]);
-      setLoadingNotes(false);
-      return;
-    }
-
-    const processedNotes = [];
-    
-    for (const file of allFiles) {
-      // Skip files that don't belong to this lecturer
-      if (!file.name.includes(profile.id)) continue;
-      
-      const isVideo = file._isVideo;
-      const bucketName = file._bucket;
-      
-      // ⭐ Get the actual file path for the bucket
-      const filePath = file.name; // For root level files
-      
-      const { data: urlData } = supabase.storage
-        .from(bucketName)
-        .getPublicUrl(filePath);
-
-      let category = 'General';
-      let course = 'Unknown';
-      let title = file.name;
-      
-      console.log(`📄 Processing file: ${file.name}, isVideo: ${isVideo}, bucket: ${bucketName}`);
-      
-      if (isVideo) {
-        // ⭐ For videos: better title extraction
-        const pathParts = file.name.split('/');
-        const lastPart = pathParts[pathParts.length - 1] || file.name;
-        
-        // Remove timestamp and clean up
-        title = lastPart.replace(/\.[^.]+$/, '') // Remove extension
-          .replace(/_\d{13}$/, '') // Remove timestamp if present
-          .replace(/_/g, ' '); // Replace underscores with spaces
-        
-        // Try to extract info from path structure
-        // Format: tutorials/lecturerId/programCode/academicYear/YearX_SemY/filename
-        if (pathParts.length >= 6) {
-          // pathParts[2] = programCode, pathParts[3] = academicYear
-          course = pathParts[2] || 'Unknown';
-          category = pathParts[3] || 'Video';
-        }
-        
-        console.log(`🎬 Video found: ${title}, course: ${course}`);
-      } else {
-        // Parse notes format
-        const nameWithoutExt = file.name.replace(/\.[^.]+$/, '');
-        const parts = nameWithoutExt.split('_');
-        
-        if (parts.length >= 3) {
-          category = parts[1] || 'General';
-          const titleParts = parts.slice(2);
-          if (titleParts.length > 0 && /^\d+$/.test(titleParts[titleParts.length - 1])) {
-            titleParts.pop();
-          }
-          title = titleParts.join(' ') || file.name;
-        } else {
-          title = file.name;
-        }
-      }
-
-      const fileSize = file.metadata?.size || 0;
-      const uploadDate = file.created_at || new Date().toISOString();
-
-      processedNotes.push({
-        id: file.id || file.name,
-        name: file.name,
-        title: title || file.name,
-        category: category || 'General',
-        course: course || 'Unknown',
-        fileSize: fileSize,
-        fileSizeFormatted: formatFileSize(fileSize),
-        uploadDate: uploadDate,
-        uploadDateFormatted: new Date(uploadDate).toLocaleDateString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric'
-        }),
-        downloadUrl: urlData.publicUrl,
-        fileType: file.name.split('.').pop().toLowerCase(),
-        icon: isVideo ? '🎬' : getFileIcon(file.name),
-        isVideo: isVideo,
-        bucket: bucketName,
-      });
-    }
-
-    const sortedNotes = processedNotes.sort((a, b) => 
-      new Date(b.uploadDate) - new Date(a.uploadDate)
-    );
-
-    console.log(`✅ Found ${sortedNotes.length} materials (${sortedNotes.filter(n => n.isVideo).length} videos, ${sortedNotes.filter(n => !n.isVideo).length} documents)`);
-    setUploadedNotes(sortedNotes);
-  } catch (err) {
-    console.error('Error fetching notes:', err);
-    setUploadedNotes([]);
-  } finally {
-    setLoadingNotes(false);
-  }
-};
-
-  const cancelNotesUpload = () => {
-  notesUploadCancelledRef.current = true;
-
-  // Abort in-flight XHR
-  if (notesUploadXhrRef.current) {
-    try {
-      notesUploadXhrRef.current.abort();
-    } catch (_) {}
-    notesUploadXhrRef.current = null;
-  }
-
-  setUploadingNotes(false);
-  setNotesUploadProgress(0);
-  showToast('Upload cancelled', 'info');
-};
-
-const uploadNotes = async () => {
-  if (notesFiles.length === 0) {
-    showToast('Please select at least one file to upload', 'error');
-    return;
-  }
-
-  if (!noteCourseId) {
-    showToast('Please select a course', 'error');
-    return;
-  }
-
-  notesUploadCancelledRef.current = false;
-  setUploadingNotes(true);
-  setNotesUploadProgress(0);
-
-  try {
-    const lecturerId = profile.id;
-    const uploadedPaths = [];
-
-    const { data: courseData, error: courseError } = await supabase
-      .from('courses')
-      .select('course_code, program_code, course_name')
-      .eq('id', noteCourseId)
-      .single();
-
-    if (courseError || !courseData?.course_code) {
-      showToast('Failed to fetch course details. Select a valid course.', 'error');
-      return;
-    }
-
-    let courseCode = courseData.course_code;
-    let programCode = courseData.program_code;
-
-    if (!programCode) {
-      programCode = (await getLecturerProgramCode(lecturerId)) || 'GENERAL';
-    }
-
-    const cleanCourseCode = courseCode.replace(/\s+/g, '');
-    const academicYear = selectedCohort.academic_year?.trim() || '2025/2029';
-    const year = selectedCohort.year_of_study || 1;
-    const semester = selectedCohort.semester || 1;
-    const cohortString = `YEAR${year}_SEM${semester}`;
-    const academicParts = academicYear.split('/');
-    const startYear = academicParts[0]?.trim() || '2025';
-    const endYear = academicParts[1]?.trim() || '2029';
-
-    for (let i = 0; i < notesFiles.length; i++) {
-      // Stop if user cancelled
-      if (notesUploadCancelledRef.current) {
-        showToast('Upload cancelled', 'info');
-        break;
-      }
-
-      const file = notesFiles[i];
-      const fileExt = file.name.split('.').pop().toLowerCase();
-      const originalName = file.name
-        .replace(/\.[^.]+$/, '')
-        .replace(/[^a-zA-Z0-9._-]/g, '_');
-      const safeFileName = `${originalName}.${fileExt}`;
-
-      let bucketName, fileName;
-
-      if (noteMaterialType === 'video') {
-        bucketName = 'Tutorials';
-        fileName = `tutorials/${lecturerId}/${programCode}/${cleanCourseCode}/${startYear}/${endYear}/${cohortString}/${safeFileName}`;
-      } else {
-        bucketName = 'Notes';
-        fileName = `notes/${lecturerId}/${programCode}/${cleanCourseCode}/${startYear}/${endYear}/${cohortString}/${safeFileName}`;
-      }
-
-      console.log(`📤 Uploading to: ${bucketName}/${fileName}`);
-      showToast(`Uploading ${i + 1}/${notesFiles.length}: ${file.name}`, 'info');
-
-      const { data: signedData, error: signError } = await supabase.storage
-        .from(bucketName)
-        .createSignedUploadUrl(fileName);
-
-      if (signError || !signedData?.signedUrl) {
-        showToast(
-          `Failed to prepare upload for "${file.name}": ${signError?.message || 'No signed URL'}`,
-          'error'
-        );
-        continue;
-      }
-
-      if (notesUploadCancelledRef.current) break;
-
-      try {
-        await new Promise((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          notesUploadXhrRef.current = xhr; // so Cancel can abort
-
-          xhr.upload.addEventListener('progress', (e) => {
-            if (e.lengthComputable) {
-              const fileProgress = e.loaded / e.total;
-              const overall = Math.round(
-                ((i + fileProgress) / notesFiles.length) * 100
-              );
-              setNotesUploadProgress(Math.min(overall, 99));
-            }
-          });
-
-          xhr.addEventListener('load', () => {
-            notesUploadXhrRef.current = null;
-            if (xhr.status >= 200 && xhr.status < 300) {
-              resolve();
-            } else {
-              reject(
-                new Error(
-                  `Upload failed with status ${xhr.status}: ${xhr.responseText}`
-                )
-              );
-            }
-          });
-
-          xhr.addEventListener('error', () => {
-            notesUploadXhrRef.current = null;
-            reject(new Error('Network error during upload'));
-          });
-
-          xhr.addEventListener('timeout', () => {
-            notesUploadXhrRef.current = null;
-            reject(new Error('Upload timeout – file may be too large'));
-          });
-
-          xhr.addEventListener('abort', () => {
-            notesUploadXhrRef.current = null;
-            reject(new Error('Upload cancelled'));
-          });
-
-          xhr.open('PUT', signedData.signedUrl);
-          xhr.setRequestHeader(
-            'Content-Type',
-            file.type || 'application/octet-stream'
-          );
-          xhr.timeout = 30 * 60 * 1000;
-          xhr.send(file);
-        });
-
-        if (notesUploadCancelledRef.current) break;
-
-        uploadedPaths.push(fileName);
-        setNotesUploadProgress(
-          Math.round(((i + 1) / notesFiles.length) * 100)
-        );
-      } catch (uploadErr) {
-        if (
-          notesUploadCancelledRef.current ||
-          uploadErr.message === 'Upload cancelled'
-        ) {
-          showToast('Upload cancelled', 'info');
-          break;
-        }
-        console.error(`Upload error for ${file.name}:`, uploadErr);
-        showToast(
-          `Upload failed for "${file.name}": ${uploadErr.message}`,
-          'error'
-        );
-        continue;
-      }
-    }
-
-    if (notesUploadCancelledRef.current) {
-      // already toasted
-    } else if (uploadedPaths.length > 0) {
-      const materialType =
-        noteMaterialType === 'video' ? 'video(s)' : 'note(s)';
-      showToast(
-        `✅ Successfully uploaded ${uploadedPaths.length} ${materialType}!`,
-        'success'
-      );
-      setNotesUploadProgress(100);
-
-      setNotesFiles([]);
-      setNoteTitle('');
-      setNoteCategory('');
-      setNoteDescription('');
-      setNoteCourseId('');
-      setNoteMaterialType('notes');
-      setShowNotesUpload(false);
-      setSelectedCohort({
-        academic_year: '',
-        year_of_study: 1,
-        semester: 1,
-      });
-    } else {
-      showToast(
-        'No files were uploaded successfully. Please try again.',
-        'error'
-      );
-    }
-  } catch (err) {
-    if (!notesUploadCancelledRef.current) {
-      console.error('Upload error:', err);
-      showToast('Upload failed: ' + err.message, 'error');
-    }
-  } finally {
-    notesUploadXhrRef.current = null;
-    setUploadingNotes(false);
-    setTimeout(() => setNotesUploadProgress(0), 800);
-  }
-};
-  
-// ⭐ Helper: Get content type
-const getContentType = (ext) => {
-  const types = {
-    'mp4': 'video/mp4',
-    'webm': 'video/webm',
-    'ogg': 'video/ogg',
-    'mov': 'video/quicktime',
-    'avi': 'video/x-msvideo',
-    'mkv': 'video/x-matroska',
-    'pdf': 'application/pdf',
-    'doc': 'application/msword',
-    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  };
-  return types[ext.toLowerCase()] || 'application/octet-stream';
-};
-
-// ⭐ Helper: Get lecturer's program code
-const getLecturerProgramCode = async (lecturerId) => {
-  let programCode = null;
-  
-  // Try from courses
-  const { data: lecturerCourses, error: coursesError } = await supabase
-    .from('courses')
-    .select('program_code')
-    .eq('lecturer_id', lecturerId)
-    .eq('is_active', true)
-    .not('program_code', 'is', null)
-    .limit(1);
-  
-  if (!coursesError && lecturerCourses?.length > 0) {
-    programCode = lecturerCourses[0].program_code;
-  }
-  
-  // Fallback: try from department
-  if (!programCode) {
-    const { data: lecturerData, error: lecturerError } = await supabase
-      .from('lecturers')
-      .select('department_code')
-      .eq('id', lecturerId)
-      .single();
-    
-    if (!lecturerError && lecturerData?.department_code) {
-      const deptToProgram = {
-        'SCT': 'BSCS',
-        'ENG': 'BSCE',
-        'BIT': 'BIT',
-      };
-      programCode = deptToProgram[lecturerData.department_code] || lecturerData.department_code;
-    }
-  }
-  
-  return programCode || 'GENERAL';
-};
-
-const handleDeleteNote = async (note) => {
-  if (!window.confirm(`Delete "${note.title}" permanently?`)) return;
-
-  setDeletingNoteId(note.id);
-  try {
-    const { error } = await supabase.storage
-      .from('Notes')
-      .remove([note.name]);
-
-    if (error) throw error;
-
-    showToast('✅ Note deleted successfully!', 'success');
-    await fetchUploadedNotes();
-  } catch (err) {
-    console.error('Delete error:', err);
-    showToast('Failed to delete note: ' + err.message, 'error');
-  } finally {
-    setDeletingNoteId(null);
-  }
-};
-
-  const fetchAttendanceData = async () => {
-    try {
-      console.log("Fetching attendance records...");
-
-      const { data: records, error } = await supabase
-        .from("attendance_records")
-        .select(
-          `
-        id,
-        date,
-        status,
-        notes,
-        check_in_time,
-        created_at,
-        student_id,
-        students!left (
-          id,
-          full_name,
-          student_id,
-          department_code,
-          program,
-          academic_year,
-          year_of_study,
-          semester
-        )
-      `,
-        )
-        .order("date", { ascending: false })
-        .order("created_at", { ascending: false })
-        .limit(300);
-
-      if (error) throw error;
-
-      let filtered = records || [];
-
-      if (isLecturer && departmentCodes.length > 0) {
-        filtered = filtered.filter(
-          (r) =>
-            r.students && departmentCodes.includes(r.students.department_code),
-        );
-        console.log(
-          `Attendance loaded: ${filtered.length} records (lecturer filtered: true)`,
-        );
-      } else {
-        console.log(
-          `Attendance loaded: ${filtered.length} records (no filter)`,
-        );
-      }
-
-      setAttendanceRecords(filtered);
-      setAttendanceError(null);
-    } catch (err) {
-      console.error("Error:", err);
-      setAttendanceError("Failed to load attendance records");
-      setAttendanceRecords([]);
-    }
+    setEditUser({
+      id: user.id,
+      full_name: user.full_name || user.display_name || '',
+      email: user.email || '',
+      phone: user.phone || '',
+      role: type,
+      program: user.program || '',
+      department: user.department || user.departments?.department_name || '',
+      department_code: user.department_code || user.departments?.department_code || '',
+      program_code: user.program_code || '',
+      year_of_study: user.year_of_study || 1,
+      semester: user.semester || 1,
+      academic_year: user.academic_year || '',
+      specialization: user.specialization || '',
+      google_meet_link: user.google_meet_link || '',
+      faculty_id: facultyId,
+      department_id: departmentId,
+      status: user.status || 'active',
+      profile_picture_url: user.profile_picture_url || '',
+      contact_email: contactEmail,
+      contact_phone: contactPhone,
+    });
+    setShowEditModal(true);
   };
 
-  const handleOpenAttendanceModal = (record = null) => {
-    if (record) {
-      setEditingAttendanceRecord(record);
-      setAttendanceForm({
-        student_id: record.student_id,
-        date: record.date,
-        status: record.status || "present",
-        notes: record.notes || "",
-      });
-    } else {
-      setEditingAttendanceRecord(null);
-      setAttendanceForm({
-        student_id: "",
-        date: new Date().toISOString().split("T")[0],
-        status: "present",
-        notes: "",
-      });
-    }
-    setShowAttendanceRecordModal(true);
-  };
-
-  const handleSaveAttendanceRecord = async () => {
-    if (
-      !attendanceForm.student_id ||
-      !attendanceForm.date ||
-      !attendanceForm.course_id
-    ) {
-      alert("Please fill in Student, Date, and Course");
-      return;
-    }
+  const handleEditUser = async () => {
     try {
-      const recordData = {
-        student_id: attendanceForm.student_id,
-        course_id: attendanceForm.course_id,
-        lecture_id: attendanceForm.lecture_id || null,
-        date: attendanceForm.date,
-        status: attendanceForm.status,
-        notes: attendanceForm.notes || null,
-        day_of_week: new Date(attendanceForm.date).getDay(),
+      const updates = {
+        full_name: editUser.full_name,
+        phone: editUser.phone,
+        status: editUser.status,
       };
 
-      if (editingAttendanceRecord) {
+      let tableName = '';
+      let idField = 'id';
+
+      if (editUser.role === 'student') {
+        tableName = 'students';
+        updates.program = editUser.program;
+        updates.department_code = editUser.department_code;
+        updates.program_code = editUser.program_code;
+        updates.year_of_study = parseInt(editUser.year_of_study);
+        updates.semester = parseInt(editUser.semester);
+        updates.academic_year = editUser.academic_year;
+        
         const { error } = await supabase
-          .from("attendance_records")
-          .update(recordData)
-          .eq("id", editingAttendanceRecord.id);
+          .from(tableName)
+          .update(updates)
+          .eq(idField, editUser.id);
+
         if (error) throw error;
-        alert("Attendance record updated!");
-      } else {
+        
+        showToast('✅ Student updated successfully!', 'success');
+        setShowEditModal(false);
+        fetchStudents();
+        
+      } else if (editUser.role === 'lecturer') {
+        tableName = 'lecturers';
+        updates.department = editUser.department;
+        updates.specialization = editUser.specialization;
+        updates.google_meet_link = editUser.google_meet_link;
+        
         const { error } = await supabase
-          .from("attendance_records")
-          .insert([recordData]);
-        if (error) {
-          if (error.code === "23505") {
-            alert(
-              "Attendance already recorded for this student on this date and course.",
-            );
-          } else {
-            throw error;
-          }
+          .from(tableName)
+          .update(updates)
+          .eq(idField, editUser.id);
+
+        if (error) throw error;
+        
+        showToast('✅ Lecturer updated successfully!', 'success');
+        setShowEditModal(false);
+        fetchLecturers();
+        
+      } else if (editUser.role === 'finance') {
+        const financeUpdates = {
+          full_name: editUser.full_name,
+          phone: editUser.phone,
+        };
+        
+        const { error } = await supabase
+          .from('finance_officers')
+          .update(financeUpdates)
+          .eq('id', editUser.id);
+
+        if (error) throw error;
+        
+        showToast('✅ Finance Officer updated successfully!', 'success');
+        setShowEditModal(false);
+        fetchFinanceOfficers();
+        return;
+        
+      } else if (editUser.role === 'dean') {
+        const deanUpdates = {
+          dean: editUser.full_name,
+          contact_email: editUser.contact_email || null,
+          contact_phone: editUser.contact_phone || null,
+        };
+        
+        const { error: facultyUpdateError } = await supabase
+          .from('faculties')
+          .update(deanUpdates)
+          .eq('id', editUser.faculty_id);
+        
+        if (facultyUpdateError) {
+          console.error('❌ Faculty update error:', facultyUpdateError);
+          showToast('❌ Error updating dean: ' + facultyUpdateError.message, 'error');
           return;
         }
-        alert("Attendance recorded successfully!");
-      }
-
-      setShowAttendanceRecordModal(false);
-      setEditingAttendanceRecord(null);
-      setAttendanceForm({
-        student_id: "",
-        date: new Date().toISOString().split("T")[0],
-        status: "present",
-        notes: "",
-        course_id: "",
-        lecture_id: "",
-      });
-      fetchAttendanceData();
-      fetchDashboardStats();
-    } catch (err) {
-      alert("Error saving attendance: " + err.message);
-    }
-  };
-  const handleDeleteAttendanceRecord = async (recordId) => {
-    if (!window.confirm("Delete this attendance record?")) return;
-
-    try {
-      const { error } = await supabase
-        .from("attendance_records")
-        .delete()
-        .eq("id", recordId);
-      if (error) throw error;
-
-      alert("Record deleted");
-      fetchAttendanceData();
-      fetchDashboardStats();
-    } catch (err) {
-      alert("Error deleting record: " + err.message);
-    }
-  };
-
-  const formatTime = (timeString) => {
-    if (!timeString) return "TBD";
-    const timeParts = timeString.split(":");
-    const hours = parseInt(timeParts[0]);
-    const minutes = timeParts[1] || "00";
-    const ampm = hours >= 12 ? "PM" : "AM";
-    const formattedHour = hours % 12 || 12;
-    return `${formattedHour}:${minutes.padStart(2, "0")} ${ampm}`;
-  };
-
-  const handleAddUser = async () => {
-    try {
-      // Email validation
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(newUser.email.trim())) {
-        alert("Please enter a valid email address");
+        
+        showToast('✅ Dean updated successfully!', 'success');
+        setShowEditModal(false);
+        fetchDeans();
+        return;
+        
+      } else if (editUser.role === 'hod') {
+        const hodUpdates = {
+          head_of_department: editUser.full_name,
+          contact_email: editUser.contact_email || null,
+          contact_phone: editUser.contact_phone || null,
+        };
+        
+        const { error: deptUpdateError } = await supabase
+          .from('departments')
+          .update(hodUpdates)
+          .eq('id', editUser.department_id);
+        
+        if (deptUpdateError) {
+          console.error('❌ Department update error:', deptUpdateError);
+          showToast('❌ Error updating HOD: ' + deptUpdateError.message, 'error');
+          return;
+        }
+        
+        showToast('✅ HOD updated successfully!', 'success');
+        setShowEditModal(false);
+        fetchHODs();
         return;
       }
-      const password = "Default123!";
-      let tableName, profileData;
 
-      if (newUser.role === "student") {
-        if (!newUser.program?.trim()) {
-          alert("Please enter the Program name.");
-          return;
-        }
-        if (!newUser.department_code?.trim()) {
-          alert("Please enter the Department Code (e.g., ENG, SCT)");
-          return;
-        }
-        if (!newUser.program_code?.trim()) {
-          alert("Please enter the Program Code (e.g., BSCE, BSCS)");
-          return;
-        }
-
-        const departmentCode = newUser.department_code.trim().toUpperCase();
-
-        // === SIMPLE LOGIC: Department code + numeric sequence (NO YEAR) ===
-        // Find all student IDs for this department
-        const { data: existingStudents, error: fetchError } = await supabase
-          .from("students")
-          .select("student_id")
-          .ilike("student_id", `${departmentCode}-%`)
-          .order("student_id", { ascending: false });
-
-        if (fetchError) {
-          console.error("Error fetching existing student IDs:", fetchError);
-          throw new Error("Failed to check existing student IDs");
-        }
-
-        // Find the highest numeric sequence (ignore hex and year formats)
-        let maxSequence = 0;
-
-        if (existingStudents && existingStudents.length > 0) {
-          existingStudents.forEach((student) => {
-            const studentId = student.student_id;
-            if (studentId && studentId.startsWith(`${departmentCode}-`)) {
-              const parts = studentId.split("-");
-
-              // Check different formats:
-              // Format 1: ENG-249719 (department-sequence)
-              if (parts.length === 2) {
-                const sequencePart = parts[1];
-                if (/^\d+$/.test(sequencePart)) {
-                  const sequenceNum = parseInt(sequencePart, 10);
-                  if (!isNaN(sequenceNum) && sequenceNum > maxSequence) {
-                    maxSequence = sequenceNum;
-                  }
-                }
-              }
-              // Format 2: ENG-2025-249719 (department-year-sequence) - extract just the sequence
-              else if (parts.length === 3) {
-                const sequencePart = parts[2];
-                if (/^\d+$/.test(sequencePart)) {
-                  const sequenceNum = parseInt(sequencePart, 10);
-                  if (!isNaN(sequenceNum) && sequenceNum > maxSequence) {
-                    maxSequence = sequenceNum;
-                  }
-                }
-              }
-            }
-          });
-        }
-
-        // Start new sequence from the highest found + 1
-        const nextSequenceNumber = maxSequence + 1;
-
-        // Generate ID: ENG-249720 (NO YEAR)
-        const studentId = `${departmentCode}-${nextSequenceNumber}`;
-
-        console.log(
-          `Generated Student ID: ${studentId} (next sequence: ${nextSequenceNumber})`,
-        );
-
-        // Double-check if this ID already exists
-        const { data: duplicateCheck, error: duplicateError } = await supabase
-          .from("students")
-          .select("id")
-          .eq("student_id", studentId)
-          .maybeSingle();
-
-        if (duplicateError && duplicateError.code !== "PGRST116") {
-          throw new Error("Error checking for duplicate ID");
-        }
-
-        if (duplicateCheck) {
-          // If ID exists, try next number
-          const fallbackSequence = nextSequenceNumber + 1;
-          const fallbackStudentId = `${departmentCode}-${fallbackSequence}`;
-
-          const { data: fallbackCheck } = await supabase
-            .from("students")
-            .select("id")
-            .eq("student_id", fallbackStudentId)
-            .maybeSingle();
-
-          if (fallbackCheck) {
-            throw new Error(
-              `Student ID generation conflict. Please try again or contact admin.`,
-            );
-          }
-
-          // Use fallback ID
-          studentId = fallbackStudentId;
-        }
-
-        tableName = "students";
-        profileData = {
-          student_id: studentId,
-          registration_number: studentId, // Same as student_id
-          full_name: newUser.full_name.trim(),
-          email: newUser.email.toLowerCase().trim(),
-          password_hash: password,
-          phone: newUser.phone?.trim() || null,
-          date_of_birth: newUser.date_of_birth || null,
-          program: newUser.program,
-          year_of_study: parseInt(newUser.year_of_study),
-          semester: parseInt(newUser.semester),
-          intake: newUser.intake,
-          academic_year: newUser.academic_year.trim(),
-          status: "active",
-          program_id: newUser.program_id,
-          program_code: newUser.program_code.trim().toUpperCase(),
-          department: newUser.department.trim(),
-          department_code: departmentCode,
-          program_duration_years: parseInt(newUser.program_duration_years),
-          program_total_semesters: parseInt(newUser.program_duration_years) * 2,
-          created_at: new Date().toISOString(),
-        };
-
-        // Duplicate checks
-        const { data: existingProfile, error: checkError } = await supabase
-          .from(tableName)
-          .select("id, email, student_id")
-          .or(`email.eq.${profileData.email},student_id.eq.${studentId}`)
-          .maybeSingle();
-
-        if (checkError && checkError.code !== "PGRST116") {
-          throw new Error("Error checking for existing records");
-        }
-        if (existingProfile) {
-          if (existingProfile.email === profileData.email) {
-            throw new Error("This email already exists as a student");
-          }
-          if (existingProfile.student_id === studentId) {
-            throw new Error("This Student ID already exists");
-          }
-        }
-      } else {
-        // ========== LECTURER LOGIC (unchanged) ==========
-        const { data: existingLecturers, error: fetchLecturersError } =
-          await supabase
-            .from("lecturers")
-            .select("lecturer_id")
-            .like("lecturer_id", "LEC-%")
-            .order("lecturer_id", { ascending: false })
-            .limit(1);
-
-        if (fetchLecturersError) {
-          throw new Error("Failed to check existing lecturer IDs");
-        }
-
-        let lecturerSequence = 1;
-        if (existingLecturers && existingLecturers.length > 0) {
-          const latestId = existingLecturers[0].lecturer_id;
-          const idParts = latestId.split("-");
-          if (idParts.length === 2) {
-            const existingSequence = idParts[1];
-            lecturerSequence = parseInt(existingSequence, 16) + 1;
-          }
-        }
-
-        const lecturerSequenceHex = lecturerSequence
-          .toString(16)
-          .padStart(6, "0")
-          .toUpperCase();
-        const lecturerId = `LEC-${lecturerSequenceHex}`;
-
-        tableName = "lecturers";
-        profileData = {
-          lecturer_id: lecturerId,
-          full_name: newUser.full_name.trim(),
-          email: newUser.email.toLowerCase().trim(),
-          password_hash: password,
-          phone: newUser.phone?.trim() || null,
-          department: newUser.department?.trim() || null,
-          specialization: newUser.specialization?.trim() || null,
-          google_meet_link: newUser.google_meet_link?.trim() || null,
-          status: "active",
-          created_at: new Date().toISOString(),
-        };
-
-        const { data: existingLecturer, error: checkLecturerError } =
-          await supabase
-            .from(tableName)
-            .select("id, email, lecturer_id")
-            .or(`email.eq.${profileData.email},lecturer_id.eq.${lecturerId}`)
-            .maybeSingle();
-
-        if (checkLecturerError && checkLecturerError.code !== "PGRST116") {
-          throw new Error("Error checking for existing lecturer records");
-        }
-        if (existingLecturer) {
-          if (existingLecturer.email === profileData.email) {
-            throw new Error("This email already exists as a lecturer");
-          }
-          if (existingLecturer.lecturer_id === lecturerId) {
-            throw new Error("This Lecturer ID already exists");
-          }
-        }
-      }
-
-      // Cross-check email in the other table
-      const otherTableName =
-        newUser.role === "student" ? "lecturers" : "students";
-      const { data: crossCheck } = await supabase
-        .from(otherTableName)
-        .select("email")
-        .eq("email", profileData.email)
-        .maybeSingle();
-
-      if (crossCheck) {
-        throw new Error(
-          `This email already exists as a ${newUser.role === "student" ? "lecturer" : "student"}`,
-        );
-      }
-
-      // === Insert ===
-      const { data: tableData, error: tableError } = await supabase
-        .from(tableName)
-        .insert([profileData])
-        .select()
-        .single();
-
-      if (tableError) {
-        if (tableError.code === "23505") {
-          throw new Error("Email or ID already exists!");
-        }
-        throw new Error(tableError.message);
-      }
-
-      // === AUTO-ENROLL NEW STUDENT ===
-      if (newUser.role === "student" && tableData?.id) {
-        const studentId = tableData.id;
-        try {
-          const { data: startingCourses, error: courseError } = await supabase
-            .from("courses")
-            .select("id")
-            .eq("department_code", newUser.department_code.trim().toUpperCase())
-            .eq("program_code", newUser.program_code.trim().toUpperCase())
-            .eq("year", newUser.year_of_study || 1)
-            .eq("semester", newUser.semester || 1)
-            .eq("is_active", true);
-
-          if (courseError) {
-            console.warn("Auto-enroll: Failed to fetch courses", courseError);
-          } else if (startingCourses && startingCourses.length > 0) {
-            const enrollments = startingCourses.map((course) => ({
-              student_id: studentId,
-              course_id: course.id,
-              program_code: newUser.program_code.trim().toUpperCase(),
-              status: "enrolled",
-              enrollment_date: new Date().toISOString().split("T")[0],
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            }));
-
-            const { error: enrollError } = await supabase
-              .from("student_courses")
-              .upsert(enrollments, {
-                onConflict: "student_id,course_id",
-                ignoreDuplicates: true,
-              });
-
-            if (enrollError) {
-              console.warn("Auto-enroll failed", enrollError);
-              alert(
-                "Student created successfully, but auto-enrollment failed. Please enroll courses manually if needed.",
-              );
-            } else {
-              console.log(`✅ Auto-enrolled in ${enrollments.length} courses`);
-            }
-          }
-        } catch (err) {
-          console.warn("Auto-enroll error:", err);
-        }
-      }
-
-      // Optional user_roles insert
-      try {
-        await supabase.from("user_roles").insert([
-          {
-            email: profileData.email,
-            role: newUser.role,
-            profile_id: tableData.id,
-            profile_table: tableName,
-            created_at: new Date().toISOString(),
-          },
-        ]);
-      } catch (e) {
-        console.log("Note: Could not add to user_roles:", e.message);
-      }
-
-      // Reset form
-      setShowUserModal(false);
-      setNewUser({
-        full_name: "",
-        email: "",
-        phone: "",
-        role: "student",
-        program: "",
-        department_code: "",
-        department: "",
-        year_of_study: 1,
-        semester: 1,
-        intake: "January",
-        specialization: "",
-        google_meet_link: "",
-        program_code: "",
-        program_duration_years: 4,
-        academic_year: "",
-        date_of_birth: "",
-      });
-
-      // Success message
-      const successMessage =
-        newUser.role === "student"
-          ? `
-✅ Student Successfully Added!
-
-Student ID / Registration Number: ${profileData.student_id}
-Full Name: ${profileData.full_name}
-Email: ${profileData.email}
-Program: ${profileData.program} (${profileData.program_code})
-Academic Year: ${profileData.academic_year}
-
-Share this Student ID with the student!
-    `
-          : `
-✅ Lecturer Successfully Added!
-
-Lecturer ID: ${profileData.lecturer_id}
-Full Name: ${profileData.full_name}
-Email: ${profileData.email}
-    `;
-
-      alert(successMessage);
-
-      // Refresh data
-      if (newUser.role === "student") await fetchStudents();
-      else await fetchLecturers();
-      await fetchDashboardStats();
     } catch (error) {
-      alert(`Error: ${error.message || "Something went wrong"}`);
-      console.error("Add user error:", error);
+      console.error('Error updating user:', error);
+      showToast('❌ Error updating user: ' + error.message, 'error');
     }
   };
+
+  // ==================== STUDENT MANAGEMENT ====================
+  const handleUpdateStudentStatus = async (studentId, status) => {
+    try {
+      const { error } = await supabase
+        .from("students")
+        .update({ status })
+        .eq("id", studentId);
+      if (error) throw error;
+      fetchStudents();
+      fetchDashboardStats();
+      showToast(`Student status updated to ${status}`, 'success');
+    } catch (error) {
+      console.error("Error updating student:", error);
+      showToast("Error updating student: " + error.message, 'error');
+    }
+  };
+
+  const handleStudentPictureUpdate = (newPictureUrl) => {
+    setStudents(prevStudents =>
+      prevStudents.map(s =>
+        s.id === selectedStudentForPicture?.id
+          ? { ...s, profile_picture_url: newPictureUrl }
+          : s
+      )
+    );
+    fetchStudents();
+  };
+
+  // ==================== LECTURER RENDER HELPERS ====================
+  const renderLecturerDepartments = (lecturer) => {
+    if (!lecturer.lecturer_departments || lecturer.lecturer_departments.length === 0) {
+      return <span className="text-muted small-text">No departments</span>;
+    }
+    return (
+      <div className="departments-badges">
+        {lecturer.lecturer_departments.slice(0, 3).map((dept, idx) => (
+          <span key={idx} className="department-badge">
+            {dept.department_code}
+          </span>
+        ))}
+        {lecturer.lecturer_departments.length > 3 && (
+          <span className="text-muted small-text">
+            +{lecturer.lecturer_departments.length - 3} more
+          </span>
+        )}
+      </div>
+    );
+  };
+
+  // ==================== COURSE MANAGEMENT ====================
   const handleAddCourse = async () => {
     try {
       const { error } = await supabase.from("courses").insert([newCourse]);
-
       if (error) throw error;
 
       setShowCourseModal(false);
@@ -6468,259 +1983,119 @@ Email: ${profileData.email}
 
       fetchCourses();
       fetchDashboardStats();
+      showToast("Course added successfully!", 'success');
     } catch (error) {
       console.error("Error adding course:", error);
-      alert("Error adding course: " + error.message);
+      showToast("Error adding course: " + error.message, 'error');
     }
   };
 
-  const handleAddAssignment = async () => {
+  const handleToggleCourseActive = async (courseId, isActive) => {
     try {
-      const assignmentData = {
-        ...newAssignment,
-        lecturer_id: profile.id,
-        status: "published",
-      };
-
       const { error } = await supabase
-        .from("assignments")
-        .insert([assignmentData]);
-
+        .from("courses")
+        .update({ is_active: !isActive })
+        .eq("id", courseId);
       if (error) throw error;
-
-      setShowAssignmentModal(false);
-      setNewAssignment({
-        course_id: "",
-        title: "",
-        description: "",
-        instructions: "",
-        due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-          .toISOString()
-          .slice(0, 16),
-        total_marks: 100,
-        submission_type: "file",
-      });
-
-      fetchAssignments();
-      fetchDashboardStats();
+      fetchCourses();
+      showToast(`Course ${!isActive ? "activated" : "deactivated"}!`, 'success');
     } catch (error) {
-      console.error("Error adding assignment:", error);
-      alert("Error adding assignment: " + error.message);
+      console.error("Error updating course:", error);
+      showToast("Error updating course: " + error.message, 'error');
     }
   };
 
-  const handleAddLecture = async () => {
+  // ==================== EXAM MANAGEMENT ====================
+  const handleAddExam = async () => {
     try {
-      console.log("DEBUG: Starting to add lecture");
-      console.log("DEBUG: New lecture data:", newLecture);
-      console.log("DEBUG: Profile ID:", profile?.id);
-
-      // Validate required fields
-      if (
-        !newLecture.course_id ||
-        !newLecture.title ||
-        !newLecture.scheduled_date ||
-        !newLecture.start_time ||
-        !newLecture.end_time
-      ) {
-        alert("Please fill in all required fields");
-        return;
-      }
-
-      // Calculate duration in minutes
-      const start = new Date(
-        `${newLecture.scheduled_date}T${newLecture.start_time}`,
-      );
-      const end = new Date(
-        `${newLecture.scheduled_date}T${newLecture.end_time}`,
-      );
-      const durationMinutes = Math.round((end - start) / (1000 * 60));
+      const start = new Date(newExam.start_time);
+      const end = new Date(newExam.end_time);
+      const durationMinutes = Math.round((end - start) / 60000);
 
       if (durationMinutes <= 0) {
-        alert("End time must be after start time");
+        showToast("End time must be after start time", 'error');
         return;
       }
 
-      // Get course department code
-      const { data: courseData, error: courseError } = await supabase
-        .from("courses")
-        .select("department_code, course_code, course_name")
-        .eq("id", newLecture.course_id)
-        .single();
-
-      if (courseError) {
-        console.error("DEBUG: Error fetching course:", courseError);
-        alert("Failed to fetch course details: " + courseError.message);
-        return;
-      }
-
-      console.log("DEBUG: Course data:", courseData);
-
-      const lectureData = {
-        lecturer_id: profile.id,
-        course_id: newLecture.course_id,
-        title: newLecture.title.trim(),
-        description: newLecture.description?.trim() || "",
-        google_meet_link: newLecture.google_meet_link?.trim() || null,
-        scheduled_date: newLecture.scheduled_date,
-        start_time: newLecture.start_time,
-        end_time: newLecture.end_time,
+      const examData = {
+        ...newExam,
+        status: "published",
         duration_minutes: durationMinutes,
-        lecturer_department_code: courseData?.department_code || null,
-        status: "scheduled",
-        materials_url: newLecture.materials_url || [],
-        // === NEW: Save the selected cohort ===
-        target_academic_year: selectedCohort.academic_year.trim(),
-        target_year_of_study: selectedCohort.year_of_study,
-        target_semester: selectedCohort.semester,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
-      // DEBUG: Log the exact payload being sent
-      console.log("DEBUG: Lecture insert payload:", lectureData);
 
-      // Optional: Force schema cache refresh (helps avoid "column not found in schema cache" errors)
-      try {
-        await supabase
-          .from("lectures")
-          .select("lecturer_department_code")
-          .limit(0)
-          .single();
-      } catch (_) {}
+      const { error } = await supabase.from("examinations").insert([examData]);
+      if (error) throw error;
 
-      // Insert the lecture
-      const { data, error } = await supabase
-        .from("lectures")
-        .insert([lectureData])
-        .select();
-
-      if (error) {
-        console.error("DEBUG: Supabase insert error:", error);
-        alert("Error adding lecture: " + error.message);
-        return;
-      }
-
-      console.log("DEBUG: Lecture added successfully:", data);
-
-      // Reset form
-      setShowLectureModal(false);
-      setNewLecture({
+      setShowExamsModal(false);
+      setNewExam({
         course_id: "",
         title: "",
         description: "",
-        google_meet_link: "",
-        scheduled_date: new Date().toISOString().slice(0, 10),
-        start_time: "09:00",
-        end_time: "11:00",
-        duration_minutes: 120,
-        materials_url: [],
-        status: "scheduled",
+        exam_type: "midterm",
+        submission_type: "both",
+        start_time: "",
+        end_time: "",
+        total_marks: 100,
+        venue: "",
+        status: "published",
       });
 
-      // Refresh data
-      await fetchLectures();
-      await fetchDashboardStats();
-
-      alert("Lecture scheduled successfully!");
+      fetchExams();
+      fetchDashboardStats();
+      showToast("Exam scheduled successfully!", 'success');
     } catch (error) {
-      console.error("DEBUG: Unexpected error adding lecture:", error);
-      alert("Error adding lecture: " + (error.message || "Unknown error"));
+      console.error("Error scheduling exam:", error);
+      showToast("Error: " + error.message, 'error');
     }
   };
 
-// UPDATED: handleAddExam with file upload and submission type
-const handleAddExam = async () => {
-  if (!validateExamCohort()) return;
+  const handleDeleteExam = async (examId) => {
+    if (!window.confirm("Are you sure you want to delete this exam?")) return;
 
-  try {
-    // Your existing enrolled students check
-    const { data: enrolledStudents, error: enrollCheckError } = await supabase
-      .from("students")
-      .select("id")
-      .eq("program_id", examTargetProgram)
-      .eq("academic_year", examTargetCohort.academic_year.trim())
-      .eq("year_of_study", examTargetCohort.year_of_study)
-      .eq("semester", examTargetCohort.semester)
-      .eq("status", "active");
-
-    if (enrollCheckError) throw enrollCheckError;
-    if (!enrolledStudents || enrolledStudents.length === 0) {
-      alert("No active/enrolled students found in this target cohort.");
-      return;
+    try {
+      const { error } = await supabase
+        .from("examinations")
+        .delete()
+        .eq("id", examId);
+      if (error) throw error;
+      fetchExams();
+      fetchDashboardStats();
+      showToast("Exam deleted successfully!", 'success');
+    } catch (error) {
+      console.error("Error deleting exam:", error);
+      showToast("Error deleting exam: " + error.message, 'error');
     }
-    // ⭐ Validate file upload for file-only submissions
-if (newExam.submission_type === 'file' && examFiles.length === 0) {
-  alert("Please upload at least one exam file for file-only submission.");
-  return;
-}
+  };
 
-    // Upload files first if submission_type is 'file' or 'both'
-    let uploadedExamFiles = [];
-    if (newExam.submission_type === 'file' || newExam.submission_type === 'both') {
-      if (examFiles.length > 0) {
-        uploadedExamFiles = await uploadExamFiles(examFiles);
-      }
-    }
+  const getAdminExamStatus = (exam) => {
+    const now = new Date();
+    const start = new Date(exam.start_time);
+    const end = new Date(exam.end_time);
 
-    const start = new Date(newExam.start_time);
-    const end = new Date(newExam.end_time);
-    const durationMinutes = Math.round((end - start) / 60000);
+    if (now >= start && now <= end) return "active";
+    if (now < start) return "upcoming";
+    return "ended";
+  };
 
-    if (durationMinutes <= 0) {
-      alert("End time must be after start time");
-      return;
-    }
+  const getTimeUntilStart = (startTime) => {
+    const now = new Date();
+    const start = new Date(startTime);
+    const diffSeconds = Math.floor((start - now) / 1000);
 
-    const examData = {
-      ...newExam,
-      status: "published",
-      target_academic_year: examTargetCohort.academic_year.trim(),
-      target_year_of_study: examTargetCohort.year_of_study,
-      target_semester: examTargetCohort.semester,
-      target_program_id: examTargetProgram,
-      duration_minutes: durationMinutes,
-      venue: newExam.venue || newExam.location || "Online",
-      exam_files: uploadedExamFiles, // array of file paths
-      submission_type: newExam.submission_type || "both", // ⭐ Save submission type
-    };
+    if (diffSeconds <= 0) return "Started";
+    const hours = Math.floor(diffSeconds / 3600);
+    const minutes = Math.floor((diffSeconds % 3600) / 60);
+    return `${hours}h ${minutes}m`;
+  };
 
-    const { error } = await supabase.from("examinations").insert([examData]);
-
-    if (error) throw error;
-
-    // Reset form
-    setShowExamsModal(false);
-  setNewExam({
-  course_id: "",
-  title: "",
-  description: "",
-  exam_type: "midterm",
-  submission_type: "both",
-  start_time: "",
-  end_time: "",
-  total_marks: 100,
-  venue: "",
-  location: "",
-});
-    setExamFiles([]); // Reset files
-    setExamTargetProgram("");
-    setExamTargetCohort({ academic_year: "", year_of_study: 1, semester: 1 });
-    setExamCohortError("");
-
-    fetchExams();
-    alert("Exam scheduled successfully!");
-  } catch (error) {
-    console.error("Error scheduling exam:", error);
-    alert("Error: " + error.message);
-  }
-};
-
+  // ==================== FINANCE MANAGEMENT ====================
   const handleAddFinanceRecord = async () => {
     try {
       const { error } = await supabase
         .from("financial_records")
         .insert([newFinanceRecord]);
-
       if (error) throw error;
 
       setShowFinanceModal(false);
@@ -6735,246 +2110,791 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
 
       fetchFinancialRecords();
       fetchDashboardStats();
-
-      alert("Financial record added successfully!");
+      showToast("Financial record added successfully!", 'success');
     } catch (error) {
       console.error("Error adding financial record:", error);
-      alert("Error adding financial record: " + error.message);
+      showToast("Error adding financial record: " + error.message, 'error');
     }
   };
 
-  const handleAddAttendanceRecord = async () => {
+  // ==================== USER MANAGEMENT ====================
+  const handleAddStudent = async () => {
     try {
-      const { error } = await supabase
-        .from("attendance_records")
-        .insert([newAttendanceRecord]);
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(newUser.email.trim())) {
+        showToast("Please enter a valid email address", 'error');
+        return;
+      }
 
-      if (error) throw error;
+      if (!newUser.program?.trim()) {
+        showToast("Please enter the Program name.", 'error');
+        return;
+      }
+      if (!newUser.department_code?.trim()) {
+        showToast("Please enter the Department Code (e.g., ENG, SCT)", 'error');
+        return;
+      }
+      if (!newUser.program_code?.trim()) {
+        showToast("Please enter the Program Code (e.g., BSCE, BSCS)", 'error');
+        return;
+      }
 
-      setShowAttendanceModal(false);
-      setNewAttendanceRecord({
-        student_id: "",
-        lecture_id: "",
-        date: new Date().toISOString().slice(0, 10),
-        status: "present",
-        check_in_time: "09:00",
-        check_out_time: "11:00",
-        remarks: "",
-      });
+      const password = "Default123!";
+      const departmentCode = newUser.department_code.trim().toUpperCase();
 
-      fetchAttendanceData();
-      fetchDashboardStats();
-
-      alert("Attendance record added successfully!");
-    } catch (error) {
-      console.error("Error adding attendance record:", error);
-      alert("Error adding attendance record: " + error.message);
-    }
-  };
-
-  // Lecture management functions
-  const handleStartLecture = async (lectureId) => {
-    try {
-      console.log("DEBUG: Starting lecture with ID:", lectureId);
-      const { error } = await supabase
-        .from("lectures")
-        .update({
-          status: "ongoing",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", lectureId);
-
-      if (error) throw error;
-
-      fetchLectures();
-      alert("Lecture started successfully!");
-    } catch (error) {
-      console.error("Error starting lecture:", error);
-      alert("Error starting lecture: " + error.message);
-    }
-  };
-
-  const handleEndLecture = async (lectureId) => {
-    try {
-      const { error } = await supabase
-        .from("lectures")
-        .update({
-          status: "completed",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", lectureId);
-
-      if (error) throw error;
-
-      fetchLectures();
-      alert("Lecture ended successfully!");
-    } catch (error) {
-      console.error("Error ending lecture:", error);
-      alert("Error ending lecture: " + error.message);
-    }
-  };
-
-  const handleEditLecture = async () => {
-    try {
-      const { error } = await supabase
-        .from("lectures")
-        .update({
-          title: editLecture.title,
-          description: editLecture.description,
-          google_meet_link: editLecture.google_meet_link,
-          scheduled_date: editLecture.scheduled_date,
-          start_time: editLecture.start_time,
-          end_time: editLecture.end_time,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", editingLecture.id);
-
-      if (error) throw error;
-
-      setEditingLecture(null);
-      setEditLecture({
-        title: "",
-        description: "",
-        google_meet_link: "",
-        scheduled_date: "",
-        start_time: "",
-        end_time: "",
-      });
-
-      fetchLectures();
-      alert("Lecture updated successfully!");
-    } catch (error) {
-      console.error("Error updating lecture:", error);
-      alert("Error updating lecture: " + error.message);
-    }
-  };
-
-  const handleDeleteLecture = async (lectureId) => {
-    if (!window.confirm("Are you sure you want to delete this lecture?")) {
-      return;
-    }
-
-    try {
-      const { error } = await supabase
-        .from("lectures")
-        .delete()
-        .eq("id", lectureId);
-
-      if (error) throw error;
-
-      fetchLectures();
-      alert("Lecture deleted successfully!");
-    } catch (error) {
-      console.error("Error deleting lecture:", error);
-      alert("Error deleting lecture: " + error.message);
-    }
-  };
-
- const handleEditExam = async () => {
-  if (!editingExam) return;
-  
-  try {
-    // Validate
-    if (!editExam.title?.trim()) {
-      alert("Please enter a title");
-      return;
-    }
-    
-    const start = new Date(editExam.start_time);
-    const end = new Date(editExam.end_time);
-    const durationMinutes = Math.round((end - start) / 60000);
-    
-    if (durationMinutes <= 0) {
-      alert("End time must be after start time");
-      return;
-    }
-
-    const { error } = await supabase
-      .from("examinations")
-      .update({
-        title: editExam.title.trim(),
-        description: editExam.description?.trim() || "",
-        start_time: editExam.start_time,
-        end_time: editExam.end_time,
-        total_marks: parseInt(editExam.total_marks) || 100,
-        venue: editExam.venue?.trim() || "",
-        exam_type: editExam.exam_type || "online",
-        status: editExam.status || "published",
-        submission_type: editExam.submission_type || "both",
-        duration_minutes: durationMinutes,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", editingExam.id);
-
-    if (error) throw error;
-
-    setEditingExam(null);
-    fetchExams();
-    fetchDashboardStats();
-    alert("✅ Exam updated successfully!");
-  } catch (error) {
-    console.error("Error updating exam:", error);
-    alert("Error updating exam: " + error.message);
-  }
-};
-
-  const handleDeleteExam = async (examId) => {
-    if (!window.confirm("Are you sure you want to delete this exam?")) {
-      return;
-    }
-
-    try {
-      const { error } = await supabase
-        .from("examinations")
-        .delete()
-        .eq("id", examId);
-
-      if (error) throw error;
-
-      fetchExams();
-      alert("Exam deleted successfully!");
-    } catch (error) {
-      console.error("Error deleting exam:", error);
-      alert("Error deleting exam: " + error.message);
-    }
-  };
-
-  // Student management
-  const handleUpdateStudentStatus = async (studentId, status) => {
-    try {
-      const { error } = await supabase
+      const { data: existingStudents, error: fetchError } = await supabase
         .from("students")
-        .update({ status })
-        .eq("id", studentId);
+        .select("student_id")
+        .ilike("student_id", `${departmentCode}-%`)
+        .order("student_id", { ascending: false });
 
-      if (error) throw error;
+      if (fetchError) throw fetchError;
 
-      fetchStudents();
-      alert("Student status updated!");
+      let maxSequence = 0;
+      if (existingStudents && existingStudents.length > 0) {
+        existingStudents.forEach((student) => {
+          const studentId = student.student_id;
+          if (studentId && studentId.startsWith(`${departmentCode}-`)) {
+            const parts = studentId.split("-");
+            if (parts.length === 2) {
+              const sequencePart = parts[1];
+              if (/^\d+$/.test(sequencePart)) {
+                const sequenceNum = parseInt(sequencePart, 10);
+                if (!isNaN(sequenceNum) && sequenceNum > maxSequence) {
+                  maxSequence = sequenceNum;
+                }
+              }
+            }
+          }
+        });
+      }
+
+      const nextSequenceNumber = maxSequence + 1;
+      const studentId = `${departmentCode}-${nextSequenceNumber}`;
+
+      const profileData = {
+        student_id: studentId,
+        registration_number: studentId,
+        full_name: newUser.full_name.trim(),
+        email: newUser.email.toLowerCase().trim(),
+        password_hash: password,
+        phone: newUser.phone?.trim() || null,
+        date_of_birth: newUser.date_of_birth || null,
+        program: newUser.program,
+        year_of_study: parseInt(newUser.year_of_study),
+        semester: parseInt(newUser.semester),
+        intake: newUser.intake,
+        academic_year: newUser.academic_year.trim(),
+        status: "active",
+        program_id: newUser.program_id,
+        program_code: newUser.program_code.trim().toUpperCase(),
+        department: newUser.department.trim(),
+        department_code: departmentCode,
+        program_duration_years: parseInt(newUser.program_duration_years),
+        program_total_semesters: parseInt(newUser.program_duration_years) * 2,
+        created_at: new Date().toISOString(),
+      };
+
+      const { data: existingProfile, error: checkError } = await supabase
+        .from("students")
+        .select("id, email, student_id")
+        .or(`email.eq.${profileData.email},student_id.eq.${studentId}`)
+        .maybeSingle();
+
+      if (checkError && checkError.code !== "PGRST116") {
+        throw new Error("Error checking for existing records");
+      }
+      if (existingProfile) {
+        if (existingProfile.email === profileData.email) {
+          throw new Error("This email already exists as a student");
+        }
+        if (existingProfile.student_id === studentId) {
+          throw new Error("This Student ID already exists");
+        }
+      }
+
+      const { data: tableData, error: tableError } = await supabase
+        .from("students")
+        .insert([profileData])
+        .select()
+        .single();
+
+      if (tableError) {
+        if (tableError.code === "23505") {
+          throw new Error("Email or ID already exists!");
+        }
+        throw new Error(tableError.message);
+      }
+
+      if (tableData?.id) {
+        try {
+          const actualProgramCode = tableData.program_code || newUser.program_code.trim().toUpperCase();
+          const actualDepartmentCode = tableData.department_code || newUser.department_code.trim().toUpperCase();
+
+          const { data: startingCourses, error: courseError } = await supabase
+            .from("courses")
+            .select("id")
+            .eq("department_code", actualDepartmentCode)
+            .eq("program_code", actualProgramCode)
+            .eq("year", newUser.year_of_study || 1)
+            .eq("semester", newUser.semester || 1)
+            .eq("is_active", true);
+
+          if (!courseError && startingCourses && startingCourses.length > 0) {
+            const enrollments = startingCourses.map((course) => ({
+              student_id: tableData.id,
+              course_id: course.id,
+              program_code: actualProgramCode,
+              status: "enrolled",
+              enrollment_date: new Date().toISOString().split("T")[0],
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            }));
+
+            await supabase
+              .from("student_courses")
+              .upsert(enrollments, {
+                onConflict: "student_id,course_id",
+                ignoreDuplicates: true,
+              });
+          }
+        } catch (err) {
+          console.warn("Auto-enroll error:", err);
+        }
+      }
+
+      setShowUserModal(false);
+      resetUserForm();
+      showToast(`✅ Student "${newUser.full_name}" added successfully!`, 'success');
+      await fetchStudents();
+      await fetchDashboardStats();
+      
     } catch (error) {
-      console.error("Error updating student:", error);
-      alert("Error updating student: " + error.message);
+      showToast(`Error: ${error.message || "Something went wrong"}`, 'error');
+      console.error("Add student error:", error);
     }
   };
 
-  // Course management
-  const handleToggleCourseActive = async (courseId, isActive) => {
+  const handleAddLecturer = async () => {
+    try {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(newUser.email.trim())) {
+        showToast("Please enter a valid email address", 'error');
+        return;
+      }
+
+      if (!newUser.full_name.trim()) {
+        showToast("Please enter the lecturer's full name", 'error');
+        return;
+      }
+
+      const password = "Default123!";
+
+      const { data: existingLecturers, error: fetchLecturersError } = await supabase
+        .from("lecturers")
+        .select("lecturer_id")
+        .like("lecturer_id", "LEC-%")
+        .order("lecturer_id", { ascending: false })
+        .limit(1);
+
+      if (fetchLecturersError) throw fetchLecturersError;
+
+      let lecturerSequence = 1;
+      if (existingLecturers && existingLecturers.length > 0) {
+        const latestId = existingLecturers[0].lecturer_id;
+        const idParts = latestId.split("-");
+        if (idParts.length === 2) {
+          const existingSequence = idParts[1];
+          lecturerSequence = parseInt(existingSequence, 16) + 1;
+        }
+      }
+
+      const lecturerSequenceHex = lecturerSequence.toString(16).padStart(6, "0").toUpperCase();
+      const lecturerId = `LEC-${lecturerSequenceHex}`;
+
+      const profileData = {
+        lecturer_id: lecturerId,
+        full_name: newUser.full_name.trim(),
+        email: newUser.email.toLowerCase().trim(),
+        password_hash: password,
+        phone: newUser.phone?.trim() || null,
+        department: newUser.department?.trim() || null,
+        specialization: newUser.specialization?.trim() || null,
+        google_meet_link: newUser.google_meet_link?.trim() || null,
+        status: "active",
+        created_at: new Date().toISOString(),
+      };
+
+      const { data: existingLecturer, error: checkLecturerError } = await supabase
+        .from("lecturers")
+        .select("id, email, lecturer_id")
+        .or(`email.eq.${profileData.email},lecturer_id.eq.${lecturerId}`)
+        .maybeSingle();
+
+      if (checkLecturerError && checkLecturerError.code !== "PGRST116") {
+        throw new Error("Error checking for existing lecturer records");
+      }
+      if (existingLecturer) {
+        if (existingLecturer.email === profileData.email) {
+          throw new Error("This email already exists as a lecturer");
+        }
+        if (existingLecturer.lecturer_id === lecturerId) {
+          throw new Error("This Lecturer ID already exists");
+        }
+      }
+
+      await supabase
+        .from('user_roles')
+        .insert([{
+          email: profileData.email,
+          role: 'lecturer',
+          table_id: null,
+          password_hash: password,
+          created_at: new Date().toISOString(),
+        }]);
+
+      const { error: tableError } = await supabase
+        .from("lecturers")
+        .insert([profileData]);
+
+      if (tableError) {
+        if (tableError.code === "23505") {
+          throw new Error("Email or ID already exists!");
+        }
+        throw new Error(tableError.message);
+      }
+
+      setShowUserModal(false);
+      resetUserForm();
+      showToast(`✅ Lecturer "${newUser.full_name}" added successfully!`, 'success');
+      await fetchLecturers();
+      await fetchDashboardStats();
+      
+    } catch (error) {
+      showToast(`Error: ${error.message || "Something went wrong"}`, 'error');
+      console.error("Add lecturer error:", error);
+    }
+  };
+
+  const handleAddDean = async () => {
+    try {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(newUser.email.trim())) {
+        showToast("Please enter a valid email address", 'error');
+        return;
+      }
+
+      if (!newUser.faculty_id) {
+        showToast("Please select a faculty for the Dean", 'error');
+        return;
+      }
+
+      if (!newUser.full_name.trim()) {
+        showToast("Please enter the Dean's full name", 'error');
+        return;
+      }
+
+      const password = "Default123!";
+
+      const { data: existingDean, error: checkDeanError } = await supabase
+        .from("user_roles")
+        .select("id")
+        .eq("faculty_id", newUser.faculty_id)
+        .eq("role", "dean")
+        .maybeSingle();
+
+      if (checkDeanError && checkDeanError.code !== "PGRST116") {
+        throw checkDeanError;
+      }
+
+      if (existingDean) {
+        showToast("This faculty already has a Dean assigned!", 'error');
+        return;
+      }
+
+      const { error: roleError } = await supabase
+        .from("user_roles")
+        .insert([{
+          email: newUser.email.toLowerCase().trim(),
+          role: "dean",
+          table_id: newUser.faculty_id,
+          faculty_id: newUser.faculty_id,
+          password_hash: password,
+          created_at: new Date().toISOString(),
+        }]);
+
+      if (roleError) throw roleError;
+
+      await supabase
+        .from("faculties")
+        .update({ dean: newUser.full_name.trim() })
+        .eq("id", newUser.faculty_id);
+
+      showToast(`✅ Dean "${newUser.full_name}" added successfully!`, 'success');
+      
+      resetUserForm();
+      setShowUserModal(false);
+      await fetchDeans();
+      await fetchDashboardStats();
+      
+    } catch (error) {
+      showToast(`Error: ${error.message || "Something went wrong"}`, 'error');
+      console.error("Add dean error:", error);
+    }
+  };
+
+  const handleAddHOD = async () => {
+    try {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(newUser.email.trim())) {
+        showToast("Please enter a valid email address", 'error');
+        return;
+      }
+
+      if (!newUser.department_id) {
+        showToast("Please select a department for the HOD", 'error');
+        return;
+      }
+
+      if (!newUser.full_name.trim()) {
+        showToast("Please enter the HOD's full name", 'error');
+        return;
+      }
+
+      const password = "Default123!";
+
+      const { data: deptData, error: deptError } = await supabase
+        .from("departments")
+        .select("faculty_id")
+        .eq("id", newUser.department_id)
+        .single();
+
+      if (deptError) throw deptError;
+
+      const { data: existingHOD, error: checkHODError } = await supabase
+        .from("user_roles")
+        .select("id")
+        .eq("department_id", newUser.department_id)
+        .eq("role", "hod")
+        .maybeSingle();
+
+      if (checkHODError && checkHODError.code !== "PGRST116") {
+        throw checkHODError;
+      }
+
+      if (existingHOD) {
+        showToast("This department already has an HOD assigned!", 'error');
+        return;
+      }
+
+      const { error: roleError } = await supabase
+        .from("user_roles")
+        .insert([{
+          email: newUser.email.toLowerCase().trim(),
+          role: "hod",
+          table_id: newUser.department_id,
+          faculty_id: deptData.faculty_id || null,
+          department_id: newUser.department_id,
+          password_hash: password,
+          created_at: new Date().toISOString(),
+        }]);
+
+      if (roleError) throw roleError;
+
+      await supabase
+        .from("departments")
+        .update({ head_of_department: newUser.full_name.trim() })
+        .eq("id", newUser.department_id);
+
+      showToast(`✅ HOD "${newUser.full_name}" added successfully!`, 'success');
+      
+      resetUserForm();
+      setShowUserModal(false);
+      await fetchHODs();
+      await fetchDashboardStats();
+      
+    } catch (error) {
+      showToast(`Error: ${error.message || "Something went wrong"}`, 'error');
+      console.error("Add HOD error:", error);
+    }
+  };
+
+  const handleAddFinance = async () => {
+    try {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(newUser.email.trim())) {
+        showToast("Please enter a valid email address", 'error');
+        return;
+      }
+
+      if (!newUser.full_name.trim()) {
+        showToast("Please enter the finance officer's full name", 'error');
+        return;
+      }
+
+      const password = "Default123!";
+
+      const { data: existingFinance, error: checkFinanceError } = await supabase
+        .from("finance_officers")
+        .select("id")
+        .eq("email", newUser.email.toLowerCase().trim())
+        .maybeSingle();
+
+      if (checkFinanceError && checkFinanceError.code !== "PGRST116") {
+        throw checkFinanceError;
+      }
+
+      if (existingFinance) {
+        showToast("This email already exists as a finance officer!", 'error');
+        return;
+      }
+
+      const profileData = {
+        full_name: newUser.full_name.trim(),
+        email: newUser.email.toLowerCase().trim(),
+        password_hash: password,
+        phone: newUser.phone?.trim() || null,
+        created_at: new Date().toISOString(),
+      };
+
+      const { data: tableData, error: tableError } = await supabase
+        .from("finance_officers")
+        .insert([profileData])
+        .select()
+        .single();
+
+      if (tableError) {
+        if (tableError.code === "23505") {
+          throw new Error("Email already exists!");
+        }
+        throw new Error(tableError.message);
+      }
+
+      await supabase
+        .from('user_roles')
+        .insert([{
+          email: newUser.email.toLowerCase().trim(),
+          role: 'finance',
+          table_id: tableData.id,
+          password_hash: password,
+          created_at: new Date().toISOString(),
+        }]);
+
+      showToast(`✅ Finance Officer "${newUser.full_name}" added successfully!`, 'success');
+      
+      resetUserForm();
+      setShowUserModal(false);
+      await fetchFinanceOfficers();
+      await fetchDashboardStats();
+      
+    } catch (error) {
+      showToast(`Error: ${error.message || "Something went wrong"}`, 'error');
+      console.error("Add finance officer error:", error);
+    }
+  };
+
+  const resetUserForm = () => {
+    setNewUser({
+      full_name: "",
+      email: "",
+      phone: "",
+      role: "student",
+      program_id: "",
+      program: "",
+      department: "",
+      department_code: "",
+      program_code: "",
+      year_of_study: 1,
+      semester: 1,
+      intake: "January",
+      academic_year: "",
+      date_of_birth: "",
+      program_duration_years: 4,
+      specialization: "",
+      google_meet_link: "",
+      faculty_id: "",
+      department_id: "",
+      faculty_name: "",
+      department_name: "",
+      dean_title: "",
+      hod_title: "",
+      profile_picture_url: "",
+    });
+  };
+
+  // ==================== TIMETABLE MANAGEMENT ====================
+  const handleSaveTimetable = async () => {
+    if (!newTimetable.program_id) {
+      showToast("Please select a program", 'error');
+      return;
+    }
+
+    try {
+      if (selectedTimetable) {
+        const { error } = await supabase
+          .from("program_timetables")
+          .update({
+            academic_year: newTimetable.academic_year,
+            semester: newTimetable.semester,
+            year_of_study: newTimetable.year_of_study,
+            is_active: newTimetable.is_active,
+          })
+          .eq("id", selectedTimetable.id);
+
+        if (error) throw error;
+        showToast("Timetable updated successfully!", 'success');
+      } else {
+        const { data: existing, error: checkError } = await supabase
+          .from("program_timetables")
+          .select("id")
+          .eq("program_id", newTimetable.program_id)
+          .eq("academic_year", newTimetable.academic_year)
+          .eq("semester", newTimetable.semester)
+          .eq("year_of_study", newTimetable.year_of_study)
+          .limit(1);
+
+        if (checkError) throw checkError;
+
+        if (existing && existing.length > 0) {
+          if (window.confirm("A timetable already exists for this combination. Activate the existing one?")) {
+            const { error: activateError } = await supabase
+              .from("program_timetables")
+              .update({ is_active: true })
+              .eq("id", existing[0].id);
+
+            if (activateError) throw activateError;
+            showToast("Existing timetable reactivated!", 'success');
+          } else {
+            return;
+          }
+        } else {
+          const { error } = await supabase.from("program_timetables").insert([{
+            program_id: newTimetable.program_id,
+            academic_year: newTimetable.academic_year,
+            semester: newTimetable.semester,
+            year_of_study: newTimetable.year_of_study,
+            is_active: true,
+          }]);
+
+          if (error) throw error;
+          showToast("New timetable created successfully!", 'success');
+        }
+      }
+
+      setShowTimetableModal(false);
+      setSelectedTimetable(null);
+      await fetchProgramTimetables();
+    } catch (err) {
+      console.error("Error saving timetable:", err);
+      showToast("Error saving timetable: " + err.message, 'error');
+    }
+  };
+
+  const handleSaveSlot = async () => {
+    if (!newSlot.course_code.trim() || !newSlot.course_name.trim()) {
+      showToast("Please enter both Course Code and Course Name", 'error');
+      return;
+    }
+
+    try {
+      if (editingSlot) {
+        const { error } = await supabase
+          .from("program_timetable_slots")
+          .update({
+            course_code: newSlot.course_code.trim(),
+            course_name: newSlot.course_name.trim(),
+            lecturer_id: newSlot.lecturer_id || null,
+            day_of_week: parseInt(newSlot.day_of_week),
+            start_time: newSlot.start_time,
+            end_time: newSlot.end_time,
+            room_number: newSlot.room_number.trim(),
+            building: newSlot.building.trim(),
+            slot_type: newSlot.slot_type,
+          })
+          .eq("id", editingSlot.id);
+
+        if (error) throw error;
+        showToast("Slot updated successfully!", 'success');
+      } else {
+        const { error } = await supabase
+          .from("program_timetable_slots")
+          .insert([{
+            program_timetable_id: selectedTimetable.id,
+            course_code: newSlot.course_code.trim(),
+            course_name: newSlot.course_name.trim(),
+            lecturer_id: newSlot.lecturer_id || null,
+            day_of_week: parseInt(newSlot.day_of_week),
+            start_time: newSlot.start_time,
+            end_time: newSlot.end_time,
+            room_number: newSlot.room_number.trim(),
+            building: newSlot.building.trim(),
+            slot_type: newSlot.slot_type,
+            is_active: true,
+          }]);
+
+        if (error) throw error;
+        showToast("New slot added successfully!", 'success');
+      }
+
+      setShowSlotModal(false);
+      setEditingSlot(null);
+      setNewSlot({
+        course_code: "",
+        course_name: "",
+        lecturer_id: "",
+        day_of_week: 1,
+        start_time: "08:00",
+        end_time: "10:00",
+        room_number: "",
+        building: "CS Building",
+        slot_type: "lecture",
+      });
+
+      await refreshCurrentTimetableSlots();
+    } catch (err) {
+      console.error("Error saving slot:", err);
+      showToast("Failed to save slot: " + err.message, 'error');
+    }
+  };
+
+  const handleDeleteSlot = async (slotId) => {
+    if (!slotId) {
+      showToast("Error: No slot selected for deletion", 'error');
+      return;
+    }
+
+    if (!window.confirm("Are you sure you want to delete this time slot? This cannot be undone.")) return;
+
     try {
       const { error } = await supabase
-        .from("courses")
-        .update({ is_active: !isActive })
-        .eq("id", courseId);
+        .from("program_timetable_slots")
+        .delete()
+        .eq("id", slotId);
 
       if (error) throw error;
-
-      fetchCourses();
-      alert(`Course ${!isActive ? "activated" : "deactivated"}!`);
-    } catch (error) {
-      console.error("Error updating course:", error);
-      alert("Error updating course: " + error.message);
+      showToast("Time slot deleted successfully!", 'success');
+      await refreshCurrentTimetableSlots();
+    } catch (err) {
+      console.error("Delete failed:", err);
+      showToast("Failed to delete slot: " + err.message, 'error');
     }
   };
 
+  const refreshCurrentTimetableSlots = async () => {
+    if (!selectedTimetable) return;
+
+    try {
+      const { data, error } = await supabase
+        .from("program_timetable_slots")
+        .select(`
+          id,
+          course_code,
+          course_name,
+          lecturer_id,
+          day_of_week,
+          start_time,
+          end_time,
+          room_number,
+          building,
+          slot_type,
+          lecturers (full_name)
+        `)
+        .eq("program_timetable_id", selectedTimetable.id)
+        .order("day_of_week")
+        .order("start_time");
+
+      if (error) throw error;
+
+      setTimetables(prev =>
+        prev.map(tt =>
+          tt.id === selectedTimetable.id
+            ? { ...tt, program_timetable_slots: data || [] }
+            : tt
+        )
+      );
+
+      setSelectedTimetable(prev => ({
+        ...prev,
+        program_timetable_slots: data || [],
+      }));
+    } catch (err) {
+      console.error("Error refreshing slots:", err);
+      showToast("Failed to refresh slots", 'error');
+    }
+  };
+
+  // ==================== PROGRAM MANAGEMENT ====================
+  const handleSaveProgram = async () => {
+    if (!newProgram.name.trim() || !newProgram.code.trim()) {
+      showToast("Both name and code are required", 'error');
+      return;
+    }
+
+    try {
+      if (editingProgram) {
+        const { error } = await supabase
+          .from("programs")
+          .update({
+            name: newProgram.name.trim(),
+            code: newProgram.code.trim().toUpperCase(),
+          })
+          .eq("id", editingProgram.id);
+        if (error) throw error;
+        showToast("Program updated successfully!", 'success');
+      } else {
+        const { error } = await supabase.from("programs").insert([{
+          name: newProgram.name.trim(),
+          code: newProgram.code.trim().toUpperCase(),
+        }]);
+        if (error) {
+          if (error.code === "23505") {
+            showToast("A program with this code already exists!", 'error');
+          } else {
+            throw error;
+          }
+          return;
+        }
+        showToast("Program added successfully!", 'success');
+      }
+
+      setShowProgramModal(false);
+      setEditingProgram(null);
+      setNewProgram({ name: "", code: "" });
+      fetchPrograms();
+    } catch (err) {
+      showToast("Error saving program: " + err.message, 'error');
+    }
+  };
+
+  const handleDeleteProgram = async (programId, programName) => {
+    if (!window.confirm(`Delete program "${programName}"? This cannot be undone.`)) return;
+
+    try {
+      const { error } = await supabase
+        .from("programs")
+        .delete()
+        .eq("id", programId);
+      if (error) throw error;
+      showToast("Program deleted successfully", 'success');
+      fetchPrograms();
+    } catch (err) {
+      showToast("Failed to delete program: " + err.message, 'error');
+    }
+  };
+
+  // ==================== TOAST HELPER ====================
+  const showToast = (message, type = 'success') => {
+    setToast({ show: true, message, type });
+    setTimeout(() => {
+      setToast({ show: false, message: '', type: 'success' });
+    }, 4000);
+  };
+
+  const hideToast = () => {
+    setToast({ show: false, message: '', type: 'success' });
+  };
+
+  // ==================== LOGOUT ====================
   const handleLogout = async () => {
     try {
       await signOut();
@@ -6985,136 +2905,1031 @@ if (newExam.submission_type === 'file' && examFiles.length === 0) {
     }
   };
 
-  // Helper functions
-  const renderLecturerDepartments = (lecturer) => {
-    if (
-      !lecturer.lecturer_departments ||
-      lecturer.lecturer_departments.length === 0
-    ) {
-      return <span className="text-muted small-text">No departments</span>;
-    }
-
+  // ==================== RENDER HELPERS ====================
+  const renderStudentsTable = () => {
     return (
-      <div className="departments-badges">
-        {lecturer.lecturer_departments.slice(0, 3).map((dept, idx) => (
-          <span key={idx} className="department-badge">
-            {dept.department_code}
-          </span>
-        ))}
-        {lecturer.lecturer_departments.length > 3 && (
-          <span className="text-muted small-text">
-            +{lecturer.lecturer_departments.length - 3} more
-          </span>
+      <div className="table-container">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th style={{ width: "60px" }}>Photo</th>
+              <th>Student ID</th>
+              <th>Full Name</th>
+              <th>Email</th>
+              <th>Program</th>
+              <th>Department</th>
+              <th>Year</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {students.length === 0 ? (
+              <tr>
+                <td colSpan="9" style={{ textAlign: "center", padding: "30px" }}>
+                  No students found
+                </td>
+              </tr>
+            ) : (
+              students.map((student) => (
+                <tr key={student.id}>
+                  <td>
+                    <div
+                      style={{
+                        width: "40px",
+                        height: "40px",
+                        borderRadius: "50%",
+                        overflow: "hidden",
+                        cursor: "pointer",
+                        border: "2px solid #ddd",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor: "#f0f0f0",
+                      }}
+                      onClick={() => {
+                        setSelectedStudentForPicture(student);
+                        setShowProfilePictureModal(true);
+                      }}
+                      title="Click to change photo"
+                    >
+                      {student.profile_picture_url ? (
+                        <img
+                          src={student.profile_picture_url}
+                          alt={student.full_name}
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
+                      ) : (
+                        <span style={{ fontSize: "18px", color: "#666" }}>
+                          {student.full_name?.[0]?.toUpperCase() || "👤"}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td><strong>{student.student_id}</strong></td>
+                  <td>{student.full_name}</td>
+                  <td>{student.email}</td>
+                  <td>{student.program || "N/A"}</td>
+                  <td>
+                    <span className="dept-badge">{student.department_code || "N/A"}</span>
+                  </td>
+                  <td>Year {student.year_of_study || 1} - Sem {student.semester || 1}</td>
+                  <td>
+                    <span className={`status-badge ${student.status || "active"}`}>
+                      {student.status?.charAt(0).toUpperCase() + student.status?.slice(1) || "Active"}
+                    </span>
+                  </td>
+                  <td>
+                    <div className="action-buttons">
+                      <button
+                        className="action-btn edit"
+                        onClick={() => openEditModal(student, 'student')}
+                      >
+                        ✏️ Edit
+                      </button>
+                <button
+  className="action-btn message"
+  onClick={() => openChatWithUser(student, 'student')}
+>
+  💬 Message
+</button>
+                      <button
+                        className="action-btn delete"
+                        onClick={() => handleUpdateStudentStatus(
+                          student.id,
+                          student.status === "active" ? "inactive" : "active"
+                        )}
+                      >
+                        {student.status === "active" ? "Deactivate" : "Activate"}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
+  const renderLecturersTable = () => {
+    return (
+      <div className="table-container">
+        <div className="tab-header">
+          <h2>👨‍🏫 Lecturer Management</h2>
+          <div className="tab-actions">
+            <input
+              type="text"
+              placeholder="Search lecturers..."
+              className="search-input"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+            <button
+              className="add-button"
+              onClick={() => {
+                setNewUser({ ...newUser, role: "lecturer" });
+                setShowUserModal(true);
+              }}
+            >
+              + Add Lecturer
+            </button>
+            <button
+              className="add-button bulk-message"
+              onClick={() => {
+                setBulkMessageRole('lecturer');
+                setBulkMessageText('');
+                setShowBulkMessageModal(true);
+              }}
+            >
+              📨 Message All
+            </button>
+          </div>
+        </div>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th style={{ width: "50px" }}>Photo</th>
+              <th>Lecturer ID</th>
+              <th>Name</th>
+              <th>Email</th>
+              <th>Department</th>
+              <th>Specialization</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lecturers.length === 0 ? (
+              <tr>
+                <td colSpan="8" style={{ textAlign: "center", padding: "30px" }}>
+                  No lecturers found
+                </td>
+              </tr>
+            ) : (
+              lecturers.map((lecturer) => (
+                <tr key={lecturer.id}>
+                  <td>
+                    <div
+                      style={{
+                        width: "35px",
+                        height: "35px",
+                        borderRadius: "50%",
+                        overflow: "hidden",
+                        cursor: "pointer",
+                        border: "2px solid #ddd",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor: "#f0f0f0",
+                      }}
+                      onClick={() => {
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        input.accept = 'image/*';
+                        input.onchange = async (e) => {
+                          const file = e.target.files[0];
+                          if (file) {
+                            await handleProfilePictureUpdate(file, lecturer.id, 'lecturer');
+                          }
+                        };
+                        input.click();
+                      }}
+                      title="Click to upload photo"
+                    >
+                      {lecturer.profile_picture_url ? (
+                        <img
+                          src={lecturer.profile_picture_url}
+                          alt={lecturer.full_name}
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
+                      ) : (
+                        <span style={{ fontSize: "14px", color: "#666" }}>
+                          {lecturer.full_name?.[0]?.toUpperCase() || "👤"}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td>{lecturer.lecturer_id}</td>
+                  <td>{lecturer.full_name}</td>
+                  <td>{lecturer.email}</td>
+                  <td>{renderLecturerDepartments(lecturer)}</td>
+                  <td>{lecturer.specialization}</td>
+                  <td>
+                    <span className={`status-badge ${lecturer.status || "active"}`}>
+                      {lecturer.status || "active"}
+                    </span>
+                  </td>
+                  <td>
+                    <div className="action-buttons">
+                      <button
+                        className="action-btn edit"
+                        onClick={() => openEditModal(lecturer, 'lecturer')}
+                      >
+                        ✏️ Edit
+                      </button>
+                      <button
+                        className="action-btn message"
+                   onClick={() => openChatWithUser(lecturer, 'lecturer')}
+                      >
+                        💬 Message
+                      </button>
+                      <button
+                        className="action-btn dept"
+                        onClick={() => {
+                          setSelectedLecturerForDept(lecturer);
+                          setShowDeptAssignmentModal(true);
+                        }}
+                      >
+                        🏢 Depts
+                      </button>
+                      <button
+                        className="action-btn courses"
+                        onClick={() => {
+                          setSelectedLecturerForCourses(lecturer);
+                          setShowCourseAssignmentModal(true);
+                        }}
+                      >
+                        📚 Courses
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
+  const renderDeansTable = () => {
+    return (
+      <div className="table-container">
+        <div className="tab-header">
+          <h2>👨‍🎓 Dean Management</h2>
+          <button
+            className="add-button"
+            onClick={() => {
+              setNewUser({ 
+                ...newUser, 
+                role: "dean",
+                faculty_id: "",
+                faculty_name: "",
+              });
+              setShowUserModal(true);
+            }}
+          >
+            + Add Dean
+          </button>
+          <button
+            className="add-button bulk-message"
+            onClick={() => {
+              setBulkMessageRole('dean');
+              setBulkMessageText('');
+              setShowBulkMessageModal(true);
+            }}
+          >
+            📨 Message All
+          </button>
+        </div>
+
+        {loadingDeans ? (
+          <div className="loading-content">
+            <div className="spinner"></div>
+            <p>Loading deans...</p>
+          </div>
+        ) : deans.length === 0 ? (
+          <div className="empty-state">
+            <p>No deans found</p>
+          </div>
+        ) : (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th style={{ width: "50px" }}>Photo</th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Faculty</th>
+                <th>Faculty Code</th>
+                <th>Contact</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {deans.map((dean) => (
+                <tr key={dean.id}>
+                  <td>
+                    <div
+                      style={{
+                        width: "35px",
+                        height: "35px",
+                        borderRadius: "50%",
+                        overflow: "hidden",
+                        cursor: "pointer",
+                        border: "2px solid #ddd",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor: "#f0f0f0",
+                      }}
+                      onClick={() => {
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        input.accept = 'image/*';
+                        input.onchange = async (e) => {
+                          const file = e.target.files[0];
+                          if (file) {
+                            await handleProfilePictureUpdate(file, dean.id, 'dean');
+                          }
+                        };
+                        input.click();
+                      }}
+                      title="Click to upload photo"
+                    >
+                      {dean.profile_picture_url ? (
+                        <img
+                          src={dean.profile_picture_url}
+                          alt={dean.display_name}
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
+                      ) : (
+                        <span style={{ fontSize: "14px", color: "#666" }}>
+                          {dean.display_name?.[0]?.toUpperCase() || "👤"}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td><strong>{dean.display_name || dean.email}</strong></td>
+                  <td>{dean.email}</td>
+                  <td>{dean.faculties?.faculty_name || 'N/A'}</td>
+                  <td><span className="dept-badge">{dean.faculties?.faculty_code || 'N/A'}</span></td>
+                  <td>
+                    {dean.faculties?.contact_phone || dean.faculties?.contact_email ? (
+                      <div style={{ fontSize: '12px' }}>
+                        {dean.faculties?.contact_email && <div>📧 {dean.faculties?.contact_email}</div>}
+                        {dean.faculties?.contact_phone && <div>📱 {dean.faculties?.contact_phone}</div>}
+                      </div>
+                    ) : 'N/A'}
+                  </td>
+                  <td>{dean.created_at ? new Date(dean.created_at).toLocaleDateString() : 'N/A'}</td>
+                  <td>
+                    <div className="action-buttons">
+                      <button
+                        className="action-btn edit"
+                        onClick={() => openEditModal(dean, 'dean')}
+                      >
+                        ✏️ Edit
+                      </button>
+                      <button
+                        className="action-btn message"
+                   onClick={() => openChatWithUser(dean, 'dean')}
+                      >
+                        💬 Message
+                      </button>
+                      <button
+                        className="action-btn delete"
+                        onClick={() => {
+                          if (window.confirm(`Remove Dean ${dean.email}?`)) {
+                            supabase.from("user_roles").delete().eq("id", dean.id)
+                              .then(() => {
+                                showToast("Dean removed successfully!", 'success');
+                                fetchDeans();
+                                fetchDashboardStats();
+                              })
+                              .catch(err => showToast("Error: " + err.message, 'error'));
+                          }
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
     );
   };
 
-  const getLiveLectures = () => {
-    console.log("DEBUG: Getting live lectures from:", lectures);
-    return lectures.filter((lecture) => lecture.status === "ongoing");
-  };
+  const renderHODsTable = () => {
+    return (
+      <div className="table-container">
+        <div className="tab-header">
+          <h2>🏢 HOD Management</h2>
+          <button
+            className="add-button"
+            onClick={() => {
+              setNewUser({ 
+                ...newUser, 
+                role: "hod",
+                department_id: "",
+                department_name: "",
+                department_code: "",
+              });
+              setShowUserModal(true);
+            }}
+          >
+            + Add HOD
+          </button>
+          <button
+            className="add-button bulk-message"
+            onClick={() => {
+              setBulkMessageRole('hod');
+              setBulkMessageText('');
+              setShowBulkMessageModal(true);
+            }}
+          >
+            📨 Message All
+          </button>
+        </div>
 
-  const getUpcomingLectures = () => {
-    const today = new Date().toISOString().split("T")[0];
-    return lectures.filter(
-      (lecture) =>
-        (lecture.status === "scheduled" || lecture.status === "ongoing") &&
-        lecture.scheduled_date >= today,
+        {loadingHODs ? (
+          <div className="loading-content">
+            <div className="spinner"></div>
+            <p>Loading HODs...</p>
+          </div>
+        ) : hods.length === 0 ? (
+          <div className="empty-state">
+            <p>No HODs found</p>
+          </div>
+        ) : (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th style={{ width: "50px" }}>Photo</th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Department</th>
+                <th>Department Code</th>
+                <th>Contact</th>
+                <th>Faculty</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {hods.map((hod) => (
+                <tr key={hod.id}>
+                  <td>
+                    <div
+                      style={{
+                        width: "35px",
+                        height: "35px",
+                        borderRadius: "50%",
+                        overflow: "hidden",
+                        cursor: "pointer",
+                        border: "2px solid #ddd",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor: "#f0f0f0",
+                      }}
+                      onClick={() => {
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        input.accept = 'image/*';
+                        input.onchange = async (e) => {
+                          const file = e.target.files[0];
+                          if (file) {
+                            await handleProfilePictureUpdate(file, hod.id, 'hod');
+                          }
+                        };
+                        input.click();
+                      }}
+                      title="Click to upload photo"
+                    >
+                      {hod.profile_picture_url ? (
+                        <img
+                          src={hod.profile_picture_url}
+                          alt={hod.display_name}
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
+                      ) : (
+                        <span style={{ fontSize: "14px", color: "#666" }}>
+                          {hod.display_name?.[0]?.toUpperCase() || "👤"}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td><strong>{hod.display_name || hod.email}</strong></td>
+                  <td>{hod.email}</td>
+                  <td>{hod.departments?.department_name || 'N/A'}</td>
+                  <td><span className="dept-badge">{hod.departments?.department_code || 'N/A'}</span></td>
+                  <td>
+                    {hod.departments?.contact_phone || hod.departments?.contact_email ? (
+                      <div style={{ fontSize: '12px' }}>
+                        {hod.departments?.contact_email && <div>📧 {hod.departments?.contact_email}</div>}
+                        {hod.departments?.contact_phone && <div>📱 {hod.departments?.contact_phone}</div>}
+                      </div>
+                    ) : 'N/A'}
+                  </td>
+                  <td>{hod.faculties?.faculty_name || 'N/A'}</td>
+                  <td>{hod.created_at ? new Date(hod.created_at).toLocaleDateString() : 'N/A'}</td>
+                  <td>
+                    <div className="action-buttons">
+                      <button
+                        className="action-btn edit"
+                        onClick={() => openEditModal(hod, 'hod')}
+                      >
+                        ✏️ Edit
+                      </button>
+                      <button
+                        className="action-btn message"
+               onClick={() => openChatWithUser(hod, 'hod')}
+                      >
+                        💬 Message
+                      </button>
+                      <button
+                        className="action-btn delete"
+                        onClick={() => {
+                          if (window.confirm(`Remove HOD ${hod.email}?`)) {
+                            supabase.from("user_roles").delete().eq("id", hod.id)
+                              .then(() => {
+                                showToast("HOD removed successfully!", 'success');
+                                fetchHODs();
+                                fetchDashboardStats();
+                              })
+                              .catch(err => showToast("Error: " + err.message, 'error'));
+                          }
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     );
   };
 
-  const getPastLectures = () => {
-    const today = new Date().toISOString().split("T")[0];
-    return lectures.filter(
-      (lecture) =>
-        lecture.status === "completed" ||
-        (lecture.status === "scheduled" && lecture.scheduled_date < today),
+  const renderFinanceOfficersTable = () => {
+    return (
+      <div className="table-container">
+        {loadingFinance ? (
+          <div className="loading-content">
+            <div className="spinner"></div>
+            <p>Loading finance officers...</p>
+          </div>
+        ) : financeOfficers.length === 0 ? (
+          <div className="empty-state">
+            <p>No finance officers found</p>
+          </div>
+        ) : (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th style={{ width: "50px" }}>Photo</th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Phone</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {financeOfficers.map((officer) => (
+                <tr key={officer.id}>
+                  <td>
+                    <div
+                      style={{
+                        width: "35px",
+                        height: "35px",
+                        borderRadius: "50%",
+                        overflow: "hidden",
+                        cursor: "pointer",
+                        border: "2px solid #ddd",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor: "#f0f0f0",
+                      }}
+                      onClick={() => {
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        input.accept = 'image/*';
+                        input.onchange = async (e) => {
+                          const file = e.target.files[0];
+                          if (file) {
+                            await handleProfilePictureUpdate(file, officer.id, 'finance');
+                          }
+                        };
+                        input.click();
+                      }}
+                      title="Click to upload photo"
+                    >
+                      {officer.profile_picture_url ? (
+                        <img
+                          src={officer.profile_picture_url}
+                          alt={officer.display_name}
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
+                      ) : (
+                        <span style={{ fontSize: "14px", color: "#666" }}>
+                          {officer.display_name?.[0]?.toUpperCase() || "👤"}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td><strong>{officer.display_name || officer.full_name}</strong></td>
+                  <td>{officer.email}</td>
+                  <td>{officer.phone || 'N/A'}</td>
+                  <td>
+                    <span className={`status-badge ${officer.status || "active"}`}>
+                      {officer.status || "active"}
+                    </span>
+                  </td>
+                  <td>{officer.created_at ? new Date(officer.created_at).toLocaleDateString() : 'N/A'}</td>
+                  <td>
+                    <div className="action-buttons">
+                      <button
+                        className="action-btn edit"
+                        onClick={() => openEditModal(officer, 'finance')}
+                      >
+                        ✏️ Edit
+                      </button>
+                      <button
+                        className="action-btn message"
+                   onClick={() => openChatWithUser(officer, 'finance')}
+                      >
+                        💬 Message
+                      </button>
+                      <button
+                        className="action-btn delete"
+                        onClick={() => {
+                          if (window.confirm(`Remove finance officer ${officer.email}?`)) {
+                            supabase.from("finance_officers").delete().eq("id", officer.id)
+                              .then(() => {
+                                supabase.from("user_roles").delete().eq("email", officer.email).eq("role", "finance");
+                                showToast("Finance officer removed successfully!", 'success');
+                                fetchFinanceOfficers();
+                                fetchDashboardStats();
+                              })
+                              .catch(err => showToast("Error: " + err.message, 'error'));
+                          }
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     );
   };
 
+  const renderCoursesGrid = () => {
+    return (
+      <div className="courses-grid">
+        {courses.map((course) => (
+          <div key={course.id} className="course-card">
+            <div className="course-header">
+              <h3>{course.course_code}</h3>
+              <div className="course-header-right">
+                <span className="dept-badge">{course.department_code || course.department || "N/A"}</span>
+                <span className={`course-status ${course.is_active ? "active" : "inactive"}`}>
+                  {course.is_active ? "Active" : "Inactive"}
+                </span>
+              </div>
+            </div>
+            <h4>{course.course_name}</h4>
+            <p className="course-description">{course.description || "No description"}</p>
+            <div className="course-details">
+              <span>Year {course.year} - Semester {course.semester}</span>
+              <span>{course.credits} Credits</span>
+              <span>{course.program}</span>
+            </div>
+            <div className="course-actions">
+              <button
+                className="course-btn"
+                onClick={() => handleToggleCourseActive(course.id, course.is_active)}
+              >
+                {course.is_active ? "Deactivate" : "Activate"}
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  // ==================== CHAT MODAL RENDER ====================
+const renderChatModal = () => {
+  if (!showChatModal || !selectedUser) return null;
+
+  return (
+    <div className="modal-overlay" onClick={() => setShowChatModal(false)}>
+      <div
+        className="modal chat-modal"
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxWidth: '620px', maxHeight: '82vh', display: 'flex', flexDirection: 'column' }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            padding: '14px 20px',
+            borderBottom: '1px solid #e0e0e0',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            background: '#f8f9fa',
+          }}
+        >
+          <div>
+            <h3 style={{ margin: 0, fontSize: '16px' }}>
+              💬 {selectedUserType?.toUpperCase() || 'USER'}
+            </h3>
+            <p style={{ margin: '3px 0 0', fontSize: '13px', color: '#555' }}>
+              {selectedUser.display_name || selectedUser.name || selectedUser.email}
+            </p>
+          </div>
+          <button
+            onClick={() => setShowChatModal(false)}
+            style={{
+              background: 'none',
+              border: 'none',
+              fontSize: '22px',
+              cursor: 'pointer',
+              color: '#666',
+              lineHeight: 1,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Messages */}
+        <div
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            padding: '16px 20px',
+            background: '#f0f2f5',
+            minHeight: '320px',
+          }}
+        >
+          {chatMessages.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '50px 20px', color: '#999' }}>
+              <div style={{ fontSize: '42px', marginBottom: '8px' }}>💬</div>
+              <p>No messages yet. Say hello!</p>
+            </div>
+          ) : (
+            chatMessages.map((msg) => {
+              const isMe = msg.sender_role === 'admin' || msg.sender_email === profile?.email;
+              return (
+                <div
+                  key={msg.id}
+                  style={{
+                    display: 'flex',
+                    justifyContent: isMe ? 'flex-end' : 'flex-start',
+                    marginBottom: '10px',
+                  }}
+                >
+                  <div
+                    style={{
+                      maxWidth: '75%',
+                      padding: '10px 14px',
+                      borderRadius: isMe ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                      background: isMe ? '#1976d2' : '#ffffff',
+                      color: isMe ? '#fff' : '#222',
+                      boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+                    }}
+                  >
+                    {!isMe && (
+                      <div style={{ fontSize: '11px', opacity: 0.75, marginBottom: '3px' }}>
+                        {msg.sender_name || msg.sender_email}
+                      </div>
+                    )}
+                    <p style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                      {msg.message}
+                    </p>
+                    <div
+                      style={{
+                        fontSize: '10px',
+                        opacity: 0.7,
+                        marginTop: '4px',
+                        textAlign: 'right',
+                      }}
+                    >
+                      {new Date(msg.created_at).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          )}
+          <div ref={chatEndRef} />
+        </div>
+
+        {/* Input */}
+        <div
+          style={{
+            padding: '12px 16px',
+            borderTop: '1px solid #e0e0e0',
+            display: 'flex',
+            gap: '10px',
+            background: '#fff',
+          }}
+        >
+          <input
+            type="text"
+            value={newMessage}
+            onChange={(e) => setNewMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey && !sendingMessage) {
+                e.preventDefault();
+                sendChatMessage();
+              }
+            }}
+            placeholder="Type a message..."
+            disabled={sendingMessage}
+            style={{
+              flex: 1,
+              padding: '11px 14px',
+              borderRadius: '22px',
+              border: '1px solid #ddd',
+              fontSize: '14px',
+              outline: 'none',
+            }}
+          />
+          <button
+            onClick={sendChatMessage}
+            disabled={sendingMessage || !newMessage.trim()}
+            style={{
+              padding: '0 22px',
+              borderRadius: '22px',
+              border: 'none',
+              background: sendingMessage || !newMessage.trim() ? '#bbb' : '#1976d2',
+              color: 'white',
+              fontWeight: 600,
+              cursor: sendingMessage || !newMessage.trim() ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {sendingMessage ? '...' : 'Send'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+  };
+  
+
+
+  // ==================== useEffect - INITIALIZATION ====================
+
+  // ==================== REAL-TIME FOR OPEN CHAT ====================
 useEffect(() => {
-  if (activeTab === "notes-upload" && isLecturer && profile?.id) {
-    fetchNoteCourses();
-  }
-}, [activeTab, isLecturer, profile?.id]);
+  if (!showChatModal || !selectedUser?.email || !profile?.email) return;
 
-  // Load assignments when tab opens
-  useEffect(() => {
-    if (activeTab === "grade-assignments" && isLecturer && profile?.id) {
-      console.log("→ Grade Assignments tab activated – fetching assignments");
-      fetchMyAssignments();
-    }
-  }, [activeTab, isLecturer, profile?.id]);
+  console.log('[ADMIN CHAT] Setting up realtime for:', profile.email, '↔', selectedUser.email);
 
-  // ASSIGNMENT HELPER FUNCTIONS
-  const handleViewSubmissions = async (assignment) => {
-    // assignment comes with: id, title, total_marks, course_code, course_name, due_date
-    const assignmentId = assignment.id || assignment.assignment_id;
+  const channel = supabase
+    .channel(`admin-chat-${profile.email}-${selectedUser.email}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'chat_messages',
+      },
+      (payload) => {
+        const msg = payload.new;
+        if (!msg) return;
 
-    if (!assignmentId) {
-      console.error("ERROR: No assignment ID provided");
-      alert("Cannot view submissions: Missing assignment ID");
-      return;
-    }
+        const isThisConversation =
+          (msg.sender_email === profile.email && msg.receiver_email === selectedUser.email) ||
+          (msg.sender_email === selectedUser.email && msg.receiver_email === profile.email);
 
-    console.log(
-      "→ Opening submissions for assignment:",
-      assignmentId,
-      assignment.title,
-    );
+        if (!isThisConversation) return;
 
-    // 1. Set the selected assignment with full details
-    setSelectedAssignment({
-      id: assignmentId,
-      title: assignment.title || "Untitled Assignment",
-      total_marks: assignment.total_marks || 100,
-      course_code: assignment.course_code || "N/A",
-      course_name: assignment.course_name || "N/A",
-      due_date: assignment.due_date,
-    });
+        if (payload.eventType === 'INSERT') {
+          setChatMessages((prev) => {
+            if (prev.some((m) => m.id === msg.id)) return prev;
 
-    // 2. Switch to the grading tab
-    setActiveTab("grade-assignments");
+            // Remove any temp optimistic message
+            const cleaned = prev.filter(
+              (m) => !(typeof m.id === 'string' && m.id.startsWith('temp-') && m.message === msg.message)
+            );
+            return [...cleaned, msg];
+          });
 
-    // 3. Clear old data
-    setAssignmentSubmissions([]);
-    setSelectedSubmissions([]);
-    setGradeForm({});
+          setTimeout(() => {
+            chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+          }, 50);
 
-    // 4. Immediately fetch submissions (most important!)
-    try {
-      // Optionally show loading in submissions area
-      // (we'll rely on the tab's own loading state via useEffect)
-      await fetchAssignmentSubmissions(assignmentId);
-    } catch (err) {
-      console.error("Failed to load submissions on open:", err);
-      alert("Failed to load submissions: " + err.message);
-    }
-  };
-  const handleToggleSubmissionSelection = (submissionId) => {
-    setSelectedSubmissions((prev) => {
-      if (prev.includes(submissionId)) {
-        return prev.filter((id) => id !== submissionId);
-      } else {
-        return [...prev, submissionId];
+          // Also refresh notification count
+          fetchUnreadCount();
+        }
       }
+    )
+    .subscribe((status) => {
+      console.log('[ADMIN CHAT] Realtime status:', status);
     });
+
+  // Fallback polling every 6 seconds while chat is open
+  const pollInterval = setInterval(() => {
+    fetchChatMessages(selectedUser.email);
+  }, 6000);
+
+  return () => {
+    supabase.removeChannel(channel);
+    clearInterval(pollInterval);
   };
-
-  const handleSelectAllSubmissions = () => {
-    const allIds = assignmentSubmissions
-      .filter((sub) => sub.status === "submitted")
-      .map((sub) => sub.submission_id);
-
-    if (selectedSubmissions.length === allIds.length) {
-      setSelectedSubmissions([]);
-    } else {
-      setSelectedSubmissions(allIds);
+}, [showChatModal, selectedUser?.email, profile?.email, fetchChatMessages]);
+  useEffect(() => {
+    console.log("🔄 [useEffect] AdminDashboard mounted");
+    console.log("📋 [useEffect] Profile:", profile);
+    console.log("📋 [useEffect] Is admin:", isAdmin);
+    console.log("📋 [useEffect] Is lecturer:", isLecturer);
+    console.log("📋 [useEffect] Is finance:", isFinance);
+    console.log("📋 [useEffect] Auth loading:", authLoading);
+    
+    if (!authLoading && profile) {
+      console.log("🔄 [useEffect] Profile loaded, initializing dashboard...");
+      initializeDashboard();
+      setupRealtimeSubscription();
+      setupNotificationSubscription();
+      fetchPrograms();
+      fetchLecturersList();
+      fetchProgramTimetables();
+      fetchFaculties();
+      fetchDepartments();
+    } else if (!authLoading && !profile) {
+      console.log("⚠️ [useEffect] No profile found, skipping initialization");
     }
-  };
+    
+    return () => {
+      console.log("🔄 [useEffect] Cleaning up...");
+      if (subscriptionRef.current) {
+        subscriptionRef.current.unsubscribe();
+      }
+      if (notificationSubscriptionRef.current) {
+        notificationSubscriptionRef.current.unsubscribe();
+      }
+    };
+  }, [authLoading, profile]); // Added dependencies
 
-  // Loading states
+
+// Real-time messages for the currently open chat
+useEffect(() => {
+  if (!showChatModal || !selectedUser?.email || !profile?.email) return;
+
+  const channelName = `admin-chat-${profile.email}-${selectedUser.email}`;
+
+  const channel = supabase
+    .channel(channelName)
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'chat_messages',
+      },
+      (payload) => {
+        const msg = payload.new;
+
+        // Only add messages that belong to this conversation
+        const isThisChat =
+          (msg.sender_email === profile.email && msg.receiver_email === selectedUser.email) ||
+          (msg.sender_email === selectedUser.email && msg.receiver_email === profile.email);
+
+        if (!isThisChat) return;
+
+        setChatMessages((prev) => {
+          if (prev.some((m) => m.id === msg.id)) return prev; // avoid duplicates
+          return [...prev, msg];
+        });
+
+        // Auto-scroll
+        setTimeout(() => {
+          chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }, 60);
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, [showChatModal, selectedUser?.email, profile?.email]);
+  
+  // ==================== LOADING STATES ====================
   if (authLoading) {
     return (
       <div className="loading-container">
@@ -7128,3519 +3943,455 @@ useEffect(() => {
     return null;
   }
 
-  if (isLecturer && deptLoading) {
-    return (
-      <div className="loading-container">
-        <div className="spinner"></div>
-        <p>Loading your access permissions...</p>
-      </div>
-    );
+  if (isLecturer) {
+    return <LecturerDashboard />;
   }
 
-  if (isLecturer && !hasAccess) {
-    return (
-      <div className="restricted-access-container">
-        <div className="restricted-access-card">
-          <div className="restricted-access-icon">🔒</div>
-          <h2>No Department Access</h2>
-          <p>You haven't been assigned to any academic departments yet.</p>
-          <p>
-            Please contact the system administrator to request department
-            access.
-          </p>
-          <button
-            onClick={() => supabase.auth.signOut()}
-            className="restricted-logout-button"
-          >
-            Logout
-          </button>
-        </div>
-      </div>
-    );
-  }
   if (isFinance) {
     return <FinanceDashboard profile={profile} signOut={signOut} />;
   }
 
+  // ==================== MAIN ADMIN RENDER ====================
   return (
     <div className="admin-dashboard">
-      {/* Header */}
+      {toast.show && (
+        <div className={`toast-notification ${toast.type}`}>
+          <span>{toast.type === 'success' ? '✅' : toast.type === 'error' ? '❌' : 'ℹ️'}</span>
+          <span>{toast.message}</span>
+          <button onClick={hideToast}>✕</button>
+        </div>
+      )}
+
       <header className="dashboard-header">
         <div className="header-content">
           <div className="header-left">
-            <h1 className="logo">
-              {isAdmin ? "SYSTEM ADMIN PORTAL" : "LECTURER PORTAL"}
-            </h1>
-            <p className="tagline">
-              {isAdmin
-                ? "University Management System"
-                : "Teaching & Course Management"}
-            </p>
+            <h1 className="logo">SYSTEM ADMIN PORTAL</h1>
+            <p className="tagline">University Management System</p>
             <div className="realtime-indicator">
-              <span
-                className={`realtime-dot ${realtimeConnected ? "connected" : "disconnected"}`}
-              ></span>
-              <span>
-                Realtime: {realtimeConnected ? "Connected" : "Disconnected"}
-              </span>
+              <span className={`realtime-dot ${realtimeConnected ? "connected" : "disconnected"}`}></span>
+              <span>Realtime: {realtimeConnected ? "Connected" : "Disconnected"}</span>
             </div>
-            {isLecturer &&
-              allowedDepartments &&
-              allowedDepartments.length > 0 && (
-                <div className="dept-access-info">
-                  <span className="access-label">Access to:</span>
-                  <div className="departments-badges">
-                    {allowedDepartments.slice(0, 3).map((dept, idx) => (
-                      <span key={idx} className="department-badge">
-                        {dept.department_code}
-                      </span>
-                    ))}
-                    {allowedDepartments.length > 3 && (
-                      <span className="text-muted">
-                        +{allowedDepartments.length - 3} more
-                      </span>
+          </div>
+
+          <div className="user-section">
+            <div className="notification-wrapper" style={{ position: 'relative', marginRight: '15px' }}>
+              <button
+                className="notification-bell"
+                onClick={() => setShowNotifications(!showNotifications)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  position: 'relative',
+                  padding: '5px',
+                }}
+              >
+                🔔
+                {unreadCount > 0 && (
+                  <span style={{
+                    position: 'absolute',
+                    top: '-5px',
+                    right: '-5px',
+                    background: '#ff1744',
+                    color: 'white',
+                    fontSize: '10px',
+                    fontWeight: '700',
+                    padding: '2px 6px',
+                    borderRadius: '10px',
+                    minWidth: '18px',
+                    height: '18px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}>
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              {showNotifications && (
+                <div className="notification-dropdown" style={{
+                  position: 'absolute',
+                  top: '40px',
+                  right: '0',
+                  background: 'white',
+                  borderRadius: '8px',
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+                  width: '350px',
+                  maxHeight: '400px',
+                  overflow: 'auto',
+                  zIndex: '9999',
+                }}>
+                  <div className="notification-header" style={{
+                    padding: '12px 16px',
+                    borderBottom: '1px solid #e0e0e0',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}>
+                    <h4 style={{ margin: 0 }}>Notifications ({unreadCount} unread)</h4>
+                    {unreadCount > 0 && (
+                      <button
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#1976d2',
+                          cursor: 'pointer',
+                          fontSize: '12px',
+                        }}
+                        onClick={markAllNotificationsRead}
+                      >
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+                  <div className="notification-list">
+                    {notifications.length === 0 ? (
+                      <div style={{ textAlign: 'center', padding: '30px', color: '#999' }}>
+                        <span style={{ fontSize: '36px', display: 'block' }}>📭</span>
+                        <p>No notifications</p>
+                      </div>
+                    ) : (
+                      notifications.map(notif => (
+                        <div
+                          key={notif.id}
+                          style={{
+                            padding: '12px 16px',
+                            borderBottom: '1px solid #f0f0f0',
+                            cursor: 'pointer',
+                            background: notif.is_read ? 'white' : '#f0f7ff',
+                            transition: 'background 0.2s',
+                          }}
+                          onClick={() => openChatFromNotification(notif)}
+                          onMouseEnter={(e) => e.currentTarget.style.background = '#f5f5f5'}
+                          onMouseLeave={(e) => e.currentTarget.style.background = notif.is_read ? 'white' : '#f0f7ff'}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                            <div style={{ flex: 1 }}>
+                              <strong style={{ fontSize: '13px', display: 'block' }}>
+                                💬 {notif.sender_name || notif.sender_email}
+                              </strong>
+                              <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: '#555' }}>
+                                {notif.message}
+                              </p>
+                              <small style={{ color: '#999', fontSize: '10px' }}>
+                                {new Date(notif.created_at).toLocaleString()}
+                              </small>
+                            </div>
+                            {!notif.is_read && (
+                              <span style={{
+                                width: '8px',
+                                height: '8px',
+                                background: '#1976d2',
+                                borderRadius: '50%',
+                                flexShrink: 0,
+                                marginTop: '4px',
+                              }}></span>
+                            )}
+                          </div>
+                        </div>
+                      ))
                     )}
                   </div>
                 </div>
               )}
-          </div>
+            </div>
 
-          <div className="user-section">
             <div className="user-info">
-              <div className={`avatar ${isAdmin ? "admin" : "lecturer"}`}>
+              <div className="avatar admin">
                 {profile.full_name?.[0]?.toUpperCase() || "U"}
               </div>
               <div>
-                <p className="user-name">
-                  {profile.full_name || profile.email}
-                </p>
+                <p className="user-name">{profile.full_name || profile.email}</p>
                 <p className="user-role">
-                  <span
-                    className={`role-badge ${isAdmin ? "admin" : "lecturer"}`}
-                  >
-                    {isAdmin ? "SYSTEM ADMIN" : "LECTURER"}
-                  </span>
+                  <span className="role-badge admin">SYSTEM ADMIN</span>
                 </p>
               </div>
             </div>
-            <button
-              className="logout-button"
-              onClick={() => setShowLogoutModal(true)}
-            >
+            <button className="logout-button" onClick={() => setShowLogoutModal(true)}>
               Logout
             </button>
           </div>
         </div>
       </header>
 
-    {/* Navigation */}
-<nav className="dashboard-nav">
-  <button
-    className={`nav-item ${activeTab === "dashboard" ? "active" : ""}`}
-    onClick={() => setActiveTab("dashboard")}
-  >
-    📊 Dashboard
-  </button>
-  
-  {isLecturer && (
-    <>
-      <button
-        className={`nav-item ${activeTab === "my-files" ? "active" : ""}`}
-        onClick={() => setActiveTab("my-files")}
-      >
-        📁 My Files
-      </button>
-      <button
-        className={`nav-item ${activeTab === "my-assignments" ? "active" : ""}`}
-        onClick={() => setActiveTab("my-assignments")}
-      >
-        📝 My Assignments
-      </button>
-      <button
-        className={`nav-item ${activeTab === "lectures" ? "active" : ""}`}
-        onClick={() => setActiveTab("lectures")}
-      >
-        🎓 My Lectures
-      </button>
-      <button
-        className={`nav-item ${activeTab === "grade-assignments" ? "active" : ""}`}
-        onClick={() => setActiveTab("grade-assignments")}
-      >
-        📝 Grade Assignments
-      </button>
-      <button
-        className={`nav-item ${activeTab === "grade-exams" ? "active" : ""}`}
-        onClick={() => {
-          setActiveTab("grade-exams");
-          fetchMyExams();
-        }}
-      >
-        🎯 Grade Exams
-      </button>
-    </>
-  )}
-  
-  <button
-    className={`nav-item ${activeTab === "students" ? "active" : ""}`}
-    onClick={() => setActiveTab("students")}
-  >
-    👥 Students
-  </button>
-  
-  <button
-    className={`nav-item ${activeTab === "courses" ? "active" : ""}`}
-    onClick={() => setActiveTab("courses")}
-  >
-    📖 Courses
-  </button>
-  
-  <button
-    className={`nav-item ${activeTab === "exams" ? "active" : ""}`}
-    onClick={() => setActiveTab("exams")}
-  >
-    🎯 Exams
-  </button>
-  
-  <button
-    className={`nav-item ${activeTab === "attendance" ? "active" : ""}`}
-    onClick={() => setActiveTab("attendance")}
-  >
-    📅 Attendance
-  </button>
-  
-  {/* ===== NOTES UPLOAD - VISIBLE TO BOTH LECTURERS AND ADMINS ===== */}
-  {(isLecturer || isAdmin) && (
-    <button
-      className={`nav-item ${activeTab === "notes-upload" ? "active" : ""}`}
-      onClick={() => setActiveTab("notes-upload")}
-    >
-      📚 Upload Course Materials
-    </button>
-  )}
-  
-  {isAdmin && (
-    <>
-      <button
-        className={`nav-item ${activeTab === "all-files" ? "active" : ""}`}
-        onClick={() => setActiveTab("all-files")}
-      >
-        🗂️ All Files Manager
-      </button>
-      <button
-        className={`nav-item ${activeTab === "lecturers" ? "active" : ""}`}
-        onClick={() => setActiveTab("lecturers")}
-      >
-        👨‍🏫 Lecturers
-      </button>
-      <button
-        className={`nav-item ${activeTab === "finance" ? "active" : ""}`}
-        onClick={() => setActiveTab("finance")}
-      >
-        💰 Finance
-      </button>
-      <button
-        className={`nav-item ${activeTab === "timetables" ? "active" : ""}`}
-        onClick={() => setActiveTab("timetables")}
-      >
-        ⏰ Timetables
-      </button>
-      <button
-        className={`nav-item ${activeTab === "programs" ? "active" : ""}`}
-        onClick={() => setActiveTab("programs")}
-      >
-        🎓 Programs
-      </button>
-      <button
-        className={`nav-item ${activeTab === "complete-courses" ? "active" : ""}`}
-        onClick={() => setActiveTab("complete-courses")}
-      >
-        ✅ Complete Courses
-      </button>
-      <button
-        className={`nav-item ${activeTab === "settings" ? "active" : ""}`}
-        onClick={() => setActiveTab("settings")}
-      >
-        ⚙ Settings
-      </button>
-    </>
-  )}
-</nav>
+      <nav className="dashboard-nav">
+        <button className={`nav-item ${activeTab === "dashboard" ? "active" : ""}`} onClick={() => setActiveTab("dashboard")}>📊 Dashboard</button>
+        <button className={`nav-item ${activeTab === "students" ? "active" : ""}`} onClick={() => setActiveTab("students")}>👥 Students</button>
+        <button className={`nav-item ${activeTab === "lecturers" ? "active" : ""}`} onClick={() => setActiveTab("lecturers")}>👨‍🏫 Lecturers</button>
+        <button className={`nav-item ${activeTab === "deans" ? "active" : ""}`} onClick={() => setActiveTab("deans")}>👨‍🎓 Deans</button>
+        <button className={`nav-item ${activeTab === "hods" ? "active" : ""}`} onClick={() => setActiveTab("hods")}>🏢 HODs</button>
+        <button className={`nav-item ${activeTab === "finance" ? "active" : ""}`} onClick={() => setActiveTab("finance")}>💰 Finance</button>
+        <button className={`nav-item ${activeTab === "courses" ? "active" : ""}`} onClick={() => setActiveTab("courses")}>📖 Courses</button>
+        <button className={`nav-item ${activeTab === "exams" ? "active" : ""}`} onClick={() => setActiveTab("exams")}>🎯 Exams</button>
+        <button className={`nav-item ${activeTab === "attendance" ? "active" : ""}`} onClick={() => setActiveTab("attendance")}>📅 Attendance</button>
+        <button className={`nav-item ${activeTab === "timetables" ? "active" : ""}`} onClick={() => setActiveTab("timetables")}>⏰ Timetables</button>
+        <button className={`nav-item ${activeTab === "programs" ? "active" : ""}`} onClick={() => setActiveTab("programs")}>🎓 Programs</button>
+        <button className={`nav-item ${activeTab === "departments" ? "active" : ""}`} onClick={() => setActiveTab("departments")}>🏢 Departments</button>
+        <button className={`nav-item ${activeTab === "faculties" ? "active" : ""}`} onClick={() => setActiveTab("faculties")}>🏛️ Faculties</button>
+        <button className={`nav-item ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}>⚙ Settings</button>
+      </nav>
 
-      {/* Main Content */}
       <main className="dashboard-main">
         {loading.dashboard ? (
-          <div className="loading-content">
+          <div className="loading-content" style={{ padding: '40px', textAlign: 'center' }}>
             <div className="spinner"></div>
             <p>Loading dashboard...</p>
+          
           </div>
         ) : (
           <>
-            {/* Dashboard Tab */}
             {activeTab === "dashboard" && (
               <div className="dashboard-content">
-                {/* Welcome Section */}
                 <div className="welcome-section">
                   <div>
-                    <h2>
-                      {isAdmin
-                        ? `Welcome, System Administrator! 👑`
-                        : `Welcome, ${profile.full_name?.split(" ")[0] || "Lecturer"}! 👨‍🏫`}
-                    </h2>
-                    <p>
-                      {isAdmin
-                        ? `Last updated: ${new Date().toLocaleTimeString()}`
-                        : `Managing ${allowedDepartments?.length || 0} department${(allowedDepartments?.length || 0) !== 1 ? "s" : ""} • ${new Date().toLocaleDateString()}`}
-                    </p>
+                    <h2>Welcome, System Administrator! 👑</h2>
+                    <p>Last updated: {new Date().toLocaleTimeString()}</p>
                   </div>
-                  <button
-                    onClick={initializeDashboard}
-                    disabled={loading.dashboard}
-                    className="refresh-button"
-                  >
-                    🔄 Refresh
-                  </button>
+                  <button onClick={initializeDashboard} disabled={loading.dashboard} className="refresh-button">🔄 Refresh</button>
                 </div>
-
-                {/* Stats Grid */}
                 <div className="stats-grid">
-                  <div className="stat-card">
-                    <div className="stat-icon">👥</div>
-                    <h3>{stats.totalStudents.toLocaleString()}</h3>
-                    <p>Total Students</p>
-                    {isLecturer && (
-                      <div className="stat-subtext">In your departments</div>
-                    )}
-                  </div>
-
-                  {isAdmin && (
-                    <div className="stat-card">
-                      <div className="stat-icon">👨‍🏫</div>
-                      <h3>{stats.totalLecturers}</h3>
-                      <p>Lecturers</p>
-                    </div>
-                  )}
-
-                  <div className="stat-card">
-                    <div className="stat-icon">📚</div>
-                    <h3>{stats.totalCourses}</h3>
-                    <p>Active Courses</p>
-                    {isLecturer && (
-                      <div className="stat-subtext">In your departments</div>
-                    )}
-                  </div>
-
-                  <div className="stat-card">
-                    <div className="stat-icon">📝</div>
-                    <h3>{stats.totalAssignments}</h3>
-                    <p>Assignments</p>
-                  </div>
-
-                  <div className="stat-card">
-                    <div className="stat-icon">🎓</div>
-                    <h3>{stats.totalLectures || 0}</h3>
-                    <p>Lectures</p>
-                  </div>
-
-                  {isAdmin && (
-                    <div className="stat-card">
-                      <div className="stat-icon">💰</div>
-                      <h3>{stats.totalFinancialRecords}</h3>
-                      <p>Financial Records</p>
-                    </div>
-                  )}
-
-                  {/* Lecturer Specific Stats */}
-                  {isLecturer && (
-                    <>
-                      <div className="stat-card">
-                        <div className="stat-icon">📊</div>
-                        <h3>{stats.myAssignments}</h3>
-                        <p>My Assignments</p>
-                      </div>
-
-                      <div className="stat-card warning">
-                        <div className="stat-icon">⏰</div>
-                        <h3>{stats.pendingGrading}</h3>
-                        <p>Pending Grading</p>
-                      </div>
-
-                      <div className="stat-card success">
-                        <div className="stat-icon">✅</div>
-                        <h3>{stats.gradedSubmissions}</h3>
-                        <p>Graded</p>
-                      </div>
-
-                      <div className="stat-card">
-                        <div className="stat-icon">📈</div>
-                        <h3>{stats.submissionRate}%</h3>
-                        <p>Submission Rate</p>
-                      </div>
-                    </>
-                  )}
+                  <div className="stat-card"><div className="stat-icon">👥</div><h3>{stats.totalStudents.toLocaleString()}</h3><p>Total Students</p></div>
+                  <div className="stat-card"><div className="stat-icon">👨‍🏫</div><h3>{stats.totalLecturers}</h3><p>Lecturers</p></div>
+                  <div className="stat-card"><div className="stat-icon">👨‍🎓</div><h3>{deans.length}</h3><p>Deans</p></div>
+                  <div className="stat-card"><div className="stat-icon">🏢</div><h3>{hods.length}</h3><p>HODs</p></div>
+                  <div className="stat-card"><div className="stat-icon">💰</div><h3>{financeOfficers.length}</h3><p>Finance Officers</p></div>
+                  <div className="stat-card"><div className="stat-icon">📚</div><h3>{stats.totalCourses}</h3><p>Active Courses</p></div>
                 </div>
-
-                {/* Quick Actions */}
                 <div className="actions-section">
                   <h3>Quick Actions</h3>
                   <div className="actions-grid">
-                    {isLecturer && (
-                      <>
-                        <button
-                          className="action-button"
-                          onClick={() => setShowAssignmentUploadModal(true)}
-                        >
-                          <span className="action-icon">📝</span>
-                          <span>Create Assignment</span>
-                          <small>With file upload</small>
-                        </button>
-
-                        <button
-                          className="action-button"
-                          onClick={() => setShowLectureModal(true)}
-                        >
-                          <span className="action-icon">🎓</span>
-                          <span>Schedule Lecture</span>
-                          <small>With Google Meet</small>
-                        </button>
-
-                        <button
-                          className="action-button"
-                          onClick={() => setActiveTab("grading")}
-                        >
-                          <span className="action-icon">📊</span>
-                          <span>Grade Submissions</span>
-                          <small>Pending: {stats.pendingGrading}</small>
-                        </button>
-
-                        <button
-                          className="action-button"
-                          onClick={() => setActiveTab("my-assignments")}
-                        >
-                          <span className="action-icon">📋</span>
-                          <span>View Assignments</span>
-                          <small>My created assignments</small>
-                        </button>
-                      </>
-                    )}
-
-                    {isAdmin && (
-                      <>
-                        <button
-                          className="action-button"
-                          onClick={() => setShowUserModal(true)}
-                        >
-                          <span className="action-icon">👤</span>
-                          <span>Add New User</span>
-                          <small>Student or Lecturer</small>
-                        </button>
-
-                        <button
-                          className="action-button"
-                          onClick={() => setShowCourseModal(true)}
-                        >
-                          <span className="action-icon">📚</span>
-                          <span>Add New Course</span>
-                          <small>Academic program</small>
-                        </button>
-
-                        <button
-                          className="action-button"
-                          onClick={() => setActiveTab("finance")}
-                        >
-                          <span className="action-icon">💰</span>
-                          <span>Financial Overview</span>
-                          <small>View transactions</small>
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {/* Live & Upcoming Lectures - For Lecturers */}
-                {isLecturer && (
-                  <div className="upcoming-lectures-section">
-                    <div className="section-header">
-                      <h3>🎥 Live & Upcoming Lectures</h3>
-                      <button
-                        className="view-all-button"
-                        onClick={() => setActiveTab("lectures")}
-                      >
-                        View All →
-                      </button>
-                    </div>
-
-                    {/* Live Lectures */}
-                    <div className="lectures-grid">
-                      {getLiveLectures().length > 0 ? (
-                        getLiveLectures()
-                          .slice(0, 2)
-                          .map((lecture) => (
-                            <div key={lecture.id} className="lecture-card live">
-                              <div className="lecture-header">
-                                <h4>
-                                  {lecture.courses?.course_code}:{" "}
-                                  {lecture.title}
-                                </h4>
-                                <span className="lecture-status live">
-                                  🔴 LIVE NOW
-                                </span>
-                              </div>
-                              <p>{lecture.description}</p>
-                              <div className="lecture-details">
-                                <span>👨‍🏫 {lecture.lecturers?.full_name}</span>
-                                <span>📅 {lecture.formattedDate}</span>
-                                <span>⏰ {lecture.formattedTime}</span>
-                                <span>
-                                  🏛️ {lecture.courses?.department_code}
-                                </span>
-                              </div>
-                              {lecture.meetLink && (
-                                <div className="lecture-actions">
-                                  <a
-                                    href={lecture.meetLink}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="meet-link join-btn"
-                                  >
-                                    🎥 Join Google Meet
-                                  </a>
-                                  <button
-                                    className="action-btn end"
-                                    onClick={() => handleEndLecture(lecture.id)}
-                                  >
-                                    End Lecture
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          ))
-                      ) : (
-                        <div className="empty-lectures">
-                          <p>No live lectures at the moment</p>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Upcoming Lectures */}
-                    <div className="lectures-grid">
-                      {getUpcomingLectures().length > 0 ? (
-                        getUpcomingLectures()
-                          .slice(0, 3)
-                          .map((lecture) => (
-                            <div key={lecture.id} className="lecture-card">
-                              <div className="lecture-header">
-                                <h4>
-                                  {lecture.courses?.course_code}:{" "}
-                                  {lecture.title}
-                                </h4>
-                                <span
-                                  className={`lecture-status ${lecture.status}`}
-                                >
-                                  {lecture.status}
-                                </span>
-                              </div>
-                              <p>{lecture.description}</p>
-                              <div className="lecture-details">
-                                <span>👨‍🏫 {lecture.lecturers?.full_name}</span>
-                                <span>📅 {lecture.formattedDate}</span>
-                                <span>⏰ {lecture.formattedTime}</span>
-                                <span>
-                                  🏛️ {lecture.courses?.department_code}
-                                </span>
-                              </div>
-                              {lecture.meetLink && (
-                                <div className="lecture-actions">
-                                  <a
-                                    href={lecture.meetLink}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="meet-link"
-                                  >
-                                    🔗 Copy Meeting Link
-                                  </a>
-                                  <button
-                                    className="action-btn start"
-                                    onClick={() =>
-                                      handleStartLecture(lecture.id)
-                                    }
-                                  >
-                                    Start Lecture
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          ))
-                      ) : (
-                        <div className="empty-lectures">
-                          <p>No upcoming lectures scheduled</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Recent Activity */}
-                <div className="activity-section">
-                  <h3>🔄 Recent Activity</h3>
-                  <div className="activity-list">
-                    <div className="activity-item">
-                      <span className="activity-icon">👤</span>
-                      <div className="activity-content">
-                        <p>System updated successfully</p>
-                        <small>Just now</small>
-                      </div>
-                    </div>
-                    <div className="activity-item">
-                      <span className="activity-icon">📝</span>
-                      <div className="activity-content">
-                        <p>{stats.totalAssignments} assignments active</p>
-                        <small>Today</small>
-                      </div>
-                    </div>
-                    <div className="activity-item">
-                      <span className="activity-icon">🎓</span>
-                      <div className="activity-content">
-                        <p>{getLiveLectures().length} live lectures ongoing</p>
-                        <small>Currently active</small>
-                      </div>
-                    </div>
-                    {isLecturer && (
-                      <div className="activity-item">
-                        <span className="activity-icon">📊</span>
-                        <div className="activity-content">
-                          <p>{stats.pendingGrading} submissions need grading</p>
-                          <small>Click Grading tab to review</small>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* My Assignments Tab - Lecturer Only */}
-            {activeTab === "my-assignments" && isLecturer && (
-              <div className="tab-content">
-                <div className="tab-header">
-                  <h2>📝 My Assignments</h2>
-                  <div className="tab-actions">
-                    <button
-                      className="add-button"
-                      onClick={() => setShowAssignmentUploadModal(true)}
-                    >
-                      + Create Assignment
+                    <button className="action-button" onClick={() => { setNewUser({ ...newUser, role: "student" }); setShowUserModal(true); }}>
+                      <span className="action-icon">👤</span><span>Add Student</span><small>New student enrollment</small>
                     </button>
-                  
-                  </div>
-                </div>
-
-                {/* Assignment Statistics */}
-                <div className="assignment-stats">
-                  <div className="stat-card-small">
-                    <h3>{stats.myAssignments}</h3>
-                    <p>Total Assignments</p>
-                  </div>
-                  <div className="stat-card-small warning">
-                    <h3>{stats.pendingGrading}</h3>
-                    <p>Pending Grading</p>
-                  </div>
-                  <div className="stat-card-small success">
-                    <h3>{stats.gradedSubmissions}</h3>
-                    <p>Graded Submissions</p>
-                  </div>
-                  <div className="stat-card-small">
-                    <h3>{stats.submissionRate}%</h3>
-                    <p>Submission Rate</p>
-                  </div>
-                </div>
-
-                {/* Assignments List */}
-                <div className="assignments-list">
-                  {myAssignments.length > 0 ? (
-                    <div className="table-container">
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>Title</th>
-                            <th>Course</th>
-                            <th>Due Date</th>
-                            <th>Total Marks</th>
-                            <th>Status</th>
-                            <th>Submissions</th>
-                            <th>Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {myAssignments.map((assignment) => (
-                            <tr key={assignment.assignment_id}>
-                              <td>
-                                <strong>{assignment.title}</strong>
-                                {assignment.description && (
-                                  <p className="small-text">
-                                    {assignment.description.substring(0, 50)}...
-                                  </p>
-                                )}
-                              </td>
-                              <td>
-                                {assignment.course_code} -{" "}
-                                {assignment.course_name}
-                                <br />
-                                <span className="dept-badge">
-                                  {assignment.department_code}
-                                </span>
-                              </td>
-                              <td>
-                                {new Date(
-                                  assignment.due_date,
-                                ).toLocaleDateString()}
-                                <br />
-                                <span className="small-text">
-                                  {new Date(
-                                    assignment.due_date,
-                                  ).toLocaleTimeString()}
-                                </span>
-                              </td>
-                              <td>{assignment.total_marks}</td>
-                              <td>
-                                <span
-                                  className={`status-badge ${assignment.status}`}
-                                >
-                                  {assignment.status}
-                                </span>
-                              </td>
-                              <td>
-                                <div className="submission-stats">
-                                  <span className="submission-count submitted">
-                                    {assignment.submitted_count || 0} submitted
-                                  </span>
-                                  <span className="submission-count not-submitted">
-                                    {assignment.not_submitted_count || 0} not
-                                    submitted
-                                  </span>
-                                  <span className="submission-count graded">
-                                    {assignment.graded_count || 0} graded
-                                  </span>
-                                </div>
-                                {assignment.total_students > 0 && (
-                                  <div className="progress-bar">
-                                    <div
-                                      className="progress-fill"
-                                      style={{
-                                        width: `${assignment.submission_rate || 0}%`,
-                                      }}
-                                    ></div>
-                                    <span className="progress-text">
-                                      {assignment.submission_rate || 0}%
-                                      submitted
-                                    </span>
-                                  </div>
-                                )}
-                              </td>
-                              <td>
-                                <div className="action-buttons flat">
-                                  {/* FIXED: View Submissions - passes full assignment object */}
-                                  <button
-                                    className="action-btn view"
-                                    onClick={() =>
-                                      handleViewSubmissions({
-                                        id: assignment.assignment_id,
-                                        title: assignment.title,
-                                        total_marks: assignment.total_marks,
-                                        course_code: assignment.course_code,
-                                        course_name: assignment.course_name,
-                                        due_date: assignment.due_date,
-                                      })
-                                    }
-                                  >
-                                    View Submissions
-                                  </button>
-                                  <button
-                                    className="action-btn small publish"
-                                    onClick={() =>
-                                      handleUpdateAssignmentStatus(
-                                        assignment.assignment_id,
-                                        "published",
-                                      )
-                                    }
-                                    disabled={assignment.status === "published"}
-                                  >
-                                    Publish
-                                  </button>
-
-                                  <button
-                                    className="action-btn small draft"
-                                    onClick={() =>
-                                      handleUpdateAssignmentStatus(
-                                        assignment.assignment_id,
-                                        "draft",
-                                      )
-                                    }
-                                    disabled={assignment.status === "draft"}
-                                  >
-                                    Draft
-                                  </button>
-
-                                  <button
-                                    className="action-btn small close"
-                                    onClick={() =>
-                                      handleUpdateAssignmentStatus(
-                                        assignment.assignment_id,
-                                        "closed",
-                                      )
-                                    }
-                                    disabled={assignment.status === "closed"}
-                                  >
-                                    Close
-                                  </button>
-
-                                  <button
-                                    className="action-btn small delete"
-                                    onClick={async () => {
-                                      if (
-                                        !window.confirm(
-                                          "⚠️ Permanently delete this assignment?\n\nAll submissions will be lost. This cannot be undone.",
-                                        )
-                                      ) {
-                                        return;
-                                      }
-                                      try {
-                                        const { error } = await supabase
-                                          .from("assignments")
-                                          .delete()
-                                          .eq("id", assignment.assignment_id)
-                                          .eq("lecturer_id", profile.id);
-
-                                        if (error) throw error;
-
-                                        alert(
-                                          "Assignment deleted successfully!",
-                                        );
-                                        await fetchMyAssignments();
-                                      } catch (err) {
-                                        alert(
-                                          "Failed to delete: " + err.message,
-                                        );
-                                      }
-                                    }}
-                                  >
-                                    Delete
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <div className="empty-state">
-                      <p>No assignments found</p>
-                      <button
-                        onClick={() => setShowAssignmentUploadModal(true)}
-                        className="add-button"
-                      >
-                        Create Your First Assignment
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* ==================== GRADE ASSIGNMENTS TAB ==================== */}
-            {activeTab === "grade-assignments" && isLecturer && (
-              <div className="tab-content">
-                <div className="tab-header">
-                  <h2>📝 Grade Assignments</h2>
-                  <div className="tab-actions">
-                    <button
-                      className="refresh-button"
-                      onClick={() => fetchMyAssignments()}
-                    >
-                      🔄 Refresh Assignments
+                    <button className="action-button" onClick={() => { setNewUser({ ...newUser, role: "lecturer" }); setShowUserModal(true); }}>
+                      <span className="action-icon">👨‍🏫</span><span>Add Lecturer</span><small>New lecturer hire</small>
+                    </button>
+                    <button className="action-button" onClick={() => { setNewUser({ ...newUser, role: "dean" }); setShowUserModal(true); }}>
+                      <span className="action-icon">👨‍🎓</span><span>Add Dean</span><small>Faculty dean appointment</small>
+                    </button>
+                    <button className="action-button" onClick={() => { setNewUser({ ...newUser, role: "hod" }); setShowUserModal(true); }}>
+                      <span className="action-icon">🏢</span><span>Add HOD</span><small>Department head appointment</small>
+                    </button>
+                    <button className="action-button" onClick={() => { setNewUser({ ...newUser, role: "finance" }); setShowUserModal(true); }}>
+                      <span className="action-icon">💰</span><span>Add Finance Officer</span><small>New finance officer</small>
                     </button>
                   </div>
                 </div>
-
-                {/* Selected Assignment - Full Grading View */}
-                {selectedAssignment ? (
-                  <div className="grading-content">
-                    <div className="assignment-header blue-theme">
-                      <h3>{selectedAssignment.title}</h3>
-                      <div className="assignment-meta">
-                        <div className="counter-badge">
-                          <div className="badge-icon">📊</div>
-                          <div className="badge-content">
-                            <span className="badge-value">
-                              {selectedAssignment.total_marks}
-                            </span>
-                            <span className="badge-label">Total Marks</span>
-                          </div>
-                        </div>
-                        <div className="counter-badge">
-                          <div className="badge-icon">📝</div>
-                          <div className="badge-content">
-                            <span className="badge-value">
-                              {assignmentSubmissions.length}
-                            </span>
-                            <span className="badge-label">Submissions</span>
-                          </div>
-                        </div>
-                        <button
-                          className="back-button"
-                          onClick={() => {
-                            setSelectedAssignment(null);
-                            setAssignmentSubmissions([]);
-                            setSelectedSubmissions([]);
-                            setGradeForm({});
-                          }}
-                        >
-                          ← Back to Assignments
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Submissions Table */}
-                    <div className="submissions-list">
-                      {assignmentSubmissions.length > 0 ? (
-                        <div className="table-container">
-                          <table className="data-table">
-                            <thead>
-                              <tr>
-                                <th>Student</th>
-                                <th>Program</th>
-                                <th>Submission Date</th>
-                                <th>Status</th>
-                                <th>Files</th>
-                                <th>Marks</th>
-                                <th>Feedback</th>
-                                <th>Actions</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {assignmentSubmissions.map((submission) => (
-                                <tr key={submission.submission_id}>
-                                  <td>
-                                    <div>
-                                      <strong>
-                                        {submission.student_name ||
-                                          "Unknown Student"}
-                                      </strong>
-                                    </div>
-                                    <div
-                                      className="small-text"
-                                      style={{
-                                        fontWeight: "bold",
-                                        color: "#1976d2",
-                                      }}
-                                    >
-                                      {submission.registration_number || "N/A"}
-                                    </div>
-                                    <div className="small-text text-muted">
-                                      {submission.student_email || "No email"}
-                                    </div>
-                                  </td>
-                                  <td>
-                                    {submission.student_program || "N/A"}
-                                    <br />
-                                    <span className="dept-badge">
-                                      {submission.student_department || "N/A"}
-                                    </span>
-                                  </td>
-                                  <td>
-                                    {submission.submission_date ? (
-                                      <>
-                                        {new Date(
-                                          submission.submission_date,
-                                        ).toLocaleDateString()}
-                                        <br />
-                                        <span className="small-text">
-                                          {new Date(
-                                            submission.submission_date,
-                                          ).toLocaleTimeString()}
-                                        </span>
-                                      </>
-                                    ) : (
-                                      <span className="text-muted">
-                                        Not submitted
-                                      </span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    <span
-                                      className={`status-badge ${submission.status || "not_submitted"}`}
-                                    >
-                                      {submission.status === "graded"
-                                        ? "Graded"
-                                        : submission.status === "submitted"
-                                          ? "Submitted"
-                                          : "Not Submitted"}
-                                    </span>
-                                  </td>
-                                  <td>
-                                    {submission.file_download_urls &&
-                                    submission.file_download_urls.length > 0 ? (
-                                      <div className="file-links">
-                                        {submission.file_download_urls.map(
-                                          (url, idx) => {
-                                            const fileName = getFileNameFromUrl(
-                                              submission.file_urls?.[idx] ||
-                                                url,
-                                            );
-                                            const fileExt = getFileExtension(
-                                              submission.file_urls?.[idx] ||
-                                                url,
-                                            );
-                                            const displayName = `File ${idx + 1}.${fileExt}`;
-                                            return (
-                                              <div
-                                                key={idx}
-                                                className="file-download-item"
-                                              >
-                                                <a
-                                                  href="#"
-                                                  onClick={(e) => {
-                                                    e.preventDefault();
-                                                    downloadFile(
-                                                      url,
-                                                      `${submission.student_name}_${displayName}`,
-                                                      submission.submission_id,
-                                                    );
-                                                  }}
-                                                  className="file-link"
-                                                >
-                                                  📥 {displayName}
-                                                </a>
-                                              </div>
-                                            );
-                                          },
-                                        )}
-                                        <button
-                                          className="download-all-btn"
-                                          onClick={() =>
-                                            downloadAllFilesForSubmission(
-                                              submission,
-                                            )
-                                          }
-                                          disabled={batchDownloading}
-                                        >
-                                          📦 Download All
-                                        </button>
-                                      </div>
-                                    ) : (
-                                      <span className="text-muted">
-                                        No files
-                                      </span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    {submission.status === "graded" ||
-                                    submission.status === "submitted" ? (
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        max={selectedAssignment.total_marks}
-                                        step="0.5"
-                                        value={
-                                          gradeForm[submission.submission_id]
-                                            ?.marks || ""
-                                        }
-                                        onChange={(e) =>
-                                          setGradeForm((prev) => ({
-                                            ...prev,
-                                            [submission.submission_id]: {
-                                              ...prev[submission.submission_id],
-                                              marks: e.target.value,
-                                            },
-                                          }))
-                                        }
-                                        placeholder="Marks"
-                                        className="small-input"
-                                      />
-                                    ) : (
-                                      <span className="text-muted">-</span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    {submission.status === "graded" ||
-                                    submission.status === "submitted" ? (
-                                      <textarea
-                                        value={
-                                          gradeForm[submission.submission_id]
-                                            ?.feedback || ""
-                                        }
-                                        onChange={(e) =>
-                                          setGradeForm((prev) => ({
-                                            ...prev,
-                                            [submission.submission_id]: {
-                                              ...prev[submission.submission_id],
-                                              feedback: e.target.value,
-                                            },
-                                          }))
-                                        }
-                                        rows="2"
-                                        className="small-textarea"
-                                        placeholder="Feedback..."
-                                      />
-                                    ) : (
-                                      <span className="text-muted">-</span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    {(submission.status === "submitted" ||
-                                      submission.status === "graded") && (
-                                      <button
-                                        className="action-btn grade"
-                                        onClick={async () => {
-                                          const marksInput =
-                                            gradeForm[submission.submission_id]
-                                              ?.marks;
-                                          const feedback =
-                                            gradeForm[submission.submission_id]
-                                              ?.feedback || "";
-
-                                          if (
-                                            !marksInput ||
-                                            marksInput.trim() === ""
-                                          ) {
-                                            alert("Please enter marks");
-                                            return;
-                                          }
-
-                                          const success =
-                                            await handleGradeSubmission(
-                                              submission.submission_id,
-                                              parseFloat(marksInput),
-                                              feedback,
-                                            );
-
-                                          if (success) {
-                                            // Clear form after successful grading
-                                            setGradeForm((prev) => ({
-                                              ...prev,
-                                              [submission.submission_id]: {
-                                                marks: "",
-                                                feedback: "",
-                                              },
-                                            }));
-                                          }
-                                        }}
-                                      >
-                                        {submission.status === "graded"
-                                          ? "Update Grade"
-                                          : "Grade"}
-                                      </button>
-                                    )}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      ) : (
-                        <div className="empty-state">
-                          <p>No submissions yet</p>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Export Buttons */}
-{/* Export Buttons */}
-{assignmentSubmissions.length > 0 && (
-  <div className="export-options">
-    <button
-      className="export-button"
-      onClick={downloadSubmissionsCSV}
-    >
-      📥 Export CSV
-    </button>
-    <button
-      className="export-button"
-      onClick={downloadAllSubmissions}
-      disabled={batchDownloading}
-    >
-      📦 Download All Files
-    </button>
-  </div>
-)}
-{/* Exam Text Answers Buttons */}
-{selectedExamForGrading && examSubmissions.length > 0 && (
-  <div className="export-options" style={{ marginTop: "10px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
-    <button
-      className="export-button"
-      onClick={openTextAnswersModal}
-      disabled={examSubmissions.filter(s => s.answer_text && s.answer_text.length > 0).length === 0}
-      style={{
-        backgroundColor: examSubmissions.filter(s => s.answer_text && s.answer_text.length > 0).length > 0 ? "#6f42c1" : "#ccc",
-        color: "white",
-        padding: "10px 20px",
-        border: "none",
-        borderRadius: "8px",
-        fontSize: "14px",
-        fontWeight: "bold",
-        cursor: examSubmissions.filter(s => s.answer_text && s.answer_text.length > 0).length > 0 ? "pointer" : "not-allowed",
-        display: "flex",
-        alignItems: "center",
-        gap: "8px"
-      }}
-    >
-      <i className="fas fa-file-alt"></i>
-      View Text Answers ({examSubmissions.filter(s => s.answer_text && s.answer_text.length > 0).length})
-    </button>
-  </div>
-)}
-                  </div>
-                ) : (
-                  /* List of My Assignments */
-                  <div className="assignments-grid">
-                    {myAssignments.length > 0 ? (
-                      myAssignments.map((assignment) => (
-                        <div
-                          key={assignment.assignment_id}
-                          className="assignment-card"
-                        >
-                          <h4>{assignment.title}</h4>
-                          <p>
-                            {assignment.course_code} - {assignment.course_name}
-                          </p>
-                          <p>
-                            Due:{" "}
-                            {new Date(assignment.due_date).toLocaleDateString()}
-                          </p>
-                          <p>
-                            Submitted:{" "}
-                            <strong>{assignment.submitted_count || 0}</strong> |
-                            Graded:{" "}
-                            <strong>{assignment.graded_count || 0}</strong> |
-                            Pending:{" "}
-                            <strong>
-                              {(assignment.submitted_count || 0) -
-                                (assignment.graded_count || 0)}
-                            </strong>
-                          </p>
-                          <button
-                            className="action-btn view"
-                            onClick={() =>
-                              handleViewSubmissions({
-                                id: assignment.assignment_id,
-                                title: assignment.title,
-                                total_marks: assignment.total_marks,
-                                course_code: assignment.course_code,
-                                course_name: assignment.course_name,
-                                due_date: assignment.due_date,
-                              })
-                            }
-                          >
-                            View Submissions
-                          </button>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="empty-state">
-                        <p>No assignments to grade</p>
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
             )}
 
-            {/* ==================== GRADE EXAMS TAB ==================== */}
-            {activeTab === "grade-exams" && isLecturer && (
-              <div className="tab-content">
-                <div className="tab-header">
-                  <h2>🎯 Grade Exams</h2>
-                  <div className="tab-actions">
-                    <button
-                      className="refresh-button"
-                      onClick={() => fetchMyExams()}
-                      disabled={loadingAssignments}
-                    >
-                      🔄 {loadingAssignments ? "Loading..." : "Refresh Exams"}
-                    </button>
-                  </div>
-                </div>
-
-                {/* LOADING STATE */}
-                {loadingAssignments ? (
-                  <div style={{ textAlign: "center", padding: "60px 20px" }}>
-                    <div className="spinner"></div>
-                    <p>Loading your exams...</p>
-                  </div>
-                ) : selectedExamForGrading ? (
-                  /* === Full Exam Grading View - SAME STYLE AS ASSIGNMENTS === */
-                  <div
-                    className="grading-content"
-                    style={{ marginTop: "40px" }}
-                  >
-                    <div className="assignment-header blue-theme">
-                      <h3>{selectedExamForGrading.title}</h3>
-                      <p
-                        style={{
-                          margin: "8px 0 16px 0",
-                          color: "#1976d2",
-                          fontWeight: "500",
-                          fontSize: "16px",
-                        }}
-                      >
-                        {selectedExamForGrading.course_code} -{" "}
-                        {selectedExamForGrading.course_name ||
-                          "Standalone Exam"}
-                      </p>
-                      <div className="assignment-meta">
-                        <div className="counter-badge">
-                          <div className="badge-icon">📊</div>
-                          <div className="badge-content">
-                            <span className="badge-value">
-                              {selectedExamForGrading.total_marks}
-                            </span>
-                            <span className="badge-label">Total Marks</span>
-                          </div>
-                        </div>
-                        <div className="counter-badge">
-                          <div className="badge-icon">📝</div>
-                          <div className="badge-content">
-                            <span className="badge-value">
-                              {examSubmissions.length}
-                            </span>
-                            <span className="badge-label">Submissions</span>
-                          </div>
-                        </div>
-                        <button
-                          className="back-button"
-                          onClick={() => {
-                            setSelectedExamForGrading(null);
-                            setExamSubmissions([]);
-                            setExamGradeForm({});
-                          }}
-                        >
-                          ← Back to Exams
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Submissions Table */}
-                    <div className="submissions-list">
-                      {examSubmissions.length > 0 ? (
-                        <div className="table-container">
-                          <table className="data-table">
-                            <thead>
-                              <tr>
-                                <th>Student</th>
-                                <th>Submitted At</th>
-                                <th>Status</th>
-                                <th>Files</th>
-                                <th>Marks</th>
-                                <th>Feedback</th>
-                                <th>Actions</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {examSubmissions.map((submission) => (
-                                <tr key={submission.id}>
-                                  <td>
-                                    <div>
-                                      <strong>
-                                        {submission.student_name ||
-                                          "Unknown Student"}
-                                      </strong>
-                                    </div>
-                                    <div
-                                      className="small-text"
-                                      style={{
-                                        fontWeight: "bold",
-                                        color: "#1976d2",
-                                      }}
-                                    >
-                                      {submission.registration_number || "N/A"}
-                                    </div>
-                                    <div className="small-text text-muted">
-                                      {submission.student_email || "No email"}
-                                    </div>
-                                  </td>
-                                  <td>
-                                    {submission.submitted_at ? (
-                                      new Date(
-                                        submission.submitted_at,
-                                      ).toLocaleString()
-                                    ) : (
-                                      <span className="text-muted">
-                                        Not submitted
-                                      </span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    <span
-                                      className={`status-badge ${submission.status || "submitted"}`}
-                                    >
-                                      {submission.status === "graded"
-                                        ? "Graded"
-                                        : "Submitted"}
-                                    </span>
-                                  </td>
-<td>
-  {/* Show Exam Files (from the exam) */}
-  {selectedExamForGrading?.exam_files && selectedExamForGrading.exam_files.length > 0 && (
-    <div style={{ marginBottom: "8px" }}>
-      <strong style={{ fontSize: "12px", color: "#1976d2" }}>📎 Exam Files:</strong>
-      <div className="file-links" style={{ marginTop: "4px" }}>
-        {selectedExamForGrading.exam_files.map((filePath, idx) => {
-          const fileName = filePath.split('/').pop() || `Exam_File_${idx + 1}`;
-          const { data: urlData } = supabase.storage
-            .from("Lecturer exam")
-            .getPublicUrl(filePath);
-          return (
-            <div key={idx} className="file-download-item">
-              <a
-                href={urlData.publicUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="file-link"
-              >
-                📄 {fileName}
-              </a>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  )}
-  
-  {/* Show Student Submitted Files */}
-  {submission.file_download_urls && submission.file_download_urls.length > 0 ? (
-    <div>
-      <strong style={{ fontSize: "12px", color: "#28a745" }}>📤 Student Answers:</strong>
-      <div className="file-links" style={{ marginTop: "4px" }}>
-        {submission.file_download_urls.map((url, idx) => {
-          const fileName = submission.answer_files?.[idx]?.split('/').pop() || `Answer_${idx + 1}`;
-          return (
-            <div key={idx} className="file-download-item">
-            <a
-  href="#"
-  onClick={(e) => {
-    e.preventDefault();
-    downloadFile(url, `${submission.student_name}_${fileName}`, submission.id, "Student exam");
-  }}
-  className="file-link"
->
-  📥 {fileName}
-</a>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  ) : (
-    <span className="text-muted">No answers uploaded</span>
-  )}
-  
- {/* ⭐ Show Text Answer */}
-{submission.answer_text && submission.answer_text.length > 0 && (
-  <div style={{ marginTop: "8px" }}>
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-      <strong style={{ fontSize: "12px", color: "#6f42c1" }}>📝 Text Answer:</strong>
-      <button
-        onClick={() => {
-          // Store the current submission for the modal
-          setSelectedTextAnswer(submission);
-          setShowTextAnswersModal(true);
-        }}
-        style={{
-          background: "none",
-          border: "none",
-          color: "#007bff",
-          fontSize: "12px",
-          cursor: "pointer",
-          textDecoration: "underline",
-          padding: "2px 8px",
-          borderRadius: "4px",
-          hover: { backgroundColor: "#e3f2fd" }
-        }}
-        onMouseEnter={(e) => e.target.style.backgroundColor = "#e3f2fd"}
-        onMouseLeave={(e) => e.target.style.backgroundColor = "transparent"}
-      >
-        View Full 📄
-      </button>
-    </div>
-    <div style={{ 
-      maxWidth: "200px", 
-      maxHeight: "60px", 
-      overflow: "hidden", 
-      backgroundColor: "#f8f9fa", 
-      padding: "8px", 
-      borderRadius: "4px",
-      fontSize: "13px",
-      whiteSpace: "pre-wrap",
-      wordBreak: "break-word",
-      marginTop: "2px",
-      cursor: "pointer",
-      border: "1px solid #e9ecef",
-      position: "relative"
-    }}
-    onClick={() => {
-      setSelectedTextAnswer(submission);
-      setShowTextAnswersModal(true);
-    }}
-    >
-      {submission.answer_text.length > 150 
-        ? submission.answer_text.substring(0, 150) + "..."
-        : submission.answer_text
-      }
-    </div>
-  </div>
-)}
-</td>
-                                  <td>
-                                    {submission.status === "graded" ||
-                                    submission.status === "submitted" ? (
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        max={selectedExamForGrading.total_marks}
-                                        step="0.5"
-                                        value={
-                                          examGradeForm[submission.id]?.marks ||
-                                          ""
-                                        }
-                                        onChange={(e) =>
-                                          setExamGradeForm((prev) => ({
-                                            ...prev,
-                                            [submission.id]: {
-                                              ...prev[submission.id],
-                                              marks: e.target.value,
-                                            },
-                                          }))
-                                        }
-                                        placeholder="Marks"
-                                        className="small-input"
-                                      />
-                                    ) : (
-                                      <span className="text-muted">-</span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    {submission.status === "graded" ||
-                                    submission.status === "submitted" ? (
-                                      <textarea
-                                        value={
-                                          examGradeForm[submission.id]
-                                            ?.feedback || ""
-                                        }
-                                        onChange={(e) =>
-                                          setExamGradeForm((prev) => ({
-                                            ...prev,
-                                            [submission.id]: {
-                                              ...prev[submission.id],
-                                              feedback: e.target.value,
-                                            },
-                                          }))
-                                        }
-                                        rows="2"
-                                        className="small-textarea"
-                                        placeholder="Enter feedback..."
-                                      />
-                                    ) : (
-                                      <span className="text-muted">-</span>
-                                    )}
-                                  </td>
-                                  <td>
-                                    {(submission.status === "submitted" ||
-                                      submission.status === "graded") && (
-                                      <button
-                                        className="action-btn grade"
-                                        onClick={async () => {
-                                          const marksInput =
-                                            examGradeForm[submission.id]?.marks;
-                                          const feedback =
-                                            examGradeForm[submission.id]
-                                              ?.feedback || "";
-                                          if (!marksInput)
-                                            return alert("Please enter marks");
-                                          const marks = parseFloat(marksInput);
-                                          const letterGrade =
-                                            getGradeFromMarks(marks);
-                                          const gradePoints =
-                                            getGradePoints(letterGrade);
-                                          try {
-                                            const { error } = await supabase
-                                              .from("exam_submissions")
-                                              .update({
-                                                total_marks_obtained: marks,
-                                                percentage: (
-                                                  (marks /
-                                                    selectedExamForGrading.total_marks) *
-                                                  100
-                                                ).toFixed(2),
-                                                grade: letterGrade,
-                                                grade_points: gradePoints,
-                                                feedback: feedback,
-                                                status: "graded",
-                                                graded_at:
-                                                  new Date().toISOString(),
-                                              })
-                                              .eq("id", submission.id);
-                                            if (error) throw error;
-                                            fetchExamSubmissions(
-                                              selectedExamForGrading.exam_id,
-                                            );
-                                            alert(
-                                              `Graded! → ${letterGrade} (${gradePoints.toFixed(2)} GP)`,
-                                            );
-                                          } catch (err) {
-                                            alert(
-                                              "Grading failed: " + err.message,
-                                            );
-                                          }
-                                        }}
-                                      >
-                                        {submission.status === "graded"
-                                          ? "Update Grade"
-                                          : "Grade"}
-                                      </button>
-                                    )}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      ) : (
-                        <div className="empty-state">
-                          <p>No exam submissions yet</p>
-                          <small>
-                            Students haven't uploaded their answers for this
-                            exam.
-                          </small>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ) : (
-                  /* === List of Exams === */
-                  <div className="assignments-grid">
-                    {myExams.length > 0 ? (
-                      myExams.map((exam) => (
-                        <div key={exam.exam_id} className="assignment-card">
-                          <h4>{exam.title}</h4>
-                          <p style={{ color: "#1976d2", fontWeight: "500" }}>
-                            {exam.course_code} -{" "}
-                            {exam.course_name || "Standalone Exam"}
-                          </p>
-                          <p>
-                            📅 {new Date(exam.start_time).toLocaleDateString()}
-                          </p>
-                      <p>
-  📎 Files: {exam.exam_files && exam.exam_files.length > 0 ? (
-    <span style={{ color: "#28a745", fontWeight: "bold" }}>
-      {exam.exam_files.length} file(s) attached
-    </span>
-  ) : (
-    <span style={{ color: "#999" }}>No files</span>
-  )}
-</p>
-<p>
-  Submitted: <strong>{exam.submitted || 0}</strong> |
-  Graded: <strong>{exam.graded || 0}</strong> |
-  Pending: <strong>{exam.pending || 0}</strong>
-</p>
-                        <button
-  className="action-btn view"
-  onClick={() => handleViewExamSubmissions(exam)}
->
-  View Submissions
-</button>
-{/* ⭐ Show if files are attached */}
-<div style={{ marginTop: "5px" }}>
-  <span style={{ fontSize: "12px", color: exam.exam_files && exam.exam_files.length > 0 ? "#28a745" : "#999" }}>
-    📎 {exam.exam_files && exam.exam_files.length > 0 ? `${exam.exam_files.length} file(s) attached` : "No files"}
-  </span>
-</div>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="empty-state">
-                        <p>No exams to grade at the moment</p>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ==================== MY FILES TAB - LECTURER ONLY ==================== */}
-            {activeTab === "my-files" && isLecturer && (
-              <div className="tab-content">
-                <div className="tab-header">
-                  <h2>📁 My Uploaded Files</h2>
-                  <div className="tab-actions">
-                    <button
-                      className="refresh-button"
-                      onClick={fetchBucketFiles}
-                      disabled={bucketLoading}
-                    >
-                      🔄 {bucketLoading ? "Refreshing..." : "Refresh Files"}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Bucket Tabs - Beautiful & Responsive */}
-                <div
-                  className="bucket-tabs"
-                  style={{
-                    display: "flex",
-                    gap: "0",
-                    marginBottom: "30px",
-                    borderBottom: "3px solid #e3e6ea",
-                    overflowX: "auto",
-                    paddingBottom: "4px",
-                    scrollbarWidth: "thin",
-                  }}
-                >
-               {[
-  { key: "lecturerbucket", label: "Assignment Files" },
-  { key: "Tutorials", label: "Tutorials / Videos" },
-  { key: "Notes", label: "Notes" },
-  { key: "Lecturer exam", label: "Exam Papers" },
-].map(({ key, label }) => {
-                    const count = bucketFiles[key]?.length || 0;
-                    const isActive = activeBucketTab === key;
-
-                    return (
-                      <button
-                        key={key}
-                        onClick={() => setActiveBucketTab(key)}
-                        style={{
-                          flex: "1 1 0",
-                          minWidth: "180px",
-                          padding: "16px 24px",
-                          border: "none",
-                          borderBottom: isActive
-                            ? "5px solid #1976d2"
-                            : "5px solid transparent",
-                          backgroundColor: isActive ? "#e3f2fd" : "transparent",
-                          color: isActive ? "#1976d2" : "#555",
-                          fontWeight: isActive ? "700" : "600",
-                          fontSize: "16px",
-                          cursor: "pointer",
-                          transition: "all 0.3s ease",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {label}
-                        <span
-                          style={{
-                            marginLeft: "12px",
-                            padding: "6px 14px",
-                            backgroundColor: isActive ? "#1976d2" : "#e0e0e0",
-                            color: isActive ? "white" : "#333",
-                            borderRadius: "20px",
-                            fontSize: "14px",
-                            fontWeight: "bold",
-                            minWidth: "44px",
-                            display: "inline-block",
-                            textAlign: "center",
-                          }}
-                        >
-                          {bucketLoading && isActive ? "..." : count}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Loading State */}
-                {bucketLoading ? (
-                  <div
-                    style={{
-                      textAlign: "center",
-                      padding: "100px 20px",
-                      backgroundColor: "#f9f9f9",
-                      borderRadius: "12px",
-                    }}
-                  >
-                    <div className="spinner"></div>
-                    <p
-                      style={{
-                        marginTop: "24px",
-                        fontSize: "18px",
-                        color: "#666",
-                      }}
-                    >
-                    Loading your{" "}
-{activeBucketTab === "lecturerbucket"
-  ? "assignment files"
-  : activeBucketTab === "Tutorials"
-    ? "tutorials"
-    : activeBucketTab === "Notes"
-      ? "notes"
-      : "exam papers"}
-                      ...
-                    </p>
-                  </div>
-                ) : bucketFiles[activeBucketTab]?.length === 0 ? (
-                  <div
-                    className="empty-state"
-                    style={{
-                      textAlign: "center",
-                      padding: "100px 20px",
-                      backgroundColor: "#f9f9f9",
-                      borderRadius: "12px",
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontSize: "80px",
-                        marginBottom: "24px",
-                        opacity: 0.4,
-                      }}
-                    >
-                      📂
-                    </div>
-                    <h3>No files uploaded yet</h3>
-                    <p
-                      style={{
-                        color: "#777",
-                        maxWidth: "600px",
-                        margin: "20px auto",
-                      }}
-                    >
-                      You haven't uploaded any files to{" "}
-                      <strong>
-                     {activeBucketTab === "lecturerbucket"
-  ? "Assignment Files"
-  : activeBucketTab === "Tutorials"
-    ? "Tutorials / Videos"
-    : activeBucketTab === "Notes"
-      ? "Notes"
-      : "Exam Papers"}
-                      </strong>{" "}
-                      yet.
-                    </p>
-                  </div>
-                            ) : (
-                  <>
-                    {/* Bulk actions */}
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        marginBottom: "12px",
-                        gap: "12px",
-                        flexWrap: "wrap",
-                      }}
-                    >
-                      <label
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "8px",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={
-                            (bucketFiles[activeBucketTab]?.length || 0) > 0 &&
-                            selectedBucketFiles.length ===
-                              bucketFiles[activeBucketTab].length
-                          }
-                          onChange={toggleSelectAllBucketFiles}
-                        />
-                        <span>
-                          Select all ({bucketFiles[activeBucketTab]?.length || 0})
-                        </span>
-                      </label>
-
-                      {selectedBucketFiles.length > 0 && (
-                        <button
-                          className="action-btn delete"
-                          onClick={handleBulkDeleteFiles}
-                          disabled={bulkDeleting}
-                          style={{
-                            background: "#dc3545",
-                            color: "white",
-                            border: "none",
-                            padding: "8px 16px",
-                            borderRadius: "8px",
-                            cursor: "pointer",
-                          }}
-                        >
-                          {bulkDeleting
-                            ? "Deleting..."
-                            : `🗑️ Delete selected (${selectedBucketFiles.length})`}
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Responsive Table - No Overflow */}
-                    <div
-                      className="table-container"
-                      style={{ overflowX: "auto", marginTop: "10px" }}
-                    >
-                      <table
-                        className="data-table"
-                        style={{ minWidth: "900px", width: "100%" }}
-                      >
-                        <thead>
-                          <tr>
-                            <th style={{ width: "48px" }}>
-                              <input
-                                type="checkbox"
-                                checked={
-                                  (bucketFiles[activeBucketTab]?.length || 0) >
-                                    0 &&
-                                  selectedBucketFiles.length ===
-                                    bucketFiles[activeBucketTab].length
-                                }
-                                onChange={toggleSelectAllBucketFiles}
-                                title="Select all"
-                              />
-                            </th>
-                            <th style={{ width: "30%", minWidth: "200px" }}>
-                              File Name
-                            </th>
-                            <th style={{ width: "12%" }}>Size</th>
-                            <th style={{ width: "16%" }}>Uploaded</th>
-                            <th style={{ width: "28%", minWidth: "200px" }}>
-                              Full Path
-                            </th>
-                            <th style={{ width: "10%" }}>Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {bucketFiles[activeBucketTab].map((file, index) => (
-                            <tr key={file.id || file.fullPath || index}>
-                              <td>
-                                <input
-                                  type="checkbox"
-                                  checked={selectedBucketFiles.includes(
-                                    file.fullPath
-                                  )}
-                                  onChange={() =>
-                                    toggleSelectBucketFile(file.fullPath)
-                                  }
-                                />
-                              </td>
-                              <td style={{ wordBreak: "break-word" }}>
-                                <strong>{file.name}</strong>
-                              </td>
-                              <td>
-                                {file.metadata?.size
-                                  ? `${(file.metadata.size / 1024 / 1024).toFixed(2)} MB`
-                                  : "—"}
-                              </td>
-                              <td>
-                                {file.created_at
-                                  ? new Date(
-                                      file.created_at
-                                    ).toLocaleDateString("en-US", {
-                                      year: "numeric",
-                                      month: "short",
-                                      day: "numeric",
-                                    })
-                                  : "—"}
-                              </td>
-                              <td
-                                style={{
-                                  fontSize: "13px",
-                                  color: "#666",
-                                  wordBreak: "break-all",
-                                  maxWidth: "300px",
-                                }}
-                              >
-                                📁 {file.fullPath}
-                              </td>
-                              <td>
-                                <div
-                                  className="action-buttons flat"
-                                  style={{
-                                    gap: "10px",
-                                    justifyContent: "center",
-                                  }}
-                                >
-                                  <a
-                                    href={file.publicUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="action-btn view small"
-                                    title="View / Download"
-                                  >
-                                    👁️ View
-                                  </a>
-                                  <button
-                                    className="action-btn delete small"
-                                    onClick={() =>
-                                      handleDeleteFile(
-                                        activeBucketTab,
-                                        file.fullPath
-                                      )
-                                    }
-                                    disabled={
-                                      deletingFile ===
-                                      `${activeBucketTab}-${file.fullPath}`
-                                    }
-                                    title="Delete permanently"
-                                  >
-                                    {deletingFile ===
-                                    `${activeBucketTab}-${file.fullPath}`
-                                      ? "Deleting..."
-                                      : "🗑️ Delete"}
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </>
-                )}
-
-                {/* Footer Tip */}
-                {!bucketLoading && bucketFiles[activeBucketTab]?.length > 0 && (
-                  <div
-                    style={{
-                      marginTop: "40px",
-                      padding: "20px",
-                      background:
-                        "linear-gradient(135deg, #e3f2fd 0%, #f0f8ff 100%)",
-                      borderRadius: "12px",
-                      border: "1px solid #bbdefb",
-                      textAlign: "center",
-                      color: "#1565c0",
-                      fontSize: "15px",
-                    }}
-                  >
-                    <strong>💡 All files are private and secure</strong>
-                    <br />
-                    Only you can view and manage them.
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Students Tab - WITH PROFILE PICTURE */}
             {activeTab === "students" && (
               <div className="tab-content">
                 <div className="tab-header">
                   <h2>👥 Student Management</h2>
                   <div className="tab-actions">
-                    <input
-                      type="text"
-                      placeholder="Search students..."
-                      className="search-input"
-                      value={searchTerm}
-                      onChange={(e) => {
-                        setSearchTerm(e.target.value);
-                        setTimeout(() => fetchStudents(), 300);
-                      }}
-                    />
-                    {isAdmin && (
-                      <button
-                        className="add-button"
-                        onClick={() => {
-                          setNewUser({ ...newUser, role: "student" });
-                          setShowUserModal(true);
-                        }}
-                      >
-                        + Add Student
-                      </button>
-                    )}
+                    <input type="text" placeholder="Search students..." className="search-input" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                    <button className="add-button" onClick={() => { setNewUser({ ...newUser, role: "student" }); setShowUserModal(true); }}>+ Add Student</button>
+                    <button className="add-button bulk-message" onClick={() => { setBulkMessageRole('student'); setBulkMessageText(''); setShowBulkMessageModal(true); }}>📨 Message All</button>
+                  </div>
+                </div>
+                {renderStudentsTable()}
+              </div>
+            )}
+
+            {activeTab === "lecturers" && renderLecturersTable()}
+            {activeTab === "deans" && renderDeansTable()}
+            {activeTab === "hods" && renderHODsTable()}
+            
+            {activeTab === "finance" && (
+              <div className="tab-content">
+                <div className="tab-header">
+                  <h2>💰 Finance Management</h2>
+                  <div className="tab-actions">
+                    <button className="add-button bulk-message" onClick={() => { setBulkMessageRole('finance'); setBulkMessageText(''); setShowBulkMessageModal(true); }}>📨 Message All Finance</button>
+                    <button className="add-button" onClick={() => { setNewUser({ ...newUser, role: "finance" }); setShowUserModal(true); }}>+ Add Finance Officer</button>
+                    <button className="add-button" onClick={() => setShowFinanceModal(true)}>+ Add Record</button>
                   </div>
                 </div>
 
-                <div
-                  className="table-container"
-                  style={{ overflowX: "auto", maxWidth: "100%" }}
-                >
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th style={{ width: "60px" }}>Photo</th>
-                        <th>Student ID</th>
-                        <th>Full Name</th>
-                        <th>Email</th>
-                        <th>Program</th>
-                        <th>Department</th>
-                        <th>Year</th>
-                        <th>Status</th>
-                        {isAdmin && <th>Actions</th>}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {students.length === 0 ? (
-                        <tr>
-                          <td
-                            colSpan="9"
-                            style={{ textAlign: "center", padding: "30px" }}
-                          >
-                            No students found
-                          </td>
-                        </tr>
-                      ) : (
-                        students.map((student) => (
-                          <tr key={student.id}>
-                            <td>
-                              <div
-                                style={{
-                                  width: "40px",
-                                  height: "40px",
-                                  borderRadius: "50%",
-                                  overflow: "hidden",
-                                  cursor: isAdmin ? "pointer" : "default",
-                                  border: "2px solid #ddd",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "center",
-                                  backgroundColor: "#f0f0f0",
-                                }}
-                                onClick={() => {
-                                  if (isAdmin) {
-                                    setSelectedStudentForPicture(student);
-                                    setShowProfilePictureModal(true);
-                                  }
-                                }}
-                                title={isAdmin ? "Click to change photo" : ""}
-                              >
-                                {student.profile_picture_url ? (
-                                  <img
-                                    src={student.profile_picture_url}
-                                    alt={student.full_name}
-                                    style={{
-                                      width: "100%",
-                                      height: "100%",
-                                      objectFit: "cover",
-                                    }}
-                                  />
-                                ) : (
-                                  <span
-                                    style={{ fontSize: "18px", color: "#666" }}
-                                  >
-                                    {student.full_name?.[0]?.toUpperCase() ||
-                                      "👤"}
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-                            <td>
-                              <strong>{student.student_id}</strong>
-                            </td>
-                            <td>{student.full_name}</td>
-                            <td>{student.email}</td>
-                            <td className="program-full">
-                              {student.program || "N/A"}
-                            </td>
-                            <td>
-                              <span className="dept-badge">
-                                {student.department_code || "N/A"}
-                              </span>
-                            </td>
-                            <td>
-                              Year {student.year_of_study || 1} - Sem{" "}
-                              {student.semester || 1}
-                            </td>
-                            <td>
-                              <span
-                                className={`status-badge ${student.status || "active"}`}
-                              >
-                                {student.status?.charAt(0).toUpperCase() +
-                                  student.status?.slice(1) || "Active"}
-                              </span>
-                            </td>
-                            {isAdmin && (
-                              <td>
-                                <div className="actions-dropdown">
-                                  <button className="actions-toggle-btn">
-                                    Actions{" "}
-                                    <span className="dropdown-icon">▼</span>
-                                  </button>
-                                  <div className="actions-menu">
-                                    <button
-                                      className="action-item photo"
-                                      onClick={() => {
-                                        setSelectedStudentForPicture(student);
-                                        setShowProfilePictureModal(true);
-                                      }}
-                                    >
-                                      📸 Change Photo
-                                    </button>
-                                    <button
-                                      className="action-item edit"
-                                   onClick={() => {
-  setEditingStudent(student);
-  // Load ALL existing DB values so admin only changes what they need
-  const matchingProgram =
-    programs.find((p) => p.id === student.program_id) ||
-    programs.find(
-      (p) => p.code === (student.program_code || "").toUpperCase()
-    ) ||
-    programs.find((p) => p.name === student.program);
+                <div style={{ marginBottom: '40px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                    <h3>👤 Finance Officers</h3>
+                  </div>
+                  {renderFinanceOfficersTable()}
+                </div>
 
-  setEditStudentForm({
-    full_name: student.full_name || "",
-    email: student.email || "",
-    phone: student.phone || "",
-    date_of_birth: student.date_of_birth
-      ? String(student.date_of_birth).slice(0, 10)
-      : "",
-    program_id: matchingProgram?.id || student.program_id || "",
-    program: matchingProgram?.name || student.program || "",
-    program_code: student.program_code || matchingProgram?.code || "",
-    year_of_study: student.year_of_study || 1,
-    semester: student.semester || 1,
-    department: student.department || "",
-    department_code: student.department_code || "",
-    intake: student.intake || "January",
-    academic_year: student.academic_year || "",
-    status: student.status || "active",
-  });
-}}
-                                    >
-                                      ✏️ Edit
-                                    </button>
-                                    <button
-                                      className="action-item enroll"
-                                      onClick={() => {
-                                        setEnrollStudent(student);
-                                        setShowEnrollModal(true);
-                                      }}
-                                    >
-                                      📚 Enroll
-                                    </button>
-                                    <button
-                                      className="action-item status"
-                                      onClick={() =>
-                                        handleUpdateStudentStatus(
-                                          student.id,
-                                          student.status === "active"
-                                            ? "inactive"
-                                            : "active",
-                                        )
-                                      }
-                                    >
-                                      {student.status === "active"
-                                        ? "Deactivate"
-                                        : "Activate"}
-                                    </button>
-                                  </div>
-                                </div>
-                              </td>
-                            )}
+                <div style={{ borderTop: '2px solid #e0e0e0', paddingTop: '30px' }}>
+                  <h3 style={{ marginBottom: '15px' }}>📊 Financial Records</h3>
+                  <div className="stats-grid" style={{ marginBottom: '20px' }}>
+                    <div className="stat-card"><h3>{financialRecords.length}</h3><p>Total Records</p></div>
+                    <div className="stat-card success"><h3>${financialRecords.filter(r => r.status === "paid").reduce((sum, r) => sum + r.amount, 0).toFixed(2)}</h3><p>Total Paid</p></div>
+                    <div className="stat-card warning"><h3>${financialRecords.filter(r => r.status === "pending").reduce((sum, r) => sum + r.amount, 0).toFixed(2)}</h3><p>Pending</p></div>
+                  </div>
+                  <div className="table-container">
+                    <table className="data-table">
+                      <thead><tr><th>Student ID</th><th>Description</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead>
+                      <tbody>
+                        {financialRecords.slice(0, 50).map((record) => (
+                          <tr key={record.id}>
+                            <td>{record.student_id}</td>
+                            <td>{record.description}</td>
+                            <td>${record.amount.toFixed(2)}</td>
+                            <td><span className={`status-badge ${record.status}`}>{record.status}</span></td>
+                            <td>{new Date(record.created_at).toLocaleDateString()}</td>
                           </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* Courses Tab */}
             {activeTab === "courses" && (
               <div className="tab-content">
                 <div className="tab-header">
                   <h2>📖 Course Management</h2>
                   <div className="tab-actions">
-                    <input
-                      type="text"
-                      placeholder="Search courses..."
-                      className="search-input"
-                      value={searchTerm}
-                      onChange={(e) => {
-                        setSearchTerm(e.target.value);
-                        setTimeout(() => fetchCourses(), 300);
-                      }}
-                    />
-                    {(isAdmin || isLecturer) && (
-                      <button
-                        className="add-button"
-                        onClick={() => setShowCourseModal(true)}
-                      >
-                        + Add Course
-                      </button>
-                    )}
+                    <input type="text" placeholder="Search courses..." className="search-input" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                    <button className="add-button" onClick={() => setShowCourseModal(true)}>+ Add Course</button>
                   </div>
                 </div>
-
-                <div className="courses-grid">
-                  {courses.map((course) => (
-                    <div key={course.id} className="course-card">
-                      <div className="course-header">
-                        <h3>{course.course_code}</h3>
-                        <div className="course-header-right">
-                          <span className="dept-badge">
-                            {course.department_code ||
-                              course.department ||
-                              "N/A"}
-                          </span>
-                          <span
-                            className={`course-status ${course.is_active ? "active" : "inactive"}`}
-                          >
-                            {course.is_active ? "Active" : "Inactive"}
-                          </span>
-                        </div>
-                      </div>
-                      <h4>{course.course_name}</h4>
-                      <p className="course-description">
-                        {course.description || "No description"}
-                      </p>
-                      <div className="course-details">
-                        <span>
-                          Year {course.year} - Semester {course.semester}
-                        </span>
-                        <span>{course.credits} Credits</span>
-                        <span>{course.program}</span>
-                      </div>
-                      <div className="course-actions">
-                        <button
-                          className="course-btn"
-                          onClick={() => setSelectedCourse(course)}
-                        >
-                          View Details
-                        </button>
-                        {isLecturer && (
-                          <button
-                            className="course-btn course-btn-secondary"
-                            onClick={() =>
-                              handleToggleCourseActive(
-                                course.id,
-                                course.is_active,
-                              )
-                            }
-                          >
-                            {course.is_active ? "Deactivate" : "Activate"}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                {renderCoursesGrid()}
               </div>
             )}
 
-            {/* Lectures Tab */}
-            {activeTab === "lectures" && isLecturer && (
-              <div className="tab-content">
-                <div className="tab-header">
-                  <h2>🎓 Lecture Management</h2>
-                  <div
-                    className="debug-info"
-                    style={{
-                      fontSize: "12px",
-                      color: "#666",
-                      marginTop: "10px",
-                      display: "none",
-                    }}
-                  >
-                    <p>
-                      Debug: Showing {lectures.length} lectures | Lecturer ID:{" "}
-                      {profile?.id} | Is Lecturer: {isLecturer.toString()}
-                    </p>
-                    <button
-                      onClick={() => {
-                        console.log("DEBUG: Current lectures state:", lectures);
-                        fetchLectures();
-                      }}
-                      style={{ fontSize: "12px", padding: "5px 10px" }}
-                    >
-                      Refresh & Debug
-                    </button>
-                  </div>
-                  {isLecturer && (
-                    <button
-                      className="add-button"
-                      onClick={() => setShowLectureModal(true)}
-                    >
-                      + Schedule Lecture
-                    </button>
-                  )}
-                </div>
-
-                {/* Live Lectures */}
-                {getLiveLectures().length > 0 && (
-                  <div className="lectures-section">
-                    <h3 className="section-title">🔴 Live Lectures</h3>
-                    <div className="lectures-grid">
-                      {getLiveLectures().map((lecture) => (
-                        <div key={lecture.id} className="lecture-card live">
-                          <div className="lecture-header">
-                            <div>
-                              <h3>
-                                {lecture.courses?.course_code}: {lecture.title}
-                              </h3>
-                              <p className="course-info">
-                                {lecture.courses?.course_name}
-                              </p>
-                            </div>
-                            <span className="lecture-status live">🔴 LIVE</span>
-                          </div>
-                          <p>{lecture.description}</p>
-                          <div className="lecture-details">
-                            <span>👨‍🏫 {lecture.lecturers?.full_name}</span>
-                            <span>📅 {lecture.formattedDate}</span>
-                            <span>⏰ {lecture.formattedTime}</span>
-                            <span>🏛️ {lecture.courses?.department_code}</span>
-                          </div>
-                          <div className="lecture-actions">
-                            {lecture.meetLink && (
-                              <a
-                                href={lecture.meetLink}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="meet-link join-btn"
-                              >
-                                🎥 Join Google Meet
-                              </a>
-                            )}
-                            <button
-                              className="action-btn end"
-                              onClick={() => handleEndLecture(lecture.id)}
-                            >
-                              End Lecture
-                            </button>
-                            <button
-                              className="action-btn edit"
-                              onClick={() => {
-                                setEditingLecture(lecture);
-                                setEditLecture({
-                                  title: lecture.title,
-                                  description: lecture.description,
-                                  google_meet_link: lecture.google_meet_link,
-                                  scheduled_date: lecture.scheduled_date,
-                                  start_time: lecture.start_time,
-                                  end_time: lecture.end_time,
-                                });
-                              }}
-                            >
-                              Edit
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Upcoming Lectures */}
-                <div className="lectures-section">
-                  <h3 className="section-title">📅 Upcoming Lectures</h3>
-                  {getUpcomingLectures().length > 0 ? (
-                    <div className="lectures-grid">
-                      {getUpcomingLectures().map((lecture) => (
-                        <div key={lecture.id} className="lecture-card">
-                          <div className="lecture-header">
-                            <div>
-                              <h3>
-                                {lecture.courses?.course_code}: {lecture.title}
-                              </h3>
-                              <p className="course-info">
-                                {lecture.courses?.course_name}
-                              </p>
-                            </div>
-                            <span
-                              className={`lecture-status ${lecture.status}`}
-                            >
-                              {lecture.status}
-                            </span>
-                          </div>
-                          <p>{lecture.description}</p>
-                          <div className="lecture-details">
-                            <span>👨‍🏫 {lecture.lecturers?.full_name}</span>
-                            <span>📅 {lecture.formattedDate}</span>
-                            <span>⏰ {lecture.formattedTime}</span>
-                            <span>🏛️ {lecture.courses?.department_code}</span>
-                          </div>
-                          <div className="lecture-actions">
-                            {lecture.meetLink && (
-                              <a
-                                href={lecture.meetLink}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="meet-link"
-                              >
-                                🔗 Copy Meeting Link
-                              </a>
-                            )}
-                            <button
-                              className="action-btn start"
-                              onClick={() => handleStartLecture(lecture.id)}
-                            >
-                              Start Now
-                            </button>
-                            <button
-                              className="action-btn edit"
-                              onClick={() => {
-                                setEditingLecture(lecture);
-                                setEditLecture({
-                                  title: lecture.title,
-                                  description: lecture.description,
-                                  google_meet_link: lecture.google_meet_link,
-                                  scheduled_date: lecture.scheduled_date,
-                                  start_time: lecture.start_time,
-                                  end_time: lecture.end_time,
-                                });
-                              }}
-                            >
-                              Edit
-                            </button>
-                            <button
-                              className="action-btn delete"
-                              onClick={() => handleDeleteLecture(lecture.id)}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty-state">
-                      <p>No upcoming lectures scheduled</p>
-                      <button
-                        onClick={() => setShowLectureModal(true)}
-                        className="add-button-small"
-                      >
-                        + Schedule Your First Lecture
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Past Lectures */}
-                {getPastLectures().length > 0 && (
-                  <div className="lectures-section">
-                    <h3 className="section-title">✅ Past Lectures</h3>
-                    <div className="lectures-table-container">
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>Date</th>
-                            <th>Course</th>
-                            <th>Title</th>
-                            <th>Time</th>
-                            <th>Status</th>
-                            <th>Recording</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {getPastLectures()
-                            .slice(0, 10)
-                            .map((lecture) => (
-                              <tr key={lecture.id}>
-                                <td>{lecture.formattedDate}</td>
-                                <td>{lecture.courses?.course_code}</td>
-                                <td>{lecture.title}</td>
-                                <td>{lecture.formattedTime}</td>
-                                <td>
-                                  <span className="lecture-status completed">
-                                    Completed
-                                  </span>
-                                </td>
-                                <td>
-                                  {lecture.recording_url ? (
-                                    <a
-                                      href={lecture.recording_url}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="recording-link"
-                                    >
-                                      📹 View Recording
-                                    </a>
-                                  ) : (
-                                    <span className="text-muted">
-                                      No recording
-                                    </span>
-                                  )}
-                                </td>
-                              </tr>
-                            ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Exams Tab */}
             {activeTab === "exams" && (
               <div className="tab-content">
                 <div className="tab-header">
                   <h2>🎯 Exam Management</h2>
-                  {(isAdmin || isLecturer) && (
-                    <button
-                      className="add-button"
-                      onClick={() => setShowExamsModal(true)}
-                    >
-                      + Schedule Exam
-                    </button>
-                  )}
+                  <button className="add-button" onClick={() => setShowExamsModal(true)}>+ Schedule Exam</button>
                 </div>
-
                 <div className="exams-list">
                   {exams.length > 0 ? (
-                    exams.map((exam) => (
-                      <div key={exam.id} className="exam-card">
-                        <div className="exam-header">
-                          <div>
-                            <h3>{exam.title}</h3>
-                            <p className="course-info">
-                              {exam.courses?.course_code} -{" "}
-                              {exam.courses?.course_name}
-                            </p>
+                    exams.map((exam) => {
+                      const status = getAdminExamStatus(exam);
+                      return (
+                        <div key={exam.id} className="exam-card">
+                          <div className="exam-header">
+                            <div><h3>{exam.title}</h3><p className="course-info">{exam.courses?.course_code} - {exam.courses?.course_name}</p></div>
+                            <span className={`exam-status ${status}`}>{status.toUpperCase()}</span>
                           </div>
-                          <span
-                            className={`exam-status ${getAdminExamStatus(exam)}`}
-                          >
-                            {getAdminExamStatus(exam).toUpperCase()}
-                          </span>
+                          <p>{exam.description}</p>
+                          <div className="exam-status-bar">
+                            <strong>{status === "active" ? "🔴 EXAM IS ONGOING NOW" : status === "upcoming" ? `Starts in ${getTimeUntilStart(exam.start_time)}` : "Exam Ended"}</strong>
+                          </div>
+                          <div className="exam-details">
+                            <div><strong>Start:</strong> {new Date(exam.start_time).toLocaleString()}</div>
+                            <div><strong>End:</strong> {new Date(exam.end_time).toLocaleString()}</div>
+                            <div><strong>Duration:</strong> {exam.duration_minutes} minutes</div>
+                            <div><strong>Total Marks:</strong> {exam.total_marks}</div>
+                            <div><strong>Location:</strong> {exam.venue || exam.location || "Online"}</div>
+                          </div>
+                          <div className="exam-actions">
+                            <button className="action-btn delete" onClick={() => handleDeleteExam(exam.id)}>Delete</button>
+                          </div>
                         </div>
-                        <p>{exam.description}</p>
-                        <div
-                          className="exam-status-bar"
-                          style={{
-                            margin: "10px 0",
-                            padding: "10px",
-                            borderRadius: "8px",
-                            backgroundColor:
-                              getAdminExamStatus(exam) === "active"
-                                ? "#ffebee"
-                                : getAdminExamStatus(exam) === "upcoming"
-                                  ? "#e3f2fd"
-                                  : "#f5f5f5",
-                            borderLeft: `5px solid ${
-                              getAdminExamStatus(exam) === "active"
-                                ? "#c62828"
-                                : getAdminExamStatus(exam) === "upcoming"
-                                  ? "#1976d2"
-                                  : "#9e9e9e"
-                            }`,
-                            textAlign: "center",
-                          }}
-                        >
-                          <strong
-                            style={{
-                              color:
-                                getAdminExamStatus(exam) === "active"
-                                  ? "#c62828"
-                                  : getAdminExamStatus(exam) === "upcoming"
-                                    ? "#1976d2"
-                                    : "#666",
-                              fontSize: "16px",
-                            }}
-                          >
-                            {getAdminExamStatus(exam) === "active"
-                              ? "🔴 EXAM IS ONGOING NOW"
-                              : getAdminExamStatus(exam) === "upcoming"
-                                ? `Starts in ${getTimeUntilStart(exam.start_time)}`
-                                : "Exam Ended"}
-                          </strong>
-                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="empty-state"><p>No exams scheduled</p></div>
+                  )}
+                </div>
+              </div>
+            )}
 
-                        <div className="exam-details">
-                          <div>
-                            <strong>Start:</strong>{" "}
-                            {new Date(exam.start_time).toLocaleString("en-US", {
-                              dateStyle: "medium",
-                              timeStyle: "short",
-                            })}{" "}
-                            EAT
-                          </div>
-                          <div>
-                            <strong>End:</strong>{" "}
-                            {new Date(exam.end_time).toLocaleString("en-US", {
-                              dateStyle: "medium",
-                              timeStyle: "short",
-                            })}{" "}
-                            EAT
-                          </div>
-                          <div>
-                            <strong>Duration:</strong> {exam.duration_minutes}{" "}
-                            minutes
-                          </div>
-                          <div>
-                            <strong>Total Marks:</strong> {exam.total_marks}
-                          </div>
-                          <div>
-                            <strong>Location:</strong>{" "}
-                            {exam.venue || exam.location || "Online"}
-                          </div>
+            {activeTab === "attendance" && (
+              <AttendanceManager profile={profile} isLecturer={false} isAdmin={true} departmentCodes={departmentCodes} allowedDepartments={allowedDepartments} students={students} lectures={lectures} stats={stats} fetchDashboardStats={fetchDashboardStats} showToast={showToast} />
+            )}
+
+            {activeTab === "timetables" && (
+              <div className="tab-content">
+                <div className="tab-header">
+                  <h2>⏰ Timetable Management</h2>
+                  <button className="add-button" onClick={() => { setNewTimetable({ program_id: "", academic_year: "2024/2025", semester: 1, year_of_study: 1, is_active: true }); setShowTimetableModal(true); }}>+ Create New Timetable</button>
+                </div>
+                <div className="timetables-grid">
+                  {timetables.length === 0 ? (
+                    <div className="empty-state"><p>No timetables created yet</p></div>
+                  ) : (
+                    timetables.map((tt) => (
+                      <div key={tt.id} className="timetable-card expandable">
+                        <div className="timetable-header">
+                          <h3>{tt.programs?.name || "Unknown Program"} - Year {tt.year_of_study}</h3>
+                          <div><span className="semester-badge">Semester {tt.semester}</span><span className={`status-badge ${tt.is_active ? "active" : "inactive"}`}>{tt.is_active ? "Active" : "Inactive"}</span></div>
                         </div>
-                        <div className="exam-actions">
-                         <button
-  className="action-btn view"
-  onClick={() => {
-    setSelectedExam(exam);
-    // Also set the edit exam state with all fields for consistency
-    setEditingExam(exam);
-    setEditExam({
-      title: exam.title || "",
-      description: exam.description || "",
-      start_time: exam.start_time || "",
-      end_time: exam.end_time || "",
-      venue: exam.venue || "",
-      status: exam.status || "published",
-      total_marks: exam.total_marks || 100,
-      exam_type: exam.exam_type || "online",
-      submission_type: exam.submission_type || "both",
-    });
-  }}
->
-  View Details
-</button>
-                          {(isAdmin ||
-                            (isLecturer &&
-                              exam.lecturer_id === profile.id)) && (
-                            <>
-                           <button
-  className="action-btn edit"
-  onClick={() => {
-    setEditingExam(exam);
-    setEditExam({
-      title: exam.title || "",
-      description: exam.description || "",
-      start_time: exam.start_time || "",
-      end_time: exam.end_time || "",
-      venue: exam.venue || "",
-      status: exam.status || "published",
-      total_marks: exam.total_marks || 100,
-      exam_type: exam.exam_type || "online",
-      submission_type: exam.submission_type || "both",
-    });
-  }}
->
-  Edit
-</button>
-                              <button
-                                className="action-btn delete"
-                                onClick={() => handleDeleteExam(exam.id)}
-                              >
-                                Delete
-                              </button>
-                            </>
-                          )}
+                        <p>{tt.academic_year}</p>
+                        <p className="small-text">{tt.program_timetable_slots?.length || 0} slot{(tt.program_timetable_slots?.length || 0) !== 1 ? "s" : ""}</p>
+                        <div className="timetable-actions">
+                          <button className="action-btn view" onClick={() => setExpandedTimetableId(expandedTimetableId === tt.id ? null : tt.id)}>
+                            {expandedTimetableId === tt.id ? "↑ Hide Slots" : "↓ View & Edit Slots"}
+                          </button>
                         </div>
+                        {expandedTimetableId === tt.id && (
+                          <div className="expanded-slots-section" style={{ marginTop: "20px" }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "15px" }}>
+                              <h4 style={{ margin: 0 }}>Time Slots</h4>
+                              <button className="add-button small" onClick={() => { setSelectedTimetable(tt); setEditingSlot(null); setNewSlot({ course_code: "", course_name: "", lecturer_id: "", day_of_week: 1, start_time: "08:00", end_time: "10:00", room_number: "", building: "CS Building", slot_type: "lecture" }); setShowSlotModal(true); }}>+ Add Slot</button>
+                            </div>
+                            {tt.program_timetable_slots?.length > 0 ? (
+                              <div className="table-container">
+                                <table className="data-table">
+                                  <thead><tr><th>Day</th><th>Time</th><th>Course</th><th>Lecturer</th><th>Location</th><th>Type</th><th>Actions</th></tr></thead>
+                                  <tbody>
+                                    {tt.program_timetable_slots.map((slot) => (
+                                      <tr key={slot.id}>
+                                        <td>{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][slot.day_of_week]}</td>
+                                        <td>{slot.start_time} – {slot.end_time}</td>
+                                        <td><strong>{slot.course_code}</strong><br /><small>{slot.course_name}</small></td>
+                                        <td>{slot.lecturers?.full_name || "Not Assigned"}</td>
+                                        <td>{slot.room_number} {slot.building}</td>
+                                        <td><span className="status-badge">{slot.slot_type}</span></td>
+                                        <td>
+                                          <div style={{ display: "flex", gap: "8px" }}>
+                                            <button className="action-btn edit small" onClick={() => { setSelectedTimetable(tt); setEditingSlot(slot); setNewSlot({ course_code: slot.course_code, course_name: slot.course_name, lecturer_id: slot.lecturer_id || "", day_of_week: slot.day_of_week, start_time: slot.start_time, end_time: slot.end_time, room_number: slot.room_number, building: slot.building, slot_type: slot.slot_type }); setShowSlotModal(true); }}>Edit</button>
+                                            <button className="action-btn delete small" onClick={() => handleDeleteSlot(slot.id)}>Delete</button>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            ) : (
+                              <p className="text-muted" style={{ textAlign: "center", padding: "20px" }}>No slots added yet.</p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     ))
-                  ) : (
-                    <div className="empty-state">
-                      <p>No exams scheduled</p>
-                    </div>
                   )}
                 </div>
               </div>
             )}
 
-            {/* Lecturers Tab - Admin Only */}
-            {activeTab === "lecturers" && isAdmin && (
+            {activeTab === "programs" && (
               <div className="tab-content">
                 <div className="tab-header">
-                  <h2>👨‍🏫 Lecturer Management</h2>
-                  <div className="tab-actions">
-                    <input
-                      type="text"
-                      placeholder="Search lecturers..."
-                      className="search-input"
-                      value={searchTerm}
-                      onChange={(e) => {
-                        setSearchTerm(e.target.value);
-                        // Implement search
-                      }}
-                    />
-                    <button
-                      className="add-button"
-                      onClick={() => {
-                        setNewUser({ ...newUser, role: "lecturer" });
-                        setShowUserModal(true);
-                      }}
-                    >
-                      + Add Lecturer
-                    </button>
-                  </div>
+                  <h2>🎓 Program Management</h2>
+                  <button className="add-button" onClick={() => { setEditingProgram(null); setNewProgram({ name: "", code: "" }); setShowProgramModal(true); }}>+ Add Program</button>
                 </div>
-
                 <div className="table-container">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Lecturer ID</th>
-                        <th>Name</th>
-                        <th>Email</th>
-
-                        <th>Department</th>
-                        <th>Specialization</th>
-                        <th>Status</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lecturers.map((lecturer) => (
-                        <tr key={lecturer.id}>
-                          <td>{lecturer.lecturer_id}</td>
-                          <td>{lecturer.full_name}</td>
-                          <td>{lecturer.email}</td>
-                          <td>{renderLecturerDepartments(lecturer)}</td>
-                          <td>{lecturer.specialization}</td>
-                          <td>
-                            <span
-                              className={`status-badge ${lecturer.status || "active"}`}
-                            >
-                              {lecturer.status || "active"}
-                            </span>
-                          </td>
-                          <td>
-                            <div className="action-buttons">
-                              <button
-                                className="action-btn view"
-                                onClick={() =>
-                                  setSelectedLecturerDetails(lecturer)
-                                }
-                              >
-                                View Details
-                              </button>
-                              <button
-                                className="action-btn dept"
-                                onClick={() => {
-                                  setSelectedLecturerForDept(lecturer);
-                                  setShowDepartmentModal(true);
-                                }}
-                              >
-                                🏢 Depts
-                              </button>
-                              <button
-                                className="action-btn courses"
-                                onClick={() => {
-                                  setSelectedLecturerForCourses(lecturer);
-                                  setShowCourseAssignmentModal(true);
-                                }}
-                              >
-                                📚 Courses
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* Finance Tab - Admin Only */}
-            {activeTab === "finance" && isAdmin && (
-              <div className="tab-content">
-                <div className="tab-header">
-                  <h2>Finance Dashboard — University Revenue Overview</h2>
-                  <p>
-                    Complete financial summary and student transaction
-                    management
-                  </p>
-                </div>
-
-                {/* ==================== OVERALL REVENUE SUMMARY ==================== */}
-                <div
-                  style={{
-                    background: "#f8f9fa",
-                    padding: "25px",
-                    borderRadius: "12px",
-                    marginBottom: "30px",
-                    border: "1px solid #dee2e6",
-                  }}
-                >
-                  <h3 style={{ margin: "0 0 20px 0", color: "#495057" }}>
-                    University Revenue Summary
-                  </h3>
-
-                  {summaryLoading ? (
-                    <div style={{ textAlign: "center", padding: "20px" }}>
-                      <div className="spinner"></div>
-                      <p>Loading revenue data...</p>
-                    </div>
+                  {programs.length === 0 ? (
+                    <div className="empty-state"><p>No programs defined yet</p></div>
                   ) : (
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns:
-                          "repeat(auto-fit, minmax(250px, 1fr))",
-                        gap: "20px",
-                      }}
-                    >
-                      <div
-                        className="stat-card large"
-                        style={{
-                          background: "#e3f2fd",
-                          borderLeft: "5px solid #2196f3",
-                          padding: "20px",
-                          borderRadius: "8px",
-                        }}
-                      >
-                        <h4 style={{ margin: "0 0 10px 0", color: "#1976d2" }}>
-                          Total Billed
-                        </h4>
-                        <p
-                          style={{
-                            fontSize: "32px",
-                            fontWeight: "bold",
-                            color: "#1976d2",
-                            margin: "10px 0",
-                          }}
-                        >
-                          ${totalBilled.toFixed(2)}
-                        </p>
-                        <small>All fees charged to students</small>
-                      </div>
-
-                      <div
-                        className="stat-card large success"
-                        style={{
-                          background: "#e8f5e8",
-                          borderLeft: "5px solid #4caf50",
-                          padding: "20px",
-                          borderRadius: "8px",
-                        }}
-                      >
-                        <h4 style={{ margin: "0 0 10px 0", color: "#2e7d32" }}>
-                          Total Paid
-                        </h4>
-                        <p
-                          style={{
-                            fontSize: "32px",
-                            fontWeight: "bold",
-                            color: "#2e7d32",
-                            margin: "10px 0",
-                          }}
-                        >
-                          ${totalPaid.toFixed(2)}
-                        </p>
-                        <small>Successfully collected</small>
-                      </div>
-
-                      <div
-                        className={`stat-card large ${totalOutstanding > 0 ? "warning" : "success"}`}
-                        style={{
-                          background:
-                            totalOutstanding > 0 ? "#fff3e0" : "#e8f5e8",
-                          borderLeft: `5px solid ${totalOutstanding > 0 ? "#ff9800" : "#4caf50"}`,
-                          padding: "20px",
-                          borderRadius: "8px",
-                        }}
-                      >
-                        <h4
-                          style={{
-                            margin: "0 0 10px 0",
-                            color: totalOutstanding > 0 ? "#ef6c00" : "#2e7d32",
-                          }}
-                        >
-                          Outstanding Balance
-                        </h4>
-                        <p
-                          style={{
-                            fontSize: "32px",
-                            fontWeight: "bold",
-                            color: totalOutstanding > 0 ? "#ef6c00" : "#2e7d32",
-                            margin: "10px 0",
-                          }}
-                        >
-                          ${totalOutstanding.toFixed(2)}
-                        </p>
-                        <small>
-                          {totalOutstanding > 0
-                            ? "Still owed by students"
-                            : "All fees collected!"}
-                        </small>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* ==================== ADMIN OVERRIDE TOOL (Fees + Attendance + Exam Clearance) ==================== */}
-                <div
-                  style={{
-                    background: "#fff3e0",
-                    padding: "20px",
-                    borderRadius: "12px",
-                    marginBottom: "30px",
-                    border: "2px dashed #ff9800",
-                  }}
-                >
-                  <h3 style={{ margin: "0 0 15px 0", color: "#ef6c00" }}>
-                    🔓 Admin Override: Bypass Fees, Attendance & Exam Clearance
-                  </h3>
-                  <p style={{ marginBottom: "15px", color: "#666" }}>
-                    Allow a student to access lectures and take exams even if
-                    fees or attendance requirements are not met.
-                  </p>
-
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: "10px",
-                      flexWrap: "wrap",
-                      alignItems: "end",
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: "300px" }}>
-                      <label
-                        style={{
-                          display: "block",
-                          marginBottom: "5px",
-                          fontWeight: "bold",
-                        }}
-                      >
-                        Search Student (by ID or Name)
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="e.g. SCT-249726 or Alice"
-                        value={bypassSearch}
-                        onChange={(e) => setBypassSearch(e.target.value)}
-                        className="search-input"
-                        style={{ width: "100%", padding: "10px" }}
-                      />
-                    </div>
-                    <button
-                      className="action-btn warning"
-                      onClick={searchStudentForBypass}
-                      disabled={bypassLoading}
-                    >
-                      {bypassLoading ? "Searching..." : "Search"}
-                    </button>
-                  </div>
-
-                  {bypassStudent && (
-                    <div
-                      style={{
-                        marginTop: "20px",
-                        padding: "15px",
-                        background: "#fff8e1",
-                        borderRadius: "8px",
-                        border: "1px solid #ffb74d",
-                      }}
-                    >
-                      <strong>Found:</strong> {bypassStudent.full_name} (
-                      {bypassStudent.student_id}) — {bypassStudent.program}
-                      <br />
-                      <br />
-                     {/* Current status display */}
-<div style={{ marginBottom: "15px", fontSize: "14px" }}>
-  <strong>Current Override Status:</strong>
-  <br />
-  Fees Bypass:{" "}
-  {bypassStudent.fees_clearance_bypassed ? (
-    <span style={{ color: "#28a745" }}>✓ Enabled</span>
-  ) : (
-    <span style={{ color: "#dc3545" }}>✗ Disabled</span>
-  )}
-  <br />
-  Attendance Bypass:{" "}
-  {bypassStudent.attendance_clearance_bypassed ? (
-    <span style={{ color: "#28a745" }}>✓ Enabled</span>
-  ) : (
-    <span style={{ color: "#dc3545" }}>✗ Disabled</span>
-  )}
-  <br />
-  Exam Bypass:{" "}
-  {bypassStudent.exam_clearance_bypassed ? (
-    <span style={{ color: "#28a745" }}>✓ Enabled</span>
-  ) : (
-    <span style={{ color: "#dc3545" }}>✗ Disabled</span>
-  )}
-  <br />
-  {/* ⭐ Show expiry timer if any bypass is enabled */}
-  {bypassStudent.bypass_timestamp && (
-    <div style={{ marginTop: "10px", padding: "8px 12px", backgroundColor: "#fff3cd", borderRadius: "6px", border: "1px solid #ffc107" }}>
-      <span style={{ fontWeight: "bold", color: "#856404" }}>
-        ⏰ Expires in: {bypassStudent._bypassRemaining || "Calculating..."}
-      </span>
-      <br />
-      <span style={{ fontSize: "12px", color: "#856404" }}>
-        Enabled: {new Date(bypassStudent.bypass_timestamp).toLocaleString()}
-      </span>
-      <br />
-      <span style={{ fontSize: "12px", color: "#856404" }}>
-        Auto-reset after 24 hours
-      </span>
-    </div>
-  )}
-</div>
-                      <div
-                        style={{
-                          display: "flex",
-                          gap: "10px",
-                          flexWrap: "wrap",
-                        }}
-                      >
-                        <button
-                          className="action-btn success small"
-                          onClick={() =>
-                            handleToggleBypass("fees_clearance_bypassed")
-                          }
-                          disabled={bypassLoading}
-                        >
-                          {bypassStudent.fees_clearance_bypassed
-                            ? "Disable"
-                            : "Enable"}{" "}
-                          Fees Bypass
-                        </button>
-
-                        <button
-                          className="action-btn success small"
-                          onClick={() =>
-                            handleToggleBypass("attendance_clearance_bypassed")
-                          }
-                          disabled={bypassLoading}
-                        >
-                          {bypassStudent.attendance_clearance_bypassed
-                            ? "Disable"
-                            : "Enable"}{" "}
-                          Attendance Bypass
-                        </button>
-
-                        <button
-                          className="action-btn danger"
-                          onClick={() =>
-                            handleToggleBypass("exam_clearance_bypassed")
-                          }
-                          disabled={bypassLoading}
-                        >
-                          {bypassStudent.exam_clearance_bypassed
-                            ? "Disable"
-                            : "Enable"}{" "}
-                          Exam Bypass
-                        </button>
-                      </div>
-                      <p
-                        style={{
-                          fontSize: "12px",
-                          color: "#d32f2f",
-                          marginTop: "15px",
-                        }}
-                      >
-                        Warning: These overrides allow access to lectures and
-                        exams regardless of actual fees or attendance.
-                      </p>
-                    </div>
-                  )}
-
-                  {bypassError && (
-                    <p style={{ color: "#d32f2f", marginTop: "10px" }}>
-                      {bypassError}
-                    </p>
-                  )}
-                </div>
-
-                {/* ==================== STUDENT SEARCH & INDIVIDUAL VIEW ==================== */}
-                {!selectedFinanceStudent ? (
-                  <>
-                    <div style={{ marginBottom: "20px" }}>
-                      <input
-                        type="text"
-                        placeholder="Search students by name, ID, or email..."
-                        value={financeSearch}
-                        onChange={(e) => setFinanceSearch(e.target.value)}
-                        className="search-input"
-                        style={{
-                          width: "500px",
-                          padding: "12px",
-                          fontSize: "16px",
-                        }}
-                      />
-                    </div>
-
-                    {financeLoading ? (
-                      <div style={{ textAlign: "center", padding: "40px" }}>
-                        <div className="spinner"></div>
-                        <p>Loading student list...</p>
-                      </div>
-                    ) : financeStudents.length === 0 ? (
-                      <div className="empty-state">
-                        <p>No students found matching your search.</p>
-                      </div>
-                    ) : (
-                      <div className="table-container">
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>Student ID</th>
-                              <th>Name</th>
-                              <th>Email</th>
-                              <th>Program</th>
-                              <th>Academic Year</th>
-                              <th>Actions</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {financeStudents.map((s) => (
-                              <tr key={s.id}>
-                                <td>
-                                  <strong>{s.student_id}</strong>
-                                </td>
-                                <td>{s.full_name}</td>
-                                <td>{s.email}</td>
-                                <td>{s.program || "N/A"}</td>
-                                <td>{s.academic_year || "N/A"}</td>
-                                <td>
-                                  <button
-                                    className="action-btn view"
-                                    onClick={() => handleViewStudentFinance(s)}
-                                  >
-                                    View Finance
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <div style={{ marginBottom: "20px" }}>
-                      <button
-                        className="back-button"
-                        onClick={() => {
-                          setSelectedFinanceStudent(null);
-                          setFinanceRecords([]);
-                        }}
-                      >
-                        ← Back to Student List
-                      </button>
-                    </div>
-
-                    <h3>
-                      Financial Records — {selectedFinanceStudent.full_name}{" "}
-                      <span style={{ fontWeight: "normal", color: "#666" }}>
-                        ({selectedFinanceStudent.student_id})
-                      </span>
-                    </h3>
-
-                    {/* Individual Student Summary */}
-                    {(() => {
-                      const totalBilled = financeRecords.reduce(
-                        (sum, r) => sum + r.amount,
-                        0,
-                      );
-                      const totalPaid = financeRecords
-                        .filter((r) => r.status === "paid")
-                        .reduce((sum, r) => sum + r.amount, 0);
-                      const balance = totalBilled - totalPaid;
-
-                      return (
-                        <div
-                          style={{
-                            display: "flex",
-                            gap: "20px",
-                            margin: "30px 0",
-                            flexWrap: "wrap",
-                          }}
-                        >
-                          <div
-                            className="stat-card"
-                            style={{ flex: 1, minWidth: "200px" }}
-                          >
-                            <h4>Total Billed</h4>
-                            <p style={{ fontSize: "28px", fontWeight: "bold" }}>
-                              ${totalBilled.toFixed(2)}
-                            </p>
-                          </div>
-                          <div
-                            className="stat-card success"
-                            style={{ flex: 1, minWidth: "200px" }}
-                          >
-                            <h4>Total Paid</h4>
-                            <p
-                              style={{
-                                fontSize: "28px",
-                                fontWeight: "bold",
-                                color: "#28a745",
-                              }}
-                            >
-                              ${totalPaid.toFixed(2)}
-                            </p>
-                          </div>
-                          <div
-                            className={`stat-card ${balance > 0 ? "warning" : "success"}`}
-                            style={{ flex: 1, minWidth: "200px" }}
-                          >
-                            <h4>Outstanding</h4>
-                            <p
-                              style={{
-                                fontSize: "28px",
-                                fontWeight: "bold",
-                                color: balance > 0 ? "#dc3545" : "#28a745",
-                              }}
-                            >
-                              ${balance.toFixed(2)}
-                            </p>
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    {/* Individual Student Records Table */}
-                    <div className="table-container">
-                      {financeLoading ? (
-                        <p>Loading records...</p>
-                      ) : financeRecords.length === 0 ? (
-                        <div className="empty-state">
-                          <p>No financial records found for this student.</p>
-                        </div>
-                      ) : (
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>Date</th>
-                              <th>Description</th>
-                              <th>Amount</th>
-                              <th>Status</th>
-                              <th>Receipt #</th>
-                              <th>Actions</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {financeRecords.map((r) => (
-                              <tr key={r.id}>
-                                <td>
-                                  {r.payment_date
-                                    ? new Date(
-                                        r.payment_date,
-                                      ).toLocaleDateString()
-                                    : new Date(
-                                        r.created_at,
-                                      ).toLocaleDateString()}
-                                </td>
-                                <td>{r.description}</td>
-                                <td>${r.amount.toFixed(2)}</td>
-                                <td>
-                                  <span className={`status-badge ${r.status}`}>
-                                    {r.status.toUpperCase()}
-                                  </span>
-                                </td>
-                                <td>{r.receipt_number || "—"}</td>
-                                <td>
-                                  {r.status === "pending" && (
-                                    <button
-                                      className="action-btn success small"
-                                      onClick={() =>
-                                        handleUpdateFinanceStatus(r.id, "paid")
-                                      }
-                                    >
-                                      Mark Paid
-                                    </button>
-                                  )}
-                                  {r.status === "paid" && (
-                                    <button
-                                      className="action-btn warning small"
-                                      onClick={() =>
-                                        handleUpdateFinanceStatus(
-                                          r.id,
-                                          "pending",
-                                        )
-                                      }
-                                    >
-                                      Revert
-                                    </button>
-                                  )}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-            {/* Attendance Tab */}
-            {/* Attendance Tab */}
-            {activeTab === "attendance" && (
-              <div className="tab-content">
-                <div className="tab-header">
-                  <h2>Attendance Records History</h2>
-                  <div className="tab-actions">
-                    <div className="attendance-rate large">
-                      Overall Attendance Rate:{" "}
-                      <strong>{stats.attendanceRate}%</strong>
-                    </div>
-                    <button
-                      className="add-button"
-                      onClick={() => handleOpenAttendanceModal()}
-                    >
-                      + Record Attendance
-                    </button>
-                    <button
-                      onClick={fetchAttendanceData}
-                      style={{ marginLeft: "10px", padding: "8px 12px" }}
-                    >
-                      🔄 Force Refresh List
-                    </button>
-                  </div>
-                </div>
-                {/* Lecturer Info Banner */}
-                {isLecturer && (
-                  <div
-                    style={{
-                      background: "#e3f2fd",
-                      padding: "12px 16px",
-                      borderRadius: "8px",
-                      margin: "10px 0 20px 0",
-                      fontSize: "14px",
-                      color: "#1976d2",
-                      borderLeft: "4px solid #1976d2",
-                    }}
-                  >
-                    <strong>👨‍🏫 Lecturer View:</strong> Showing attendance only
-                    for students in your assigned departments:
-                    <strong>{departmentCodes.join(", ")}</strong>
-                  </div>
-                )}
-                <div style={{ overflowX: "auto" }}>
-                  {attendanceRecords.length === 0 ? (
-                    <div
-                      style={{
-                        textAlign: "center",
-                        padding: "60px 20px",
-                        backgroundColor: "white",
-                        borderRadius: "12px",
-                        boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
-                        marginTop: "20px",
-                      }}
-                    >
-                      <i
-                        className="fas fa-calendar-check"
-                        style={{
-                          fontSize: "64px",
-                          color: "#dee2e6",
-                          marginBottom: "20px",
-                        }}
-                      ></i>
-                      <h3 style={{ color: "#666", margin: "0 0 10px 0" }}>
-                        No attendance records yet
-                      </h3>
-                      <p style={{ color: "#999", fontSize: "16px" }}>
-                        Records will appear here once attendance is marked for
-                        students.
-                      </p>
-                    </div>
-                  ) : (
-                    <table className="data-table" style={{ minWidth: "800px" }}>
-                      <thead>
-                        <tr>
-                          <th>Date</th>
-                          <th>Day</th>
-                          <th>Student</th>
-                          <th>Status</th>
-                          <th>Recorded By</th>
-                          <th>Notes</th>
-                          <th>Actions</th>
-                        </tr>
-                      </thead>
+                    <table className="data-table">
+                      <thead><tr><th>Program Name</th><th>Code</th><th>Actions</th></tr></thead>
                       <tbody>
-                        {attendanceRecords
-                          .sort((a, b) => new Date(b.date) - new Date(a.date))
-                          .map((record) => {
-                            const date = new Date(record.date);
-                            const dayNames = [
-                              "Sunday",
-                              "Monday",
-                              "Tuesday",
-                              "Wednesday",
-                              "Thursday",
-                              "Friday",
-                              "Saturday",
-                            ];
-                            const dayName = dayNames[date.getDay()];
-                            const formattedDate = date.toLocaleDateString(
-                              "en-US",
-                              {
-                                year: "numeric",
-                                month: "short",
-                                day: "numeric",
-                              },
-                            );
-                            return (
-                              <tr key={record.id}>
-                                <td>
-                                  <div>
-                                    <strong>{formattedDate}</strong>
-                                  </div>
-                                  <div className="small-text">{dayName}</div>
-                                </td>
-                                <td>{dayName}</td>
-                                <td>
-                                  <div>
-                                    <strong>
-                                      {record.students?.full_name ||
-                                        "Unknown Student"}
-                                    </strong>
-                                  </div>
-                                  <div className="small-text">
-                                    ID:{" "}
-                                    {record.students?.student_id ||
-                                      record.student_id ||
-                                      "N/A"}
-                                  </div>
-                                </td>
-                                <td>
-                                  <span
-                                    className={`status-badge ${record.status}`}
-                                  >
-                                    {record.status?.charAt(0).toUpperCase() +
-                                      record.status?.slice(1)}
-                                  </span>
-                                </td>
-                                <td>
-                                  {record.recorded_by_name ||
-                                    (record.recorded_by === profile?.id
-                                      ? `${profile?.full_name} (You)`
-                                      : "Admin/Lecturer")}
-                                </td>
-                                <td>
-                                  {record.notes ? (
-                                    <span
-                                      title={record.notes}
-                                      style={{
-                                        display: "block",
-                                        maxWidth: "200px",
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                        whiteSpace: "nowrap",
-                                      }}
-                                    >
-                                      {record.notes}
-                                    </span>
-                                  ) : (
-                                    <span className="text-muted">—</span>
-                                  )}
-                                </td>
-                                <td>
-                                  <div className="action-buttons flat">
-                                    <button
-                                      className="action-btn edit small"
-                                      onClick={() =>
-                                        handleOpenAttendanceModal(record)
-                                      }
-                                      title="Edit"
-                                    >
-                                      Edit
-                                    </button>
-                                    <button
-                                      className="action-btn delete small"
-                                      onClick={() =>
-                                        handleDeleteAttendanceRecord(record.id)
-                                      }
-                                      title="Delete"
-                                    >
-                                      Delete
-                                    </button>
-                                  </div>
-                                </td>
-                              </tr>
-                            );
-                          })}
+                        {programs.map((program) => (
+                          <tr key={program.id}>
+                            <td><strong>{program.name}</strong></td>
+                            <td><span className="dept-badge">{program.code}</span></td>
+                            <td>
+                              <div className="action-buttons flat">
+                                <button className="action-btn edit small" onClick={() => { setEditingProgram(program); setNewProgram({ name: program.name, code: program.code }); setShowProgramModal(true); }}>Edit</button>
+                                <button className="action-btn delete small" onClick={() => handleDeleteProgram(program.id, program.name)}>Delete</button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   )}
@@ -10648,3768 +4399,285 @@ useEffect(() => {
               </div>
             )}
 
-            {/* Settings Tab - Admin Only */}
-            {activeTab === "settings" && isAdmin && (
+            {activeTab === "departments" && <DepartmentManager isAdmin={isAdmin} showToast={showToast} refreshTrigger={activeTab === "departments" ? 1 : 0} />}
+            {activeTab === "faculties" && <FacultyManager isAdmin={isAdmin} showToast={showToast} refreshTrigger={activeTab === "faculties" ? 1 : 0} />}
+
+            {activeTab === "settings" && (
               <div className="tab-content">
                 <h2>⚙ System Settings</h2>
                 <div className="settings-grid">
                   <div className="setting-card">
                     <h3>Academic Settings</h3>
-                    <div className="setting-item">
-                      <label className="setting-label">Academic Year</label>
-                      <select
-                        className="setting-select"
-                        defaultValue="2024/2025"
-                      >
-                        <option>2023/2024</option>
-                        <option>2024/2025</option>
-                        <option>2025/2026</option>
-                      </select>
-                    </div>
-                    <div className="setting-item">
-                      <label className="setting-label">Semester</label>
-                      <select className="setting-select" defaultValue="1">
-                        <option value="1">Semester 1</option>
-                        <option value="2">Semester 2</option>
-                      </select>
-                    </div>
+                    <div className="setting-item"><label className="setting-label">Academic Year</label><select className="setting-select" defaultValue="2024/2025"><option>2023/2024</option><option>2024/2025</option><option>2025/2026</option></select></div>
+                    <div className="setting-item"><label className="setting-label">Semester</label><select className="setting-select" defaultValue="1"><option value="1">Semester 1</option><option value="2">Semester 2</option></select></div>
                     <button className="save-button">Save Changes</button>
                   </div>
-
                   <div className="setting-card">
                     <h3>System Preferences</h3>
-                    <div className="setting-item">
-                      <label className="setting-label">
-                        <input
-                          type="checkbox"
-                          defaultChecked
-                          className="setting-checkbox"
-                        />
-                        Email Notifications
-                      </label>
-                    </div>
-                    <div className="setting-item">
-                      <label className="setting-label">
-                        <input
-                          type="checkbox"
-                          defaultChecked
-                          className="setting-checkbox"
-                        />
-                        Auto Backup
-                      </label>
-                    </div>
-                    <div className="setting-item">
-                      <label className="setting-label">
-                        <input type="checkbox" className="setting-checkbox" />
-                        Maintenance Mode
-                      </label>
-                    </div>
+                    <div className="setting-item"><label className="setting-label"><input type="checkbox" defaultChecked className="setting-checkbox" /> Email Notifications</label></div>
+                    <div className="setting-item"><label className="setting-label"><input type="checkbox" defaultChecked className="setting-checkbox" /> Auto Backup</label></div>
+                    <div className="setting-item"><label className="setting-label"><input type="checkbox" className="setting-checkbox" /> Maintenance Mode</label></div>
                     <button className="save-button">Update Preferences</button>
                   </div>
                 </div>
               </div>
-              )}
-              
-{/* Notes Upload Tab - For Lecturers and Admins */}
-{activeTab === "notes-upload" && (isLecturer || isAdmin) && (
-  <div className="tab-content">
-    <div className="tab-header">
-      <div>
-        <h2>📚 Upload Course Materials</h2>
-        <p>Share lecture notes, study materials, and tutorial videos with your students</p>
-      </div>
-      <button
-        className="add-button"
-        onClick={() => setShowNotesUpload(!showNotesUpload)}
-      >
-        {showNotesUpload ? '✕ Close' : '+ Upload Materials'}
-      </button>
-    </div>
-
-{/* Upload Form */}
-{showNotesUpload && (
-  <div className="upload-section" style={{
-    background: 'white',
-    padding: '24px',
-    borderRadius: '12px',
-    marginBottom: '30px',
-    border: '2px solid #e9ecef',
-  }}>
-    <h3 style={{ marginBottom: '20px', color: '#2c3e50' }}>
-      📤 Upload New Materials
-    </h3>
-    
-    <div className="modal-form">
-      {/* Material Type Selection */}
-      <div className="form-group">
-        <label className="form-label">Material Type *</label>
-        <select
-          value={noteMaterialType}
-          onChange={(e) => setNoteMaterialType(e.target.value)}
-          className="form-select"
-        >
-          <option value="notes">📄 Notes / Documents (PDF, DOC, etc.)</option>
-          <option value="video">🎬 Video Tutorials (MP4, etc.)</option>
-        </select>
-        <small>
-          {noteMaterialType === 'notes' 
-            ? 'Upload PDFs, Word documents, presentations, etc.' 
-            : 'Upload MP4 video tutorials for students'}
-        </small>
-      </div>
-
-      {/* ⭐ COURSE SELECTION - MANDATORY FOR ALL UPLOADS */}
-      <div className="form-group" style={{
-        background: "#e3f2fd",
-        padding: "16px",
-        borderRadius: "10px",
-        border: "2px solid #1976d2",
-        marginBottom: "16px"
-      }}>
-        <label className="form-label">
-          Course * 
-          <span style={{ color: "#dc3545", fontWeight: "bold", marginLeft: "5px" }}>
-            (Required)
-          </span>
-        </label>
-        <select
-          value={noteCourseId}
-          onChange={(e) => setNoteCourseId(e.target.value)}
-          className="form-select"
-          required
-          style={{
-            borderColor: !noteCourseId ? "#dc3545" : ""
-          }}
-        >
-          <option value="">-- Select a course --</option>
-          {noteCourses.map((course) => (
-          <option key={course.id} value={course.id}>
-  {course.course_code} - {course.course_name} ({course.department_code})
-</option>
-          ))}
-        </select>
-        {!noteCourseId && (
-          <p style={{ color: "#dc3545", fontSize: "12px", marginTop: "5px" }}>
-            ⚠️ Please select a course to ensure materials are organized correctly
-          </p>
-        )}
-        {noteCourseId && (
-          <div style={{ 
-            marginTop: "8px", 
-            padding: "8px 12px", 
-            backgroundColor: "#d4edda", 
-            borderRadius: "4px",
-            fontSize: "13px",
-            color: "#155724"
-          }}>
-            ✅ Uploading for: <strong>{noteCourses.find(c => c.id === noteCourseId)?.course_code}</strong>
-          </div>
-        )}
-       
-      </div>
-
-      {/* Target Cohort - Only for Videos */}
-      {noteMaterialType === 'video' && (
-        <div style={{
-          background: "#f0fff4",
-          padding: "16px",
-          borderRadius: "10px",
-          marginBottom: "16px",
-          border: "2px solid #388e3c"
-        }}>
-          <h4 style={{ margin: "0 0 10px 0", color: "#388e3c" }}>
-            🎯 Target Cohort (for Videos) *
-          </h4>
-          <div className="form-row">
-            <div className="form-group">
-              <label>Academic Year *</label>
-              <input
-                type="text"
-                value={selectedCohort.academic_year}
-                onChange={(e) => setSelectedCohort({
-                  ...selectedCohort,
-                  academic_year: e.target.value.trim()
-                })}
-                placeholder="e.g. 2025/2029"
-                className="form-input"
-                required
-              />
-            </div>
-            <div className="form-group">
-              <label>Year *</label>
-              <select
-                value={selectedCohort.year_of_study}
-                onChange={(e) => setSelectedCohort({
-                  ...selectedCohort,
-                  year_of_study: parseInt(e.target.value)
-                })}
-                className="form-select"
-                required
-              >
-                <option value="">Select Year</option>
-                {[1, 2, 3, 4].map(y => (
-                  <option key={y} value={y}>Year {y}</option>
-                ))}
-              </select>
-            </div>
-            <div className="form-group">
-              <label>Semester *</label>
-              <select
-                value={selectedCohort.semester}
-                onChange={(e) => setSelectedCohort({
-                  ...selectedCohort,
-                  semester: parseInt(e.target.value)
-                })}
-                className="form-select"
-                required
-              >
-                <option value="">Select Semester</option>
-                <option value={1}>Semester 1</option>
-                <option value={2}>Semester 2</option>
-              </select>
-            </div>
-          </div>
-          <div style={{
-            marginTop: "10px",
-            padding: "8px 12px",
-            background: "#d4edda",
-            borderRadius: "4px",
-            fontSize: "13px",
-            color: "#155724"
-          }}>
-            📌 Videos will be organized by: Program/Course/Year/Cohort
-          </div>
-        </div>
-      )}
-
-
-
-
-
-      {/* File Upload */}
-      <div className="form-group">
-        <label className="form-label">
-          {noteMaterialType === 'notes' ? 'Files *' : 'Video Files *'}
-        </label>
-        <div
-          className="file-upload-area"
-          onClick={() => notesFileInputRef.current?.click()}
-          onDragOver={(e) => {
-            e.preventDefault();
-            e.currentTarget.classList.add('drag-over');
-          }}
-          onDragLeave={(e) => {
-            e.preventDefault();
-            e.currentTarget.classList.remove('drag-over');
-          }}
-          onDrop={(e) => {
-            e.preventDefault();
-            e.currentTarget.classList.remove('drag-over');
-            setNotesFiles(Array.from(e.dataTransfer.files));
-          }}
-          style={{
-            border: '2px dashed #007bff',
-            padding: '40px',
-            textAlign: 'center',
-            borderRadius: '8px',
-            cursor: 'pointer',
-            backgroundColor: '#f8f9fa',
-          }}
-        >
-          <input
-            type="file"
-            ref={notesFileInputRef}
-            multiple
-            accept={noteMaterialType === 'notes' 
-              ? '.pdf,.doc,.docx,.ppt,.pptx,.zip,.txt,.jpg,.png' 
-              : '.mp4,.mov,.avi,.mkv,.webm'}
-            onChange={(e) => {
-              if (e.target.files) {
-                setNotesFiles(Array.from(e.target.files));
-              }
-            }}
-            style={{ display: 'none' }}
-          />
-          <div style={{ fontSize: '48px', marginBottom: '12px' }}>
-            {noteMaterialType === 'notes' ? '📄' : '🎬'}
-          </div>
-          <p><strong>Drop files here or click to browse</strong></p>
-          <p className="small-text">
-            {noteMaterialType === 'notes' 
-              ? 'PDF, DOC, DOCX, PPT, PPTX, ZIP, Images' 
-              : 'MP4, MOV, AVI, MKV, WebM (max 500MB recommended)'}
-          </p>
-        </div>
-
-        {uploadingNotes && (
-          <div className="upload-progress" style={{ marginTop: '12px' }}>
-            <div className="progress-bar">
-              <div
-                className="progress-fill"
-                style={{ width: `${notesUploadProgress}%` }}
-              ></div>
-            </div>
-            <p style={{ textAlign: 'center', marginTop: '8px' }}>
-              Uploading: {notesUploadProgress}%
-            </p>
-          </div>
-        )}
-
-        {notesFiles.length > 0 && (
-          <div className="file-list" style={{ marginTop: '12px' }}>
-            <h4>Selected Files ({notesFiles.length})</h4>
-            <div className="files-grid">
-              {notesFiles.map((file, index) => (
-                <div key={index} className="file-item" style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  padding: '8px 12px',
-                  background: '#f1f3f5',
-                  borderRadius: '6px',
-                  marginBottom: '6px',
-                }}>
-                  <span>
-                    {noteMaterialType === 'video' ? '🎬' : '📄'} {file.name} ({(file.size / 1024 / 1024).toFixed(2)} MB)
-                  </span>
-                  <button
-                    onClick={() => setNotesFiles(prev => prev.filter((_, i) => i !== index))}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: '#dc3545',
-                      cursor: 'pointer',
-                      fontSize: '18px',
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-    {/* Buttons */}
-<div className="modal-actions" style={{ marginTop: '20px' }}>
-  <button
-    className="cancel-button"
-    onClick={() => {
-      if (uploadingNotes) {
-        // Stop the network upload
-        cancelNotesUpload();
-      }
-      setShowNotesUpload(false);
-      setNotesFiles([]);
-      setNoteTitle('');
-      setNoteCategory('');
-      setNoteDescription('');
-      setNoteCourseId('');
-      setNoteMaterialType('notes');
-      setSelectedCohort({
-        academic_year: '',
-        year_of_study: 1,
-        semester: 1,
-      });
-    }}
-  >
-    {uploadingNotes ? 'Stop Upload' : 'Cancel'}
-  </button>
-  <button
-    className="confirm-button"
-    onClick={uploadNotes}
-    disabled={
-      uploadingNotes ||
-      notesFiles.length === 0 ||
-      !noteCourseId ||
-      (noteMaterialType === 'video' && !selectedCohort.academic_year?.trim())
-    }
-    style={{
-      opacity:
-        uploadingNotes ||
-        notesFiles.length === 0 ||
-        !noteCourseId ||
-        (noteMaterialType === 'video' && !selectedCohort.academic_year?.trim())
-          ? 0.6
-          : 1,
-    }}
-  >
-    {uploadingNotes
-      ? 'Uploading...'
-      : `📤 Upload ${noteMaterialType === 'video' ? 'Video' : 'Notes'}`}
-  </button>
-</div>
-    </div>
-  </div>
-)}
-
-   
-  </div>
-)}
+            )}
           </>
-        )}
-        {/* Timetable Management Tab - Admin Only */}
-        {activeTab === "timetables" && isAdmin && (
-          <div className="tab-content">
-            <div className="tab-header">
-              <h2>⏰ Timetable Management</h2>
-              <button
-                className="add-button"
-                onClick={() => {
-                  setNewTimetable({
-                    program_id: "",
-                    academic_year: "2024/2025",
-                    semester: 1,
-                    year_of_study: 1,
-                    is_active: true,
-                  });
-                  setShowTimetableModal(true);
-                }}
-              >
-                + Create New Timetable
-              </button>
-            </div>
-
-            <div className="timetables-grid">
-              {timetables.length === 0 ? (
-                <div className="empty-state">
-                  <p>No timetables created yet</p>
-                  <button
-                    onClick={() => setShowTimetableModal(true)}
-                    className="add-button"
-                  >
-                    Create First Timetable
-                  </button>
-                </div>
-              ) : (
-                timetables.map((tt) => (
-                  <div key={tt.id} className="timetable-card expandable">
-                    <div className="timetable-header">
-                      <h3>
-                        {tt.programs?.name || "Unknown Program"} - Year{" "}
-                        {tt.year_of_study}
-                      </h3>
-                      <div>
-                        <span className="semester-badge">
-                          Semester {tt.semester}
-                        </span>
-                        <span
-                          className={`status-badge ${tt.is_active ? "active" : "inactive"}`}
-                        >
-                          {tt.is_active ? "Active" : "Inactive"}
-                        </span>
-                      </div>
-                    </div>
-                    <p>{tt.academic_year}</p>
-                    <p className="small-text">
-                      {tt.program_timetable_slots?.length || 0} slot
-                      {(tt.program_timetable_slots?.length || 0) !== 1
-                        ? "s"
-                        : ""}
-                    </p>
-                    <div className="timetable-actions">
-                      <button
-                        className="action-btn view"
-                        onClick={() =>
-                          setExpandedTimetableId(
-                            expandedTimetableId === tt.id ? null : tt.id,
-                          )
-                        }
-                      >
-                        {expandedTimetableId === tt.id
-                          ? "↑ Hide Slots"
-                          : "↓ View & Edit Slots"}
-                      </button>
-                    </div>
-
-                    {/* Expanded Slots Table */}
-                    {expandedTimetableId === tt.id && (
-                      <div
-                        className="expanded-slots-section"
-                        style={{ marginTop: "20px" }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            marginBottom: "15px",
-                          }}
-                        >
-                          <h4 style={{ margin: 0 }}>Time Slots</h4>
-                          <button
-                            className="add-button small"
-                            onClick={() => {
-                              setSelectedTimetable(tt);
-                              setEditingSlot(null);
-                              setNewSlot({
-                                course_code: "",
-                                course_name: "",
-                                lecturer_id: "",
-                                day_of_week: 1,
-                                start_time: "08:00",
-                                end_time: "10:00",
-                                room_number: "",
-                                building: "CS Building",
-                                slot_type: "lecture",
-                              });
-                              setShowSlotModal(true);
-                            }}
-                          >
-                            + Add Slot
-                          </button>
-                        </div>
-
-                        {tt.program_timetable_slots?.length > 0 ? (
-                          <div className="table-container">
-                            <table className="data-table">
-                              <thead>
-                                <tr>
-                                  <th>Day</th>
-                                  <th>Time</th>
-                                  <th>Course</th>
-                                  <th>Lecturer</th>
-                                  <th>Location</th>
-                                  <th>Type</th>
-                                  <th>Actions</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {tt.program_timetable_slots.map((slot) => (
-                                  <tr key={slot.id}>
-                                    <td>
-                                      {
-                                        [
-                                          "Sun",
-                                          "Mon",
-                                          "Tue",
-                                          "Wed",
-                                          "Thu",
-                                          "Fri",
-                                          "Sat",
-                                        ][slot.day_of_week]
-                                      }
-                                    </td>
-                                    <td>
-                                      {slot.start_time} – {slot.end_time}
-                                    </td>
-
-                                    <td>
-                                      <strong>{slot.course_code}</strong>
-                                      <br />
-                                      <small>{slot.course_name}</small>
-                                    </td>
-                                    <td>
-                                      {slot.lecturers?.full_name ||
-                                        "Not Assigned"}
-                                    </td>
-                                    <td>
-                                      {slot.room_number} {slot.building}
-                                    </td>
-                                    <td>
-                                      <span className="status-badge">
-                                        {slot.slot_type}
-                                      </span>
-                                    </td>
-                                    <td>
-                                      <div
-                                        style={{ display: "flex", gap: "8px" }}
-                                      >
-                                        <button
-                                          className="action-btn edit small"
-                                          onClick={() => {
-                                            setSelectedTimetable(tt);
-                                            setEditingSlot(slot);
-                                            setNewSlot({
-                                              course_code: slot.course_code,
-                                              course_name: slot.course_name,
-                                              lecturer_id:
-                                                slot.lecturer_id || "",
-                                              day_of_week: slot.day_of_week,
-                                              start_time: slot.start_time,
-                                              end_time: slot.end_time,
-                                              room_number: slot.room_number,
-                                              building: slot.building,
-                                              slot_type: slot.slot_type,
-                                            });
-                                            setShowSlotModal(true);
-                                          }}
-                                        >
-                                          Edit
-                                        </button>
-                                        <button
-                                          className="action-btn delete small"
-                                          onClick={() =>
-                                            handleDeleteSlot(slot.id)
-                                          }
-                                        >
-                                          Delete
-                                        </button>
-                                      </div>
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        ) : (
-                          <p
-                            className="text-muted"
-                            style={{ textAlign: "center", padding: "20px" }}
-                          >
-                            No slots added yet. Click "Add Slot" to create one.
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-            {/* Detailed View of Selected Timetable */}
-            {selectedTimetable && (
-              <div className="timetable-detail" style={{ marginTop: "30px" }}>
-                <div
-                  className="section-header"
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
-                  <h3>
-                    {selectedTimetable.programs?.name} - Year{" "}
-                    {selectedTimetable.year_of_study} Sem{" "}
-                    {selectedTimetable.semester}
-                  </h3>
-                  <div>
-                    <button
-                      className="add-button small"
-                      onClick={() => {
-                        setEditingSlot(null);
-                        setNewSlot({
-                          course_code: "",
-                          course_name: "",
-                          lecturer_id: "",
-                          day_of_week: 1,
-                          start_time: "08:00",
-                          end_time: "10:00",
-                          room_number: "",
-                          building: "CS Building",
-                          slot_type: "lecture",
-                        });
-                        setShowSlotModal(true);
-                      }}
-                    >
-                      + Add Slot
-                    </button>
-                    <button
-                      className="back-button"
-                      onClick={() => setSelectedTimetable(null)}
-                      style={{ marginLeft: "10px" }}
-                    >
-                      ← Back
-                    </button>
-                  </div>
-                </div>
-
-                <div className="table-container">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Day</th>
-                        <th>Time</th>
-                        <th>Course</th>
-                        <th>Lecturer</th>
-                        <th>Location</th>
-                        <th>Type</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selectedTimetable.program_timetable_slots?.length > 0 ? (
-                        selectedTimetable.program_timetable_slots.map(
-                          (slot) => (
-                            <tr key={slot.id}>
-                              <td>
-                                {
-                                  [
-                                    "Sun",
-                                    "Mon",
-                                    "Tue",
-                                    "Wed",
-                                    "Thu",
-                                    "Fri",
-                                    "Sat",
-                                  ][slot.day_of_week]
-                                }
-                              </td>
-                              <td>
-                                {slot.start_time} – {slot.end_time}
-                              </td>
-                              <td>
-                                <strong>{slot.course_code}</strong>
-                                <br />
-                                <small>{slot.course_name}</small>
-                              </td>
-                              <td>
-                                {slot.lecturers?.full_name || "Not Assigned"}
-                              </td>
-                              <td>
-                                {slot.room_number} {slot.building}
-                              </td>
-                              <td>
-                                <span className="status-badge">
-                                  {slot.slot_type}
-                                </span>
-                              </td>
-                              <td>
-                                <div
-                                  style={{
-                                    display: "flex",
-                                    gap: "8px",
-                                    flexWrap: "wrap",
-                                  }}
-                                >
-                                  <button
-                                    className="action-btn edit small"
-                                    onClick={() => {
-                                      setEditingSlot(slot);
-                                      setNewSlot({
-                                        course_code: slot.course_code,
-                                        course_name: slot.course_name,
-                                        lecturer_id: slot.lecturer_id || "",
-                                        day_of_week: slot.day_of_week,
-                                        start_time: slot.start_time,
-                                        end_time: slot.end_time,
-                                        room_number: slot.room_number,
-                                        building: slot.building,
-                                        slot_type: slot.slot_type,
-                                      });
-                                      setShowSlotModal(true);
-                                    }}
-                                  >
-                                    Edit
-                                  </button>
-                                  <button
-                                    className="action-btn delete small"
-                                    onClick={() => handleDeleteSlot(slot.id)}
-                                  >
-                                    Delete
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ),
-                        )
-                      ) : (
-                        <tr>
-                          <td
-                            colSpan="7"
-                            style={{ textAlign: "center", padding: "20px" }}
-                          >
-                            No slots added yet
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-        {/* ==================== ALL FILES MANAGER - ADMIN ONLY ==================== */}
-        {activeTab === "all-files" && isAdmin && (
-          <div className="tab-content">
-            <div className="tab-header">
-              <h2>🗂️ University File Manager (Admin)</h2>
-              <p>
-                Full access to all uploaded files across the system — including
-                student submissions
-              </p>
-              <div className="tab-actions">
-                <button
-                  className="refresh-button"
-                  onClick={fetchAllBucketFiles}
-                  disabled={adminBucketLoading}
-                >
-                  🔄 {adminBucketLoading ? "Loading..." : "Refresh All Files"}
-                </button>
-              </div>
-            </div>
-
-            {/* Bucket Tabs */}
-            <div
-              className="bucket-tabs"
-              style={{
-                display: "flex",
-                gap: "0",
-                marginBottom: "30px",
-                borderBottom: "3px solid #e3e6ea",
-                overflowX: "auto",
-              }}
-            >
-              {adminBuckets.map((bucket) => {
-                const count = adminBucketFiles[bucket]?.length || 0;
-                const isActive = activeAdminBucket === bucket;
-                const displayName =
-                  bucket === "assignments"
-                    ? "Student Assignment Submissions"
-                    : bucket === "lecturerbucket"
-                      ? "Lecturer Assignment Uploads"
-                      : bucket === "Student exam"
-                        ? "Student Exams Submissions"
-                        : bucket === "Lecturer exam"
-                          ? "Lecturer Exams uploads"
-                          : bucket === "Tutorials"
-                            ? "Tutorials uploads"
-                            : bucket;
-                return (
-                  <button
-                    key={bucket}
-                    onClick={() => setActiveAdminBucket(bucket)}
-                    style={{
-                      flex: "1 1 0",
-                      minWidth: "180px",
-                      padding: "16px 24px",
-                      border: "none",
-                      borderBottom: isActive
-                        ? "5px solid #d32f2f"
-                        : "5px solid transparent",
-                      backgroundColor: isActive ? "#ffebee" : "transparent",
-                      color: isActive ? "#d32f2f" : "#555",
-                      fontWeight: isActive ? "700" : "600",
-                      fontSize: "16px",
-                      cursor: "pointer",
-                      transition: "all 0.3s ease",
-                    }}
-                  >
-                    {displayName}
-                    <span
-                      style={{
-                        marginLeft: "12px",
-                        padding: "6px 14px",
-                        backgroundColor: isActive ? "#d32f2f" : "#e0e0e0",
-                        color: "white",
-                        borderRadius: "20px",
-                        fontSize: "14px",
-                        fontWeight: "bold",
-                      }}
-                    >
-                      {adminBucketLoading && isActive ? "..." : count}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Files Table */}
-            {adminBucketLoading ? (
-              <div style={{ textAlign: "center", padding: "100px" }}>
-                <div className="spinner"></div>
-                <p>Loading all files from {activeAdminBucket}...</p>
-              </div>
-            ) : adminBucketFiles[activeAdminBucket]?.length === 0 ? (
-              <div className="empty-state">
-                <p>No files found in {activeAdminBucket}</p>
-              </div>
-            ) : (
-              <div className="table-container">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>File Name</th>
-                      <th>Size</th>
-                      <th>Uploaded</th>
-                      <th>Full Path</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {adminBucketFiles[activeAdminBucket].map((file, idx) => (
-                      <tr key={idx}>
-                        <td>
-                          <strong>{file.name}</strong>
-                        </td>
-                        <td>
-                          {file.size
-                            ? `${(file.size / 1024 / 1024).toFixed(2)} MB`
-                            : "—"}
-                        </td>
-                        <td>
-                          {file.created_at
-                            ? new Date(file.created_at).toLocaleDateString()
-                            : "—"}
-                        </td>
-                        <td
-                          style={{
-                            fontSize: "13px",
-                            color: "#666",
-                            wordBreak: "break-all",
-                          }}
-                        >
-                          📁 {file.fullPath}
-                        </td>
-                        <td>
-                          <div className="action-buttons flat">
-                            <a
-                              href={file.publicUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="action-btn view small"
-                            >
-                              👁️ View/Download
-                            </a>
-                            <button
-                              className="action-btn delete small"
-                              onClick={() =>
-                                handleDeleteFile(
-                                  activeAdminBucket,
-                                  file.fullPath,
-                                )
-                              }
-                              disabled={
-                                deletingFile ===
-                                `${activeAdminBucket}-${file.fullPath}`
-                              }
-                            >
-                              {deletingFile ===
-                              `${activeAdminBucket}-${file.fullPath}`
-                                ? "Deleting..."
-                                : "🗑️ Delete"}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            <div
-              style={{
-                marginTop: "40px",
-                padding: "20px",
-                background: "#ffebee",
-                borderRadius: "12px",
-                border: "2px solid #ef9a9a",
-                textAlign: "center",
-                color: "#c62828",
-              }}
-            >
-              <strong>⚠️ ADMIN POWER:</strong> You can permanently delete any
-              file from any bucket, including student exam/assignment
-              submissions.
-              <br />
-              Use responsibly.
-            </div>
-          </div>
-        )}
-
-        {activeTab === "complete-courses" && isAdmin && (
-          <div className="tab-content">
-            <div className="tab-header">
-              <h2>✅ Course Completion Management</h2>
-              <p>
-                Mark courses as completed for a semester OR reverse previously
-                marked courses.
-              </p>
-            </div>
-
-            {/* Toggle between Mark and Reverse modes */}
-            <div
-              className="mode-toggle"
-              style={{
-                marginBottom: "20px",
-                display: "flex",
-                gap: "10px",
-                background: "#f8f9fa",
-                padding: "15px",
-                borderRadius: "10px",
-                border: "1px solid #dee2e6",
-              }}
-            >
-              <button
-                className={`mode-button ${!showReversalMode ? "active" : ""}`}
-                onClick={() => {
-                  setShowReversalMode(false);
-                  setSelectedCoursesForReversal([]);
-                }}
-                style={{
-                  flex: 1,
-                  padding: "12px 20px",
-                  border: "2px solid",
-                  borderColor: !showReversalMode ? "#007bff" : "#dee2e6",
-                  background: !showReversalMode ? "#007bff" : "white",
-                  color: !showReversalMode ? "white" : "#495057",
-                  borderRadius: "8px",
-                  cursor: "pointer",
-                  fontWeight: "bold",
-                  fontSize: "14px",
-                  transition: "all 0.3s",
-                }}
-              >
-                📝 Mark as Completed
-              </button>
-              <button
-                className={`mode-button ${showReversalMode ? "active" : ""}`}
-                onClick={() => {
-                  setShowReversalMode(true);
-                  fetchCompletedCourses();
-                }}
-                style={{
-                  flex: 1,
-                  padding: "12px 20px",
-                  border: "2px solid",
-                  borderColor: showReversalMode ? "#dc3545" : "#dee2e6",
-                  background: showReversalMode ? "#dc3545" : "white",
-                  color: showReversalMode ? "white" : "#495057",
-                  borderRadius: "8px",
-                  cursor: "pointer",
-                  fontWeight: "bold",
-                  fontSize: "14px",
-                  transition: "all 0.3s",
-                }}
-              >
-                ↩️ Reverse Completion
-              </button>
-            </div>
-
-            {/* FILTERS SECTION - Academic Year is now text input */}
-            <div
-              className="filters-section"
-              style={{
-                padding: "20px",
-                background: showReversalMode ? "#fff8f8" : "#f8fff8",
-                borderRadius: "10px",
-                marginBottom: "20px",
-              }}
-            >
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Program (Optional)</label>
-                  <select
-                    value={
-                      showReversalMode
-                        ? reversalFilters.program_id
-                        : completionFilters.program_id
-                    }
-                    onChange={(e) =>
-                      showReversalMode
-                        ? setReversalFilters({
-                            ...reversalFilters,
-                            program_id: e.target.value,
-                          })
-                        : setCompletionFilters({
-                            ...completionFilters,
-                            program_id: e.target.value,
-                          })
-                    }
-                    className="form-select"
-                  >
-                    <option value="">All Programs</option>
-                    {programs.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} ({p.code})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Academic Year - Manual Text Input */}
-                <div className="form-group">
-                  <label>Academic Year (e.g. 2025/2029) *</label>
-                  <input
-                    type="text"
-                    value={
-                      showReversalMode
-                        ? reversalFilters.academic_year
-                        : completionFilters.academic_year
-                    }
-                    onChange={(e) =>
-                      showReversalMode
-                        ? setReversalFilters({
-                            ...reversalFilters,
-                            academic_year: e.target.value.trim(),
-                          })
-                        : setCompletionFilters({
-                            ...completionFilters,
-                            academic_year: e.target.value.trim(),
-                          })
-                    }
-                    placeholder="Enter academic year (e.g. 2025/2029)"
-                    className="form-input"
-                    required
-                  />
-                  <small>Admin enters full range manually</small>
-                </div>
-
-                <div className="form-group">
-                  <label>Year of Study *</label>
-                  <select
-                    value={
-                      showReversalMode
-                        ? reversalFilters.year_of_study
-                        : completionFilters.year_of_study
-                    }
-                    onChange={(e) =>
-                      showReversalMode
-                        ? setReversalFilters({
-                            ...reversalFilters,
-                            year_of_study: parseInt(e.target.value),
-                          })
-                        : setCompletionFilters({
-                            ...completionFilters,
-                            year_of_study: parseInt(e.target.value),
-                          })
-                    }
-                    className="form-select"
-                  >
-                    <option value="">Select Year</option>
-                    {[1, 2, 3, 4].map((y) => (
-                      <option key={y} value={y}>
-                        Year {y}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label>Semester *</label>
-                  <select
-                    value={
-                      showReversalMode
-                        ? reversalFilters.semester
-                        : completionFilters.semester
-                    }
-                    onChange={(e) =>
-                      showReversalMode
-                        ? setReversalFilters({
-                            ...reversalFilters,
-                            semester: parseInt(e.target.value),
-                          })
-                        : setCompletionFilters({
-                            ...completionFilters,
-                            semester: parseInt(e.target.value),
-                          })
-                    }
-                    className="form-select"
-                  >
-                    <option value="">Select Semester</option>
-                    <option value={1}>Semester 1</option>
-                    <option value={2}>Semester 2</option>
-                  </select>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  marginTop: "15px",
-                  padding: "10px",
-                  background: showReversalMode ? "#ffecec" : "#e3fcec",
-                  borderRadius: "6px",
-                }}
-              >
-                <strong>Cohort:</strong>{" "}
-                {showReversalMode
-                  ? reversalFilters.academic_year || "—"
-                  : completionFilters.academic_year || "—"}{" "}
-                • Year{" "}
-                {showReversalMode
-                  ? reversalFilters.year_of_study || "—"
-                  : completionFilters.year_of_study || "—"}{" "}
-                • Semester{" "}
-                {showReversalMode
-                  ? reversalFilters.semester || "—"
-                  : completionFilters.semester || "—"}
-                <br />
-                {showReversalMode ? (
-                  <strong>Completed courses found:</strong>
-                ) : (
-                  <strong>Active students found:</strong>
-                )}{" "}
-                {showReversalMode
-                  ? completedCourses.length
-                  : studentsToComplete.length}
-              </div>
-            </div>
-
-            {/* CONTENT BASED ON MODE */}
-         {showReversalMode ? (
-  /* REVERSAL MODE */
-  completedCourses.length > 0 ? (
-    <>
-      <div
-        style={{
-          marginBottom: "15px",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: "10px",
-        }}
-      >
-        <h3>Completed Courses to Reverse</h3>
-        <label>
-          <input
-            type="checkbox"
-            checked={
-              selectedCoursesForReversal.length ===
-                completedCourses.length &&
-              completedCourses.length > 0
-            }
-            onChange={selectAllForReversal}
-          />
-          Select All Courses ({selectedCoursesForReversal.length} selected)
-        </label>
-      </div>
-      <div className="table-container">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Select</th>
-              <th>Course Code</th>
-              <th>Course Name</th>
-              <th>Program</th>
-              <th>Department</th>
-              <th>Students</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {completedCourses.map((course) => {
-              // ✅ CORRECT: Use the cached count from state
-              const studentCount = studentCounts[course.id] || 0;
-              
-              return (
-                <tr key={course.id}>
-                  <td>
-                    <input
-                      type="checkbox"
-                      checked={selectedCoursesForReversal.includes(
-                        course.id,
-                      )}
-                      onChange={() =>
-                        toggleCourseReversalSelection(course.id)
-                      }
-                    />
-                  </td>
-                  <td>
-                    <strong>{course.course_code}</strong>
-                  </td>
-                  <td>{course.course_name}</td>
-                  <td>{course.program || "N/A"}</td>
-                  <td>{course.department_code || "N/A"}</td>
-                  <td>
-                    <span className="status-badge completed">
-                      {studentCount} students
-                    </span>
-                  </td>
-                  <td>
-                    <button
-                      className="action-btn view small"
-                      onClick={() => fetchStudentsForCourseReversal(course.id)}
-                    >
-                      👥 Select Students
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div style={{ textAlign: "center", marginTop: "25px" }}>
-        <button
-          className="confirm-button large"
-          onClick={handleReverseCourseCompletion}
-          disabled={
-            reversalInProgress ||
-            selectedCoursesForReversal.length === 0
-          }
-          style={{
-            background: reversalInProgress ? "#6c757d" : "#dc3545",
-            borderColor: reversalInProgress ? "#6c757d" : "#dc3545",
-          }}
-        >
-          {reversalInProgress
-            ? "Processing Reversal..."
-            : `↩️ Reverse ${selectedCoursesForReversal.length} Course(s) to "Enrolled"`}
-        </button>
-        <p
-          style={{
-            marginTop: "10px",
-            fontSize: "12px",
-            color: "#666",
-          }}
-        >
-          This will change course status from "completed" to "enrolled" for 
-          <strong> ALL students</strong> in the selected courses.
-          <br />
-          Click "Select Students" to choose specific students instead.
-        </p>
-      </div>
-    </>
-  ) : (
-    <div className="empty-state">
-      <div
-        style={{
-          fontSize: "48px",
-          marginBottom: "20px",
-          opacity: 0.5,
-        }}
-      >
-        ✅
-      </div>
-      <h4>No Completed Courses Found</h4>
-      <p
-        className="small-text"
-        style={{ maxWidth: "500px", margin: "0 auto" }}
-      >
-        No courses have been marked as completed for the selected filters.
-        <br />
-        Adjust the filters or use "Mark as Completed" mode instead.
-      </p>
-    </div>
-  )
-) : 
-
-  /* MARKING MODE - KEEP EXISTING CODE UNCHANGED */
-  coursesForCompletion.length > 0 ? (
-
-              <>
-                <div
-                  style={{
-                    marginBottom: "15px",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
-                  <h3>Courses to Mark as Completed</h3>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={
-                        selectedCoursesForCompletion.length ===
-                          coursesForCompletion.length &&
-                        coursesForCompletion.length > 0
-                      }
-                      onChange={selectAllForCompletion}
-                    />
-                    Select All ({selectedCoursesForCompletion.length} selected)
-                  </label>
-                </div>
-                <div className="table-container">
-               <table className="data-table">
-  <thead>
-    <tr>
-      <th>Select</th>
-      <th>Course Code</th>
-      <th>Course Name</th>
-      <th>Program</th>
-      <th>Department</th>
-      <th>Enrolled Students</th>
-      <th>Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-    {coursesForCompletion.map((course) => {
-      const enrolledCount = enrolledStudentCounts[course.id] || 0;
-      return (
-        <tr key={course.id}>
-          <td>
-            <input
-              type="checkbox"
-              checked={selectedCoursesForCompletion.includes(course.id)}
-              onChange={() => toggleCourseCompletionSelection(course.id)}
-            />
-          </td>
-          <td>
-            <strong>{course.course_code}</strong>
-          </td>
-          <td>{course.course_name}</td>
-          <td>{course.program || "N/A"}</td>
-          <td>{course.department_code || "N/A"}</td>
-          <td>
-            <span
-              className="status-badge"
-              style={{
-                background: enrolledCount > 0 ? "#ff9800" : "#6c757d",
-                color: "white",
-              }}
-            >
-              {enrolledCount} enrolled
-            </span>
-          </td>
-          <td>
-            <button
-              className="action-btn view small"
-              onClick={() => fetchStudentsForCourseCompletion(course.id)}
-              disabled={enrolledCount === 0}
-              title={
-                enrolledCount === 0
-                  ? "No enrolled students"
-                  : "Select specific students to complete"
-              }
-            >
-              👥 Select Students
-            </button>
-          </td>
-        </tr>
-      );
-    })}
-  </tbody>
-</table>
-                </div>
-                <div style={{ textAlign: "center", marginTop: "25px" }}>
-                  <button
-                    className="confirm-button large"
-                    onClick={handleMarkSemesterCompleted}
-                    disabled={
-                      markingInProgress ||
-                      selectedCoursesForCompletion.length === 0 ||
-                      studentsToComplete.length === 0
-                    }
-                    style={{
-                      background: markingInProgress ? "#6c757d" : "#28a745",
-                      borderColor: markingInProgress ? "#6c757d" : "#28a745",
-                    }}
-                  >
-                    {markingInProgress
-                      ? "Processing..."
-                      : `✅ Mark ${selectedCoursesForCompletion.length} Course(s) as Completed`}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="empty-state">
-                <p>
-                  No courses found. Adjust filters or add courses for this
-                  year/semester.
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Programs Tab - Admin Only */}
-        {activeTab === "programs" && isAdmin && (
-          <div className="tab-content">
-            <div className="tab-header">
-              <h2>🎓 Program Management</h2>
-              <button
-                className="add-button"
-                onClick={() => {
-                  setEditingProgram(null);
-                  setNewProgram({ name: "", code: "" });
-                  setShowProgramModal(true);
-                }}
-              >
-                + Add Program
-              </button>
-            </div>
-
-            <div className="table-container">
-              {programs.length === 0 ? (
-                <div className="empty-state">
-                  <p>No programs defined yet</p>
-                  <button
-                    className="add-button"
-                    onClick={() => setShowProgramModal(true)}
-                  >
-                    Create First Program
-                  </button>
-                </div>
-              ) : (
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Program Name</th>
-                      <th>Code</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {programs.map((program) => (
-                      <tr key={program.id}>
-                        <td>
-                          <strong>{program.name}</strong>
-                        </td>
-                        <td>
-                          <span className="dept-badge">{program.code}</span>
-                        </td>
-                        <td>
-                          <div className="action-buttons flat">
-                            <button
-                              className="action-btn edit small"
-                              onClick={() => {
-                                setEditingProgram(program);
-                                setNewProgram({
-                                  name: program.name,
-                                  code: program.code,
-                                });
-                                setShowProgramModal(true);
-                              }}
-                            >
-                              Edit
-                            </button>
-                            <button
-                              className="action-btn delete small"
-                              onClick={() =>
-                                handleDeleteProgram(program.id, program.name)
-                              }
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Program Modal */}
-        {showProgramModal && (
-          <div className="modal-overlay">
-            <div className="modal">
-              <h3>{editingProgram ? "Edit" : "Add New"} Program</h3>
-              <div className="modal-form">
-                <div className="form-group">
-                  <label>Program Name *</label>
-                  <input
-                    type="text"
-                    value={newProgram.name}
-                    onChange={(e) =>
-                      setNewProgram({ ...newProgram, name: e.target.value })
-                    }
-                    placeholder="e.g. Bachelor of Science in Computer Engineering"
-                    className="form-input"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Program Code *</label>
-                  <input
-                    type="text"
-                    value={newProgram.code}
-                    onChange={(e) =>
-                      setNewProgram({
-                        ...newProgram,
-                        code: e.target.value.toUpperCase().replace(/\s/g, ""),
-                      })
-                    }
-                    placeholder="e.g. BSCE"
-                    className="form-input"
-                  />
-                  <small>No spaces, uppercase recommended</small>
-                </div>
-                <div className="modal-actions">
-                  <button
-                    className="cancel-button"
-                    onClick={() => {
-                      setShowProgramModal(false);
-                      setEditingProgram(null);
-                      setNewProgram({ name: "", code: "" });
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="confirm-button"
-                    onClick={handleSaveProgram}
-                  >
-                    {editingProgram ? "Update" : "Add"} Program
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-        {/* === TUTORIALS UPLOAD MODAL (WITH PROGRAM + COURSE + COHORT) === */}
-        {showTutorialsModal && (
-          <div className="modal-overlay">
-            <div className="modal large-modal">
-              <h3>Upload Tutorial Materials</h3>
-
-              {/* Program Selection */}
-              <div
-                style={{
-                  background: "#e3f2fd",
-                  padding: "20px",
-                  borderRadius: "10px",
-                  marginBottom: "20px",
-                  border: "2px solid #1976d2",
-                }}
-              >
-                <h4 style={{ margin: "0 0 10px 0", color: "#1976d2" }}>
-                  Target Program *
-                </h4>
-                {programsLoading ? (
-                  <p>Loading programs...</p>
-                ) : (
-                  <select
-                    value={tutorialTargetProgram}
-                    onChange={(e) => {
-                      setTutorialTargetProgram(e.target.value);
-                      setTutorialTargetCourse(""); // reset course when program changes
-                    }}
-                    className="form-select"
-                  >
-                    <option value="">Select Program</option>
-                    {programs.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} ({p.code})
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
-
-              {/* Course Selection */}
-              {tutorialTargetProgram && (
-                <div
-                  style={{
-                    background: "#fff3e0",
-                    padding: "20px",
-                    borderRadius: "10px",
-                    marginBottom: "20px",
-                    border: "2px solid #f57c00",
-                  }}
-                >
-                  <h4 style={{ margin: "0 0 10px 0", color: "#f57c00" }}>
-                    Target Course *
-                  </h4>
-                  {tutorialCourses.length === 0 ? (
-                    <p>No active courses found for this program.</p>
-                  ) : (
-                    <select
-                      value={tutorialTargetCourse}
-                      onChange={(e) => setTutorialTargetCourse(e.target.value)}
-                      className="form-select"
-                    >
-                      <option value="">Select Course</option>
-                      {tutorialCourses.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.course_code} - {c.course_name}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-              )}
-
-              {/* Cohort Selection */}
-              <div
-                style={{
-                  background: "#e8f5e8",
-                  padding: "20px",
-                  borderRadius: "10px",
-                  marginBottom: "20px",
-                  border: "2px solid #388e3c",
-                }}
-              >
-                <h4 style={{ margin: "0 0 10px 0", color: "#388e3c" }}>
-                  Target Cohort *
-                </h4>
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Academic Year *</label>
-                    <input
-                      type="text"
-                      value={tutorialTargetCohort.academic_year}
-                      onChange={(e) =>
-                        setTutorialTargetCohort({
-                          ...tutorialTargetCohort,
-                          academic_year: e.target.value.trim(),
-                        })
-                      }
-                      placeholder="e.g. 2025/2029"
-                      className="form-input"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Year *</label>
-                    <select
-                      value={tutorialTargetCohort.year_of_study}
-                      onChange={(e) =>
-                        setTutorialTargetCohort({
-                          ...tutorialTargetCohort,
-                          year_of_study: parseInt(e.target.value),
-                        })
-                      }
-                      className="form-select"
-                    >
-                      {[1, 2, 3, 4].map((y) => (
-                        <option key={y} value={y}>
-                          Year {y}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="form-group">
-                    <label>Semester *</label>
-                    <select
-                      value={tutorialTargetCohort.semester}
-                      onChange={(e) =>
-                        setTutorialTargetCohort({
-                          ...tutorialTargetCohort,
-                          semester: parseInt(e.target.value),
-                        })
-                      }
-                      className="form-select"
-                    >
-                      <option value={1}>Semester 1</option>
-                      <option value={2}>Semester 2</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* Title, Description, Files */}
-              <div className="modal-form">
-                <div className="form-group">
-                  <label>Title *</label>
-                  <input
-                    type="text"
-                    value={tutorialTitle}
-                    onChange={(e) => setTutorialTitle(e.target.value)}
-                    placeholder="e.g. Week 6 Tutorial - SQL Joins"
-                    className="form-input"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Description (Optional)</label>
-                  <textarea
-                    value={tutorialDescription}
-                    onChange={(e) => setTutorialDescription(e.target.value)}
-                    rows="3"
-                    className="form-textarea"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Files *</label>
-                  <div
-                    className="file-upload-area"
-                    onClick={() => tutorialFileInputRef.current?.click()}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      e.currentTarget.classList.add("drag-over");
-                    }}
-                    onDragLeave={(e) => {
-                      e.preventDefault();
-                      e.currentTarget.classList.remove("drag-over");
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      e.currentTarget.classList.remove("drag-over");
-                      setTutorialFiles(Array.from(e.dataTransfer.files));
-                    }}
-                  >
-                    <input
-                      type="file"
-                      ref={tutorialFileInputRef}
-                      multiple
-                      onChange={(e) =>
-                        e.target.files &&
-                        setTutorialFiles(Array.from(e.target.files))
-                      }
-                      style={{ display: "none" }}
-                    />
-                    <div className="upload-icon">📤</div>
-                    <p>
-                      <strong>Drop files or click to browse</strong>
-                    </p>
-                    <p className="small-text">MP4</p>
-                  </div>
-                  {uploadingTutorial && (
-                    <div className="upload-progress">
-                      <div className="progress-bar">
-                        <div
-                          className="progress-fill"
-                          style={{ width: `${tutorialUploadProgress}%` }}
-                        ></div>
-                      </div>
-                      <p>{tutorialUploadProgress}%</p>
-                    </div>
-                  )}
-                  {tutorialFiles.length > 0 && (
-                    <div className="file-list">
-                      <h4>Selected ({tutorialFiles.length})</h4>
-                      <div className="files-grid">
-                        {tutorialFiles.map((file, i) => (
-                          <div key={i} className="file-item">
-                            <span>
-                              {file.name} (
-                              {(file.size / 1024 / 1024).toFixed(2)} MB)
-                            </span>
-                            <button
-                              onClick={() =>
-                                setTutorialFiles((prev) =>
-                                  prev.filter((_, idx) => idx !== i),
-                                )
-                              }
-                            >
-                              ×
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="modal-actions">
-                  <button
-                    className="cancel-button"
-                    onClick={() => {
-                      setShowTutorialsModal(false);
-                      setTutorialTitle("");
-                      setTutorialDescription("");
-                      setTutorialFiles([]);
-                      setTutorialTargetProgram("");
-                      setTutorialTargetCourse("");
-                      setTutorialTargetCohort({
-                        academic_year: "",
-                        year_of_study: 1,
-                        semester: 1,
-                      });
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="confirm-button"
-                    disabled={
-                      uploadingTutorial ||
-                      !tutorialTargetProgram ||
-                      !tutorialTargetCourse ||
-                      tutorialFiles.length === 0
-                    }
-                    onClick={async () => {
-                      if (!tutorialTitle.trim()) return alert("Enter a title");
-                      await uploadTutorialFiles(tutorialFiles);
-                      // Reset everything on success
-                      setShowTutorialsModal(false);
-                      setTutorialTitle("");
-                      setTutorialDescription("");
-                      setTutorialFiles([]);
-                      setTutorialTargetProgram("");
-                      setTutorialTargetCourse("");
-                      setTutorialTargetCohort({
-                        academic_year: "",
-                        year_of_study: 1,
-                        semester: 1,
-                      });
-                    }}
-                  >
-                    {uploadingTutorial ? "Uploading..." : "Upload Tutorials"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
         )}
       </main>
 
+      <footer className="footer">
+        <p>© {new Date().getFullYear()} NLE University • Admin Portal</p>
+        <p className="footer-stats">Total Students: {stats.totalStudents} | Lecturers: {stats.totalLecturers} | Deans: {deans.length} | HODs: {hods.length} | Finance: {financeOfficers.length} | Last Updated: {new Date().toLocaleTimeString()}</p>
+      </footer>
+
+      {/* =================== CHAT MODAL =================== */}
+      {renderChatModal()}
+
       {/* =================== MODALS =================== */}
-
-      {showAttendanceRecordModal && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>{editingAttendanceRecord ? "Edit" : "Record"} Attendance</h3>
+      {showUserModal && (
+        <div className="modal-overlay" onClick={() => setShowUserModal(false)}>
+          <div className="modal large-modal" onClick={(e) => e.stopPropagation()}>
+            <h3>
+              {newUser.role === "student" && "Add New Student"}
+              {newUser.role === "lecturer" && "Add New Lecturer"}
+              {newUser.role === "dean" && "Add New Dean"}
+              {newUser.role === "hod" && "Add New HOD"}
+              {newUser.role === "finance" && "Add New Finance Officer"}
+            </h3>
             <div className="modal-form">
-              {/* Student Selection */}
-              <div className="form-group">
-                <label>Student *</label>
-                <select
-                  value={attendanceForm.student_id}
-                  onChange={(e) =>
-                    setAttendanceForm({
-                      ...attendanceForm,
-                      student_id: e.target.value,
-                    })
-                  }
-                  className="form-select"
-                  required
-                >
-                  <option value="">Select Student</option>
-                  {students
-                    .filter(
-                      (student) =>
-                        isAdmin ||
-                        (isLecturer &&
-                          departmentCodes.includes(student.department_code)),
-                    )
-                    .sort((a, b) => a.full_name.localeCompare(b.full_name))
-                    .map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.full_name} ({s.student_id}) - {s.program} (
-                        {s.department_code})
-                      </option>
-                    ))}
-                </select>
-              </div>
+              <div className="form-group"><label>Full Name *</label><input type="text" value={newUser.full_name} onChange={(e) => setNewUser({ ...newUser, full_name: e.target.value })} placeholder="Enter full name" className="form-input" /></div>
+              <div className="form-group"><label>Email *</label><input type="email" value={newUser.email} onChange={(e) => setNewUser({ ...newUser, email: e.target.value })} placeholder="Enter email address" className="form-input" /></div>
+              <div className="form-group"><label>Phone</label><input type="tel" value={newUser.phone} onChange={(e) => setNewUser({ ...newUser, phone: e.target.value })} placeholder="Enter phone number" className="form-input" /></div>
 
-              {/* Date */}
-              <div className="form-group">
-                <label>Date *</label>
-                <input
-                  type="date"
-                  value={attendanceForm.date}
-                  onChange={(e) =>
-                    setAttendanceForm({
-                      ...attendanceForm,
-                      date: e.target.value,
-                    })
-                  }
-                  className="form-input"
-                  required
-                />
-              </div>
+              {newUser.role === "student" && (
+                <>
+                  <div className="form-group"><label>Date of Birth</label><input type="date" value={newUser.date_of_birth} onChange={(e) => setNewUser({ ...newUser, date_of_birth: e.target.value })} className="form-input" /></div>
+                  <div className="form-group"><label>Program *</label>{programsLoading ? <p>Loading programs...</p> : <select value={newUser.program_id || ""} onChange={(e) => { const selectedProg = programs.find(p => p.id === e.target.value); setNewUser({ ...newUser, program_id: selectedProg?.id || "", program: selectedProg?.name || "", program_code: selectedProg?.code || "" }); }} className="form-select"><option value="">Select Program</option>{programs.map((prog) => (<option key={prog.id} value={prog.id}>{prog.name} ({prog.code})</option>))}</select>}</div>
+                  <div className="form-group"><label>Department Code *</label><input type="text" value={newUser.department_code} onChange={(e) => setNewUser({ ...newUser, department_code: e.target.value.trim().toUpperCase().replace(/\s+/g, "") })} placeholder="e.g. SCT" className="form-input" /></div>
+                  <div className="form-group"><label>Academic Year *</label><input type="text" value={newUser.academic_year} onChange={(e) => setNewUser({ ...newUser, academic_year: e.target.value.trim() })} placeholder="e.g. 2025/2029" className="form-input" /></div>
+                  <div className="form-row">
+                    <div className="form-group"><label>Year of Study</label><select value={newUser.year_of_study} onChange={(e) => setNewUser({ ...newUser, year_of_study: parseInt(e.target.value) })} className="form-select">{[1, 2, 3, 4].map(y => <option key={y} value={y}>Year {y}</option>)}</select></div>
+                    <div className="form-group"><label>Semester</label><select value={newUser.semester} onChange={(e) => setNewUser({ ...newUser, semester: parseInt(e.target.value) })} className="form-select"><option value={1}>Semester 1</option><option value={2}>Semester 2</option></select></div>
+                  </div>
+                </>
+              )}
 
-              {/* NEW: Course Selection (filtered by student's program if possible) */}
-              <div className="form-group">
-                <label>Course *</label>
-                <select
-                  value={attendanceForm.course_id || ""}
-                  onChange={(e) =>
-                    setAttendanceForm({
-                      ...attendanceForm,
-                      course_id: e.target.value,
-                    })
-                  }
-                  className="form-select"
-                  required
-                >
-                  <option value="">Select Course</option>
-                  {courses
-                    .filter((c) => c.is_active)
-                    .sort((a, b) => a.course_code.localeCompare(b.course_code))
-                    .map((course) => (
-                      <option key={course.id} value={course.id}>
-                        {course.course_code} - {course.course_name} (
-                        {course.department_code})
-                      </option>
-                    ))}
-                </select>
-              </div>
+              {newUser.role === "lecturer" && (
+                <>
+                  <div className="form-group"><label>Department</label><input type="text" value={newUser.department} onChange={(e) => setNewUser({ ...newUser, department: e.target.value })} placeholder="e.g., Computer Science" className="form-input" /></div>
+                  <div className="form-group"><label>Specialization</label><input type="text" value={newUser.specialization} onChange={(e) => setNewUser({ ...newUser, specialization: e.target.value })} placeholder="e.g., Web Development" className="form-input" /></div>
+                  <div className="form-group"><label>Google Meet Link</label><input type="url" value={newUser.google_meet_link} onChange={(e) => setNewUser({ ...newUser, google_meet_link: e.target.value })} placeholder="https://meet.google.com/xxx-xxxx-xxx" className="form-input" /></div>
+                </>
+              )}
 
-              {/* NEW: Lecture Selection (optional - filtered by date + course) */}
-              <div className="form-group">
-                <label>Lecture (Optional)</label>
-                <select
-                  value={attendanceForm.lecture_id || ""}
-                  onChange={(e) =>
-                    setAttendanceForm({
-                      ...attendanceForm,
-                      lecture_id: e.target.value || null,
-                    })
-                  }
-                  className="form-select"
-                >
-                  <option value="">No specific lecture</option>
-                  {lectures
-                    .filter(
-                      (l) =>
-                        l.scheduled_date === attendanceForm.date &&
-                        l.course_id === attendanceForm.course_id,
-                    )
-                    .map((lecture) => (
-                      <option key={lecture.id} value={lecture.id}>
-                        {lecture.title} ({lecture.start_time} -{" "}
-                        {lecture.end_time})
-                      </option>
-                    ))}
-                </select>
-                <small>
-                  Only shows lectures scheduled for selected date & course
-                </small>
-              </div>
+              {newUser.role === "dean" && (
+                <div className="form-group"><label>Faculty *</label><select value={newUser.faculty_id} onChange={(e) => { const selectedFaculty = faculties.find(f => f.id === e.target.value); setNewUser({ ...newUser, faculty_id: e.target.value, faculty_name: selectedFaculty?.faculty_name || "" }); }} className="form-select" required><option value="">Select Faculty</option>{faculties.map((faculty) => (<option key={faculty.id} value={faculty.id}>{faculty.faculty_name} ({faculty.faculty_code})</option>))}</select></div>
+              )}
 
-              {/* Status & Notes */}
-              <div className="form-group">
-                <label>Status *</label>
-                <select
-                  value={attendanceForm.status}
-                  onChange={(e) =>
-                    setAttendanceForm({
-                      ...attendanceForm,
-                      status: e.target.value,
-                    })
-                  }
-                  className="form-select"
-                >
-                  <option value="present">Present</option>
-                  <option value="absent">Absent</option>
-                  <option value="late">Late</option>
-                  <option value="excused">Excused</option>
-                  <option value="medical">Medical</option>
-                </select>
-              </div>
+              {newUser.role === "hod" && (
+                <div className="form-group"><label>Department *</label><select value={newUser.department_id} onChange={(e) => { const selectedDept = departments.find(d => d.id === e.target.value); setNewUser({ ...newUser, department_id: e.target.value, department_name: selectedDept?.department_name || "", department_code: selectedDept?.department_code || "" }); }} className="form-select" required><option value="">Select Department</option>{departments.map((dept) => (<option key={dept.id} value={dept.id}>{dept.department_name} ({dept.department_code})</option>))}</select></div>
+              )}
 
-              <div className="form-group">
-                <label>Notes (Optional)</label>
-                <textarea
-                  value={attendanceForm.notes}
-                  onChange={(e) =>
-                    setAttendanceForm({
-                      ...attendanceForm,
-                      notes: e.target.value,
-                    })
-                  }
-                  rows="3"
-                  className="form-textarea"
-                  placeholder="e.g. Arrived 20 minutes late"
-                />
-              </div>
+              {newUser.role === "finance" && (
+                <div className="form-group"><label>Department</label><input type="text" value="Finance Department" disabled className="form-input" style={{ opacity: 0.6, cursor: 'not-allowed' }} /><small style={{ color: '#999' }}>Department is fixed</small></div>
+              )}
 
               <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => {
-                    setShowAttendanceRecordModal(false);
-                    setEditingAttendanceRecord(null);
-                    setAttendanceForm({
-                      student_id: "",
-                      date: new Date().toISOString().split("T")[0],
-                      status: "present",
-                      notes: "",
-                      course_id: "",
-                      lecture_id: "",
-                    });
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="confirm-button"
-                  onClick={handleSaveAttendanceRecord}
-                  disabled={
-                    !attendanceForm.student_id ||
-                    !attendanceForm.date ||
-                    !attendanceForm.course_id
-                  }
-                >
-                  {editingAttendanceRecord ? "Update" : "Save"} Record
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      {/* edit student modal */}
-      {editingStudent && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>Edit Student: {editingStudent.student_id}</h3>
-            <div className="modal-form">
-              <div className="form-group">
-                <label>Full Name</label>
-                <input
-                  type="text"
-                  value={editStudentForm.full_name}
-                  onChange={(e) =>
-                    setEditStudentForm({
-                      ...editStudentForm,
-                      full_name: e.target.value,
-                    })
-                  }
-                  className="form-input"
-                />
-              </div>
-              <div className="form-group">
-                <label>Email</label>
-                <input
-                  type="email"
-                  value={editStudentForm.email}
-                  onChange={(e) =>
-                    setEditStudentForm({
-                      ...editStudentForm,
-                      email: e.target.value,
-                    })
-                  }
-                  className="form-input"
-                />
-              </div>
-              <div className="form-group">
-                <label>Phone</label>
-                <input
-                  type="tel"
-                  value={editStudentForm.phone}
-                  onChange={(e) =>
-                    setEditStudentForm({
-                      ...editStudentForm,
-                      phone: e.target.value,
-                    })
-                  }
-                  className="form-input"
-                />
-              </div>
-
-              {/* Date of Birth */}
-              <div className="form-group">
-                <label>Date of Birth</label>
-                <input
-                  type="date"
-                  value={editStudentForm.date_of_birth || ""}
-                  onChange={(e) =>
-                    setEditStudentForm({
-                      ...editStudentForm,
-                      date_of_birth: e.target.value,
-                    })
-                  }
-                  className="form-input"
-                />
-              </div>
-
-              {/* Department Code - manual */}
-              <div className="form-group">
-                <label>Department Code</label>
-                <input
-                  type="text"
-                  value={editStudentForm.department_code || ""}
-                  onChange={(e) =>
-                    setEditStudentForm({
-                      ...editStudentForm,
-                      department_code: e.target.value.trim().toUpperCase(),
-                    })
-                  }
-                  placeholder="e.g. SCT, ENG"
-                  className="form-input"
-                />
-              </div>
-
-              {/* Program Code - manual entry (now fully editable like Add Student) */}
-              <div className="form-group">
-                <label>Program Code</label>
-                <input
-                  type="text"
-                  value={editStudentForm.program_code || ""}
-                  onChange={(e) =>
-                    setEditStudentForm({
-                      ...editStudentForm,
-                      program_code: e.target.value.trim().toUpperCase(),
-                    })
-                  }
-                  placeholder="e.g. BSCE, BSCS, BIT"
-                  className="form-input"
-                />
-                <small>No spaces, uppercase only</small>
-              </div>
-
-              {/* Program Selection (optional - still linked to program_id) */}
-              <div className="form-group">
-                <label>Program (Optional)</label>
-                <select
-                  value={editStudentForm.program_id || ""}
-                  onChange={(e) => {
-                    const prog = programs.find((p) => p.id === e.target.value);
-                    setEditStudentForm({
-                      ...editStudentForm,
-                      program_id: prog?.id || "",
-                      program: prog?.name || "",
-                      // Note: department_code is now manually edited above
-                    });
-                  }}
-                  className="form-select"
-                >
-                  <option value="">Select Program</option>
-                  {programs.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.code})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label>Department Name</label>
-                <input
-                  type="text"
-                  value={editStudentForm.department}
-                  onChange={(e) =>
-                    setEditStudentForm({
-                      ...editStudentForm,
-                      department: e.target.value,
-                    })
-                  }
-                  className="form-input"
-                  placeholder="e.g. Science and Technology"
-                />
-              </div>
-
-              {/* Intake */}
-              <div className="form-group">
-                <label>Intake</label>
-                <select
-                  value={editStudentForm.intake || "January"}
-                  onChange={(e) =>
-                    setEditStudentForm({
-                      ...editStudentForm,
-                      intake: e.target.value,
-                    })
-                  }
-                  className="form-select"
-                >
-                  <option value="January">January</option>
-                  <option value="August">August</option>
-                </select>
-              </div>
-
-              {/* Academic Year - Manual */}
-              <div className="form-group">
-                <label>Academic Year</label>
-                <input
-                  type="text"
-                  value={editStudentForm.academic_year || ""}
-                  onChange={(e) =>
-                    setEditStudentForm({
-                      ...editStudentForm,
-                      academic_year: e.target.value.trim(),
-                    })
-                  }
-                  placeholder="e.g. 2025/2029"
-                  className="form-input"
-                />
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Year of Study</label>
-                  <select
-                    value={editStudentForm.year_of_study}
-                    onChange={(e) =>
-                      setEditStudentForm({
-                        ...editStudentForm,
-                        year_of_study: parseInt(e.target.value),
-                      })
-                    }
-                    className="form-select"
-                  >
-                    {[1, 2, 3, 4, 5].map((y) => (
-                      <option key={y} value={y}>
-                        Year {y}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Semester</label>
-                  <select
-                    value={editStudentForm.semester}
-                    onChange={(e) =>
-                      setEditStudentForm({
-                        ...editStudentForm,
-                        semester: parseInt(e.target.value),
-                      })
-                    }
-                    className="form-select"
-                  >
-                    <option value={1}>1</option>
-                    <option value={2}>2</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Status</label>
-                  <select
-                    value={editStudentForm.status}
-                    onChange={(e) =>
-                      setEditStudentForm({
-                        ...editStudentForm,
-                        status: e.target.value,
-                      })
-                    }
-                    className="form-select"
-                  >
-                    <option value="active">Active</option>
-                    <option value="inactive">Inactive</option>
-                    <option value="graduated">Graduated</option>
-                    <option value="suspended">Suspended</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => setEditingStudent(null)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="confirm-button"
-                  onClick={async () => {
-                    try {
-                      const { error } = await supabase
-                        .from("students")
-                     .update({
-  full_name: editStudentForm.full_name.trim(),
-  email: editStudentForm.email.trim(),
-  phone: editStudentForm.phone?.trim() || null,
-  date_of_birth: editStudentForm.date_of_birth || null,
-  program_id: editStudentForm.program_id || null,
-  program: editStudentForm.program?.trim() || null,
-  program_code:
-    (editStudentForm.program_code || "").trim().toUpperCase() || null,
-  department: editStudentForm.department?.trim() || null,
-  department_code:
-    (editStudentForm.department_code || "").trim().toUpperCase() || null,
-  year_of_study: editStudentForm.year_of_study,
-  semester: editStudentForm.semester,
-  intake: editStudentForm.intake || null,
-  academic_year: editStudentForm.academic_year?.trim() || null,
-  status: editStudentForm.status,
-  updated_at: new Date().toISOString(),
-})
-                        .eq("id", editingStudent.id);
-                      if (error) throw error;
-                      alert("Student updated successfully!");
-                      setEditingStudent(null);
-                      fetchStudents();
-                      fetchDashboardStats();
-                    } catch (err) {
-                      alert("Error updating student: " + err.message);
-                    }
-                  }}
-                >
-                  Save Changes
-                </button>
+                <button className="cancel-button" onClick={() => setShowUserModal(false)}>Cancel</button>
+                <button className="confirm-button" onClick={() => {
+                  if (newUser.role === "student") handleAddStudent();
+                  else if (newUser.role === "lecturer") handleAddLecturer();
+                  else if (newUser.role === "dean") handleAddDean();
+                  else if (newUser.role === "hod") handleAddHOD();
+                  else if (newUser.role === "finance") handleAddFinance();
+                }}>{newUser.role === "student" && "Add Student"}{newUser.role === "lecturer" && "Add Lecturer"}{newUser.role === "dean" && "Add Dean"}{newUser.role === "hod" && "Add HOD"}{newUser.role === "finance" && "Add Finance Officer"}</button>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {showAssignmentUploadModal && (
-        <div className="modal-overlay">
-          <div className="modal large-modal">
-            <h3>Create New Assignment</h3>
-            {/* === TARGET COHORT SELECTION === */}
-            <div
-              style={{
-                background: "#f0fff4",
-                padding: "20px",
-                borderRadius: "10px",
-                marginBottom: "25px",
-                border: "2px solid #388e3c",
-              }}
-            >
-              <h4 style={{ margin: "0 0 10px 0", color: "#388e3c" }}>
-                🎯 Target Student Cohort (REQUIRED)
-              </h4>
-              <p
-                style={{
-                  fontSize: "14px",
-                  marginBottom: "15px",
-                  color: "#555",
-                }}
-              >
-                Select the exact group of students who should see this
-                assignment.
-              </p>
-              <div className="form-row">
+      {showEditModal && (
+        <div className="modal-overlay" onClick={() => setShowEditModal(false)}>
+          <div className="modal large-modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Edit {editUser.role?.charAt(0).toUpperCase() + editUser.role?.slice(1)}</h3>
+            <div className="modal-form">
+              <div className="form-group"><label>Full Name *</label><input type="text" value={editUser.full_name} onChange={(e) => setEditUser({ ...editUser, full_name: e.target.value })} className="form-input" /></div>
+              <div className="form-group"><label>Email</label><input type="email" value={editUser.email} disabled className="form-input" style={{ opacity: 0.6, cursor: 'not-allowed' }} /><small style={{ color: '#999' }}>Email cannot be changed</small></div>
+
+              {(editUser.role === "student" || editUser.role === "lecturer") && (
+                <div className="form-group"><label>Phone</label><input type="tel" value={editUser.phone || ''} onChange={(e) => setEditUser({ ...editUser, phone: e.target.value })} className="form-input" /></div>
+              )}
+
+              <div className="form-group"><label>Status</label><select value={editUser.status} onChange={(e) => setEditUser({ ...editUser, status: e.target.value })} className="form-select"><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
+
+              {editUser.role === "student" && (
+                <>
+                  <div className="form-group"><label>Program</label><input type="text" value={editUser.program || ''} onChange={(e) => setEditUser({ ...editUser, program: e.target.value })} className="form-input" /></div>
+                  <div className="form-group"><label>Department Code</label><input type="text" value={editUser.department_code || ''} onChange={(e) => setEditUser({ ...editUser, department_code: e.target.value })} className="form-input" /></div>
+                  <div className="form-row"><div className="form-group"><label>Year of Study</label><select value={editUser.year_of_study} onChange={(e) => setEditUser({ ...editUser, year_of_study: parseInt(e.target.value) })} className="form-select">{[1, 2, 3, 4].map(y => <option key={y} value={y}>Year {y}</option>)}</select></div><div className="form-group"><label>Semester</label><select value={editUser.semester} onChange={(e) => setEditUser({ ...editUser, semester: parseInt(e.target.value) })} className="form-select"><option value={1}>Semester 1</option><option value={2}>Semester 2</option></select></div></div>
+                  <div className="form-group"><label>Academic Year</label><input type="text" value={editUser.academic_year || ''} onChange={(e) => setEditUser({ ...editUser, academic_year: e.target.value })} className="form-input" /></div>
+                </>
+              )}
+
+              {editUser.role === "lecturer" && (
+                <>
+                  <div className="form-group"><label>Department</label><input type="text" value={editUser.department || ''} onChange={(e) => setEditUser({ ...editUser, department: e.target.value })} className="form-input" /></div>
+                  <div className="form-group"><label>Specialization</label><input type="text" value={editUser.specialization || ''} onChange={(e) => setEditUser({ ...editUser, specialization: e.target.value })} className="form-input" /></div>
+                  <div className="form-group"><label>Google Meet Link</label><input type="url" value={editUser.google_meet_link || ''} onChange={(e) => setEditUser({ ...editUser, google_meet_link: e.target.value })} className="form-input" /></div>
+                </>
+              )}
+
+              {editUser.role === "dean" && (
+                <>
+                  <div style={{ background: '#f5f5f5', padding: '10px 15px', borderRadius: '4px', marginBottom: '15px', fontSize: '13px', color: '#666' }}>
+                    <strong>📚 Faculty Information</strong>
+                    <p style={{ margin: '4px 0 0 0' }}>This information is stored in the faculties table</p>
+                  </div>
+                  <div className="form-group">
+                    <label>Faculty</label>
+                    <input
+                      type="text"
+                      value={editUser.faculty_id ? faculties.find(f => f.id === editUser.faculty_id)?.faculty_name || 'N/A' : 'N/A'}
+                      disabled
+                      className="form-input"
+                      style={{ opacity: 0.6, cursor: 'not-allowed' }}
+                    />
+                    <small style={{ color: '#999' }}>Faculty cannot be changed</small>
+                  </div>
+                  <div className="form-group">
+                    <label>Contact Email</label>
+                    <input
+                      type="email"
+                      value={editUser.contact_email || ''}
+                      onChange={(e) => setEditUser({ ...editUser, contact_email: e.target.value })}
+                      className="form-input"
+                      placeholder="Enter faculty contact email"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Contact Phone</label>
+                    <input
+                      type="tel"
+                      value={editUser.contact_phone || ''}
+                      onChange={(e) => setEditUser({ ...editUser, contact_phone: e.target.value })}
+                      className="form-input"
+                      placeholder="Enter faculty contact phone"
+                    />
+                  </div>
+                </>
+              )}
+
+              {editUser.role === "hod" && (
+                <>
+                  <div style={{ background: '#f5f5f5', padding: '10px 15px', borderRadius: '4px', marginBottom: '15px', fontSize: '13px', color: '#666' }}>
+                    <strong>🏢 Department Information</strong>
+                    <p style={{ margin: '4px 0 0 0' }}>This information is stored in the departments table</p>
+                  </div>
+                  <div className="form-group">
+                    <label>Department</label>
+                    <input
+                      type="text"
+                      value={editUser.department_id ? departments.find(d => d.id === editUser.department_id)?.department_name || 'N/A' : 'N/A'}
+                      disabled
+                      className="form-input"
+                      style={{ opacity: 0.6, cursor: 'not-allowed' }}
+                    />
+                    <small style={{ color: '#999' }}>Department cannot be changed</small>
+                  </div>
+                  <div className="form-group">
+                    <label>Contact Email</label>
+                    <input
+                      type="email"
+                      value={editUser.contact_email || ''}
+                      onChange={(e) => setEditUser({ ...editUser, contact_email: e.target.value })}
+                      className="form-input"
+                      placeholder="Enter department contact email"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Contact Phone</label>
+                    <input
+                      type="tel"
+                      value={editUser.contact_phone || ''}
+                      onChange={(e) => setEditUser({ ...editUser, contact_phone: e.target.value })}
+                      className="form-input"
+                      placeholder="Enter department contact phone"
+                    />
+                  </div>
+                </>
+              )}
+
+              {editUser.role === "finance" && (
                 <div className="form-group">
-                  <label>Academic Year *</label>
+                  <label>Department</label>
                   <input
                     type="text"
-                    value={selectedCohort.academic_year}
-                    onChange={(e) =>
-                      setSelectedCohort({
-                        ...selectedCohort,
-                        academic_year: e.target.value.trim(),
-                      })
-                    }
-                    placeholder="e.g. 2025/2029"
+                    value="Finance Department"
+                    disabled
                     className="form-input"
-                    style={{ borderColor: cohortError ? "#d32f2f" : "" }}
+                    style={{ opacity: 0.6, cursor: 'not-allowed' }}
                   />
+                  <small style={{ color: '#999' }}>Department cannot be changed</small>
                 </div>
-                <div className="form-group">
-                  <label>Year of Study *</label>
-                  <select
-                    value={selectedCohort.year_of_study}
-                    onChange={(e) =>
-                      setSelectedCohort({
-                        ...selectedCohort,
-                        year_of_study: parseInt(e.target.value),
-                      })
-                    }
-                    className="form-select"
-                  >
-                    <option value={1}>Year 1</option>
-                    <option value={2}>Year 2</option>
-                    <option value={3}>Year 3</option>
-                    <option value={4}>Year 4</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Semester *</label>
-                  <select
-                    value={selectedCohort.semester}
-                    onChange={(e) =>
-                      setSelectedCohort({
-                        ...selectedCohort,
-                        semester: parseInt(e.target.value),
-                      })
-                    }
-                    className="form-select"
-                  >
-                    <option value={1}>Semester 1</option>
-                    <option value={2}>Semester 2</option>
-                  </select>
-                </div>
-              </div>
-              {cohortError && (
-                <p
-                  style={{
-                    color: "#d32f2f",
-                    fontWeight: "bold",
-                    marginTop: "10px",
-                  }}
-                >
-                  ⚠️ {cohortError}
-                </p>
-              )}
-              <div
-                style={{
-                  marginTop: "10px",
-                  padding: "10px",
-                  background: "#e3fcec",
-                  borderRadius: "6px",
-                  fontSize: "14px",
-                }}
-              >
-                <strong>Targeting:</strong>{" "}
-                {selectedCohort.academic_year || "—"} • Year{" "}
-                {selectedCohort.year_of_study || "—"} • Semester{" "}
-                {selectedCohort.semester || "—"}
-              </div>
-            </div>
-
-            <div className="modal-form">
-              {/* Course Selection */}
-              <div className="form-group">
-                <label className="form-label">Course *</label>
-                <select
-                  value={newAssignment.course_id}
-                  onChange={(e) =>
-                    setNewAssignment({
-                      ...newAssignment,
-                      course_id: e.target.value,
-                    })
-                  }
-                  className="form-select"
-                  required
-                >
-                  <option value="">Select a course</option>
-                  {courses
-                    .filter((course) => course.lecturer_id === profile.id)
-                    .map((course) => (
-                      <option key={course.id} value={course.id}>
-                        {course.course_code} - {course.course_name} (
-                        {course.department_code})
-                      </option>
-                    ))}
-                </select>
-              </div>
-
-              {/* Title */}
-              <div className="form-group">
-                <label className="form-label">Title *</label>
-                <input
-                  type="text"
-                  value={newAssignment.title}
-                  onChange={(e) =>
-                    setNewAssignment({
-                      ...newAssignment,
-                      title: e.target.value,
-                    })
-                  }
-                  placeholder="Assignment title"
-                  className="form-input"
-                  required
-                />
-              </div>
-
-              {/* Due Date & Total Marks */}
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Due Date & Time *</label>
-                  <input
-                    type="datetime-local"
-                    value={newAssignment.due_date}
-                    onChange={(e) =>
-                      setNewAssignment({
-                        ...newAssignment,
-                        due_date: e.target.value,
-                      })
-                    }
-                    className="form-input"
-                    required
-                  />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Total Marks *</label>
-                  <input
-                    type="number"
-                    value={newAssignment.total_marks}
-                    onChange={(e) =>
-                      setNewAssignment({
-                        ...newAssignment,
-                        total_marks: parseInt(e.target.value) || 100,
-                      })
-                    }
-                    min="1"
-                    className="form-input"
-                    required
-                  />
-                </div>
-              </div>
-
-              {/* Description */}
-              <div className="form-group">
-                <label className="form-label">Description</label>
-                <textarea
-                  value={newAssignment.description}
-                  onChange={(e) =>
-                    setNewAssignment({
-                      ...newAssignment,
-                      description: e.target.value,
-                    })
-                  }
-                  placeholder="Assignment description"
-                  rows="3"
-                  className="form-textarea"
-                />
-              </div>
-
-              {/* Instructions */}
-              <div className="form-group">
-                <label className="form-label">Instructions</label>
-                <textarea
-                  value={newAssignment.instructions}
-                  onChange={(e) =>
-                    setNewAssignment({
-                      ...newAssignment,
-                      instructions: e.target.value,
-                    })
-                  }
-                  placeholder="Instructions for students"
-                  rows="3"
-                  className="form-textarea"
-                />
-              </div>
-
-              {/* === FILE UPLOAD SECTION === */}
-              <div className="form-group">
-                <label className="form-label">
-                  Assignment Files (Optional)
-                </label>
-                <p
-                  className="small-text"
-                  style={{ color: "#3b82f6", marginBottom: "10px" }}
-                >
-                  📦 Files will be uploaded to public lecturerbucket
-                </p>
-                <div
-                  className="file-upload-area"
-                  onClick={() => fileInputRef.current?.click()}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.classList.add("drag-over");
-                  }}
-                  onDragLeave={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.classList.remove("drag-over");
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.currentTarget.classList.remove("drag-over");
-                    const files = Array.from(e.dataTransfer.files);
-                    setAssignmentFiles((prev) => [...prev, ...files]);
-                  }}
-                >
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    multiple
-                    onChange={(e) => {
-                      const files = Array.from(e.target.files || []);
-                      setAssignmentFiles((prev) => [...prev, ...files]);
-                    }}
-                    style={{ display: "none" }}
-                  />
-                  <div className="upload-icon">📤</div>
-                  <p>
-                    <strong>Drag & drop files here or click to browse</strong>
-                  </p>
-                  <p className="small-text">
-                    Supported: PDF, DOC, DOCX, ZIP, Images, Text
-                  </p>
-                </div>
-
-                {uploadingFiles && (
-                  <div className="upload-progress">
-                    <div className="progress-bar">
-                      <div
-                        className="progress-fill"
-                        style={{ width: `${uploadProgress}%` }}
-                      ></div>
-                    </div>
-                    <p className="progress-text">
-                      Uploading: {uploadProgress}%
-                    </p>
-                  </div>
-                )}
-
-                {assignmentFiles.length > 0 && (
-                  <div className="file-list">
-                    <h4>Files to Upload ({assignmentFiles.length})</h4>
-                    <div className="files-grid">
-                      {assignmentFiles.map((file, index) => (
-                        <div key={index} className="file-item">
-                          <div className="file-info">
-                            <span className="file-name">{file.name}</span>
-                            <span className="file-size">
-                              {(file.size / 1024 / 1024).toFixed(2)} MB
-                            </span>
-                          </div>
-                          <div className="file-actions">
-                            <span className="file-type">
-                              {file.name.split(".").pop().toUpperCase()}
-                            </span>
-                            <button
-                              className="remove-file"
-                              onClick={() =>
-                                setAssignmentFiles((prev) =>
-                                  prev.filter((_, i) => i !== index),
-                                )
-                              }
-                            >
-                              ×
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Submission Type & Settings */}
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Submission Type</label>
-                  <select
-                    value={newAssignment.submission_type}
-                    onChange={(e) =>
-                      setNewAssignment({
-                        ...newAssignment,
-                        submission_type: e.target.value,
-                      })
-                    }
-                    className="form-select"
-                  >
-                    <option value="file">File Upload</option>
-                    <option value="text">Text Submission</option>
-                    <option value="both">Both File & Text</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Max File Size (MB)</label>
-                  <input
-                    type="number"
-                    value={newAssignment.max_file_size}
-                    onChange={(e) =>
-                      setNewAssignment({
-                        ...newAssignment,
-                        max_file_size: parseInt(e.target.value),
-                      })
-                    }
-                    min="1"
-                    max="100"
-                    className="form-input"
-                  />
-                </div>
-              </div>
-
-              {/* Allowed Formats */}
-              <div className="form-group">
-                <label className="form-label">Allowed File Formats</label>
-                <div
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: "8px",
-                    marginTop: "5px",
-                  }}
-                >
-                  {["pdf", "doc", "docx", "zip", "jpg", "png", "txt"].map(
-                    (format) => (
-                      <label
-                        key={format}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "5px",
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={
-                            newAssignment.allowed_formats?.includes(format) ||
-                            false
-                          }
-                          onChange={(e) => {
-                            const newFormats = e.target.checked
-                              ? [
-                                  ...(newAssignment.allowed_formats || []),
-                                  format,
-                                ]
-                              : (newAssignment.allowed_formats || []).filter(
-                                  (f) => f !== format,
-                                );
-                            setNewAssignment({
-                              ...newAssignment,
-                              allowed_formats: newFormats,
-                            });
-                          }}
-                        />
-                        <span style={{ fontSize: "14px" }}>
-                          .{format.toUpperCase()}
-                        </span>
-                      </label>
-                    ),
-                  )}
-                </div>
-              </div>
-
-              {/* Buttons */}
-              <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => {
-                    setShowAssignmentUploadModal(false);
-                    setAssignmentFiles([]);
-                    setSelectedCohort({
-                      academic_year: "",
-                      year_of_study: 1,
-                      semester: 1,
-                    });
-                    setCohortError("");
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="confirm-button"
-                  onClick={handleCreateAssignment}
-                  disabled={loading.creatingAssignment || uploadingFiles}
-                >
-                  {loading.creatingAssignment
-                    ? "Creating..."
-                    : "Create Assignment"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Department Assignment Modal */}
-      {showDepartmentModal && selectedLecturerForDept && (
-        <DepartmentAssignmentModal
-          lecturer={selectedLecturerForDept}
-          onClose={() => {
-            setShowDepartmentModal(false);
-            setSelectedLecturerForDept(null);
-          }}
-          onAssign={() => {
-            fetchLecturers();
-            fetchDashboardStats();
-          }}
-        />
-      )}
-
-      {/* NEW: Paste RIGHT HERE */}
-      {showCourseAssignmentModal && selectedLecturerForCourses && (
-        <CourseAssignmentModal
-          lecturer={selectedLecturerForCourses}
-          onClose={() => {
-            setShowCourseAssignmentModal(false);
-            setSelectedLecturerForCourses(null);
-          }}
-          onAssign={() => {
-            fetchLecturers();
-            // Optionally refresh other data
-          }}
-        />
-      )}
-
-      {/* NEW: Lecturer Details Modal */}
-      {selectedLecturerDetails && (
-        <div
-          className="modal-overlay"
-          onClick={() => setSelectedLecturerDetails(null)}
-        >
-          <div
-            className="modal large-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: "20px",
-              }}
-            >
-              <h3>Lecturer Details: {selectedLecturerDetails.full_name}</h3>
-              <button
-                className="cancel-button"
-                onClick={() => setSelectedLecturerDetails(null)}
-                style={{ padding: "8px 16px" }}
-              >
-                ✕ Close
-              </button>
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
-                gap: "20px",
-              }}
-            >
-              <div>
-                <strong>Lecturer ID:</strong>
-                <br />
-                <span>{selectedLecturerDetails.lecturer_id || "N/A"}</span>
-              </div>
-              <div>
-                <strong>Email:</strong>
-                <br />
-                <span>{selectedLecturerDetails.email}</span>
-              </div>
-              <div>
-                <strong>Phone:</strong>
-                <br />
-                <span>{selectedLecturerDetails.phone || "Not provided"}</span>
-              </div>
-              <div>
-                <strong>Specialization:</strong>
-                <br />
-                <span>
-                  {selectedLecturerDetails.specialization || "Not specified"}
-                </span>
-              </div>
-              <div>
-                <strong>Google Meet Link:</strong>
-                <br />
-                {selectedLecturerDetails.google_meet_link ? (
-                  <a
-                    href={selectedLecturerDetails.google_meet_link}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="meet-link small"
-                  >
-                    🔗 Open Meet Link
-                  </a>
-                ) : (
-                  <span className="text-muted">No link provided</span>
-                )}
-              </div>
-              <div>
-                <strong>Status:</strong>
-                <br />
-                <span
-                  className={`status-badge ${selectedLecturerDetails.status || "active"}`}
-                >
-                  {selectedLecturerDetails.status?.charAt(0).toUpperCase() +
-                    selectedLecturerDetails.status?.slice(1) || "Active"}
-                </span>
-              </div>
-            </div>
-
-            <div style={{ marginTop: "30px" }}>
-              <h4>Assigned Departments</h4>
-              {selectedLecturerDetails.lecturer_departments &&
-              selectedLecturerDetails.lecturer_departments.length > 0 ? (
-                <div
-                  className="departments-badges"
-                  style={{ marginTop: "10px" }}
-                >
-                  {selectedLecturerDetails.lecturer_departments.map(
-                    (dept, idx) => (
-                      <span key={idx} className="department-badge">
-                        {dept.department_code} -{" "}
-                        {dept.department_name || dept.department_code}
-                      </span>
-                    ),
-                  )}
-                </div>
-              ) : (
-                <p className="text-muted">No departments assigned yet.</p>
-              )}
-            </div>
-
-            <div style={{ marginTop: "30px", textAlign: "right" }}>
-              <button
-                className="action-btn dept"
-                onClick={() => {
-                  setSelectedLecturerForDept(selectedLecturerDetails);
-                  setShowDepartmentModal(true);
-                  setSelectedLecturerDetails(null);
-                }}
-              >
-                🏢 Manage Departments
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* User Modal */}
-      {showUserModal && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>Add New User</h3>
-            <div className="modal-form">
-              <div className="form-group">
-                <label className="form-label">Role</label>
-                <select
-                  value={newUser.role}
-                  onChange={(e) =>
-                    setNewUser({ ...newUser, role: e.target.value })
-                  }
-                >
-                  <option value="student">Student</option>
-                  <option value="lecturer">Lecturer</option>
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Full Name</label>
-                <input
-                  type="text"
-                  value={newUser.full_name}
-                  onChange={(e) =>
-                    setNewUser({ ...newUser, full_name: e.target.value })
-                  }
-                  placeholder="Enter full name"
-                  className="form-input"
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Email</label>
-                <input
-                  type="email"
-                  value={newUser.email}
-                  onChange={(e) =>
-                    setNewUser({ ...newUser, email: e.target.value })
-                  }
-                  placeholder="Enter email address"
-                  className="form-input"
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Phone</label>
-                <input
-                  type="tel"
-                  value={newUser.phone}
-                  onChange={(e) =>
-                    setNewUser({ ...newUser, phone: e.target.value })
-                  }
-                  placeholder="Enter phone number"
-                  className="form-input"
-                />
-              </div>
-              {newUser.role === "student" ? (
-                <>
-                  {/* Date of Birth */}
-                  <div className="form-group">
-                    <label className="form-label">Date of Birth</label>
-                    <input
-                      type="date"
-                      value={newUser.date_of_birth}
-                      onChange={(e) =>
-                        setNewUser({
-                          ...newUser,
-                          date_of_birth: e.target.value,
-                        })
-                      }
-                      className="form-input"
-                    />
-                    <small>Optional</small>
-                  </div>
-
-                  {/* Program Selection - only sets name and program_id */}
-                  <div className="form-group">
-                    <label className="form-label">Program *</label>
-                    {programsLoading ? (
-                      <p>Loading programs...</p>
-                    ) : programs.length === 0 ? (
-                      <p>No programs available.</p>
-                    ) : (
-                      <select
-                        value={newUser.program_id || ""}
-                        onChange={(e) => {
-                          const selectedProg = programs.find(
-                            (p) => p.id === e.target.value,
-                          );
-                          setNewUser({
-                            ...newUser,
-                            program_id: selectedProg?.id || "",
-                            program: selectedProg?.name || "",
-                            // department_code and department are NOT set here anymore
-                          });
-                        }}
-                        className="form-select"
-                        required
-                      >
-                        <option value="">Select Program</option>
-                        {programs.map((prog) => (
-                          <option key={prog.id} value={prog.id}>
-                            {prog.name} ({prog.code})
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                    <small>Selected: {newUser.program || "None"}</small>
-                  </div>
-
-                  {/* Department Name - manual */}
-                  <div className="form-group">
-                    <label className="form-label">Department Name *</label>
-                    <input
-                      type="text"
-                      value={newUser.department}
-                      onChange={(e) =>
-                        setNewUser({ ...newUser, department: e.target.value })
-                      } // ← Fixed!
-                      placeholder="e.g. Science and Technology"
-                      className="form-input"
-                      required
-                    />
-                    <small>Spaces are fully allowed</small>
-                  </div>
-
-                  {/* Department Code - manual */}
-                  <div className="form-group">
-                    <label className="form-label">Department Code *</label>
-                    <input
-                      type="text"
-                      value={newUser.department_code}
-                      onChange={(e) =>
-                        setNewUser({
-                          ...newUser,
-                          department_code: e.target.value
-                            .trim()
-                            .toUpperCase()
-                            .replace(/\s+/g, ""),
-                        })
-                      }
-                      placeholder="e.g. SCT"
-                      className="form-input"
-                      required
-                    />
-                    <small>No spaces, uppercase only</small>
-                  </div>
-
-                  {/* Program Code - manual entry */}
-                  <div className="form-group">
-                    <label className="form-label">Program Code *</label>
-                    <input
-                      type="text"
-                      value={newUser.program_code || ""}
-                      onChange={(e) =>
-                        setNewUser({
-                          ...newUser,
-                          program_code: e.target.value
-                            .trim()
-                            .toUpperCase()
-                            .replace(/\s+/g, ""),
-                        })
-                      }
-                      placeholder="e.g. BSCE, BSCS, BIT"
-                      className="form-input"
-                      required
-                    />
-                    <small>No spaces, uppercase only (e.g. BSCE)</small>
-                  </div>
-
-                  {/* Program Duration */}
-                  <div className="form-group">
-                    <label className="form-label">
-                      Program Duration (Years) *
-                    </label>
-                    <select
-                      value={newUser.program_duration_years}
-                      onChange={(e) =>
-                        setNewUser({
-                          ...newUser,
-                          program_duration_years: parseInt(e.target.value),
-                        })
-                      }
-                      className="form-select"
-                    >
-                      <option value={3}>3 Years</option>
-                      <option value={4}>4 Years</option>
-                      <option value={5}>5 Years</option>
-                    </select>
-                    <small>
-                      Total semesters will be:{" "}
-                      {newUser.program_duration_years * 2}
-                    </small>
-                  </div>
-
-                  {/* Intake */}
-                  <div className="form-group">
-                    <label className="form-label">Intake *</label>
-                    <select
-                      value={newUser.intake}
-                      onChange={(e) =>
-                        setNewUser({ ...newUser, intake: e.target.value })
-                      }
-                      className="form-select"
-                    >
-                      <option value="January">January</option>
-                      <option value="August">August</option>
-                    </select>
-                  </div>
-
-                  {/* Academic Year - manual */}
-                  <div className="form-group">
-                    <label className="form-label">
-                      Academic Year (Entry/End) *
-                    </label>
-                    <input
-                      type="text"
-                      value={newUser.academic_year}
-                      onChange={(e) =>
-                        setNewUser({
-                          ...newUser,
-                          academic_year: e.target.value.trim(),
-                        })
-                      }
-                      placeholder="e.g. 2025/2029"
-                      className="form-input"
-                      required
-                    />
-                    <small>
-                      Admin enters full range (e.g. 2025/2028 for 3yr, 2025/2029
-                      for 4yr)
-                    </small>
-                  </div>
-
-                  {/* Year & Semester */}
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label className="form-label">Year of Study</label>
-                      <select
-                        value={newUser.year_of_study}
-                        onChange={(e) =>
-                          setNewUser({
-                            ...newUser,
-                            year_of_study: parseInt(e.target.value),
-                          })
-                        }
-                        className="form-select"
-                      >
-                        {[1, 2, 3, 4, 5].map((y) => (
-                          <option key={y} value={y}>
-                            Year {y}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">Semester</label>
-                      <select
-                        value={newUser.semester}
-                        onChange={(e) =>
-                          setNewUser({
-                            ...newUser,
-                            semester: parseInt(e.target.value),
-                          })
-                        }
-                        className="form-select"
-                      >
-                        <option value={1}>Semester 1</option>
-                        <option value={2}>Semester 2</option>
-                      </select>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="form-group">
-                    <label className="form-label">Department</label>
-                    <input
-                      type="text"
-                      value={newUser.department}
-                      onChange={(e) =>
-                        setNewUser({ ...newUser, department: e.target.value })
-                      }
-                      placeholder="e.g., Computer Science"
-                      className="form-input"
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Specialization</label>
-                    <input
-                      type="text"
-                      value={newUser.specialization}
-                      onChange={(e) =>
-                        setNewUser({
-                          ...newUser,
-                          specialization: e.target.value,
-                        })
-                      }
-                      placeholder="e.g., Web Development"
-                      className="form-input"
-                    />
-                  </div>
-                </>
               )}
 
               <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => setShowUserModal(false)}
-                >
-                  Cancel
-                </button>
-                <button className="confirm-button" onClick={handleAddUser}>
-                  Add User
-                </button>
+                <button className="cancel-button" onClick={() => setShowEditModal(false)}>Cancel</button>
+                <button className="confirm-button" onClick={handleEditUser}>Save Changes</button>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Course Modal */}
+      {showMessageModal && (
+        <div className="modal-overlay" onClick={() => setShowMessageModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>💬 Send Message to {selectedUser?.full_name || selectedUser?.email}</h3>
+            <div className="modal-form">
+              <div className="form-group"><label>To</label><input type="text" value={selectedUser?.email || ''} disabled className="form-input" style={{ opacity: 0.6, cursor: 'not-allowed' }} /></div>
+              <div className="form-group"><label>Message</label><textarea value={messageText} onChange={(e) => setMessageText(e.target.value)} placeholder="Type your message here..." rows="5" className="form-textarea" /></div>
+              <div className="modal-actions">
+                <button className="cancel-button" onClick={() => setShowMessageModal(false)}>Cancel</button>
+                <button className="confirm-button" onClick={handleSendMessage} disabled={!messageText.trim()}>Send Message</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showBulkMessageModal && (
+        <div className="modal-overlay" onClick={() => setShowBulkMessageModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>📨 Send Message to All {bulkMessageRole?.charAt(0).toUpperCase() + bulkMessageRole?.slice(1)}s</h3>
+            <div className="modal-form">
+              <div className="form-group"><label>Recipients</label><input type="text" value={`All ${bulkMessageRole}s (${bulkMessageRole === 'lecturer' ? lecturers.length : bulkMessageRole === 'dean' ? deans.length : bulkMessageRole === 'hod' ? hods.length : bulkMessageRole === 'finance' ? financeOfficers.length : students.length} recipients)`} disabled className="form-input" style={{ opacity: 0.6, cursor: 'not-allowed' }} /></div>
+              <div className="form-group"><label>Message</label><textarea value={bulkMessageText} onChange={(e) => setBulkMessageText(e.target.value)} placeholder={`Type your message to all ${bulkMessageRole}s...`} rows="5" className="form-textarea" /></div>
+              <div className="modal-actions">
+                <button className="cancel-button" onClick={() => setShowBulkMessageModal(false)}>Cancel</button>
+                <button className="confirm-button" onClick={handleSendBulkMessage} disabled={!bulkMessageText.trim()}>Send to All</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showCourseModal && (
-        <div className="modal-overlay">
-          <div className="modal">
+        <div className="modal-overlay" onClick={() => setShowCourseModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>Add New Course</h3>
             <div className="modal-form">
-              <div className="form-group">
-                <label className="form-label">Course Code</label>
-                <input
-                  type="text"
-                  value={newCourse.course_code}
-                  onChange={(e) =>
-                    setNewCourse({ ...newCourse, course_code: e.target.value })
-                  }
-                  placeholder="e.g., CS-401"
-                  className="form-input"
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Course Name</label>
-                <input
-                  type="text"
-                  value={newCourse.course_name}
-                  onChange={(e) =>
-                    setNewCourse({ ...newCourse, course_name: e.target.value })
-                  }
-                  placeholder="e.g., Machine Learning"
-                  className="form-input"
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Description</label>
-                <textarea
-                  value={newCourse.description}
-                  onChange={(e) =>
-                    setNewCourse({ ...newCourse, description: e.target.value })
-                  }
-                  placeholder="Course description"
-                  rows="3"
-                  className="form-textarea"
-                />
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Year</label>
-                  <select
-                    value={newCourse.year}
-                    onChange={(e) =>
-                      setNewCourse({
-                        ...newCourse,
-                        year: parseInt(e.target.value),
-                      })
-                    }
-                    className="form-select"
-                  >
-                    {[1, 2, 3, 4].map((year) => (
-                      <option key={year} value={year}>
-                        Year {year}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Semester</label>
-                  <select
-                    value={newCourse.semester}
-                    onChange={(e) =>
-                      setNewCourse({
-                        ...newCourse,
-                        semester: parseInt(e.target.value),
-                      })
-                    }
-                    className="form-select"
-                  >
-                    <option value={1}>Semester 1</option>
-                    <option value={2}>Semester 2</option>
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Credits</label>
-                  <input
-                    type="number"
-                    value={newCourse.credits}
-                    onChange={(e) =>
-                      setNewCourse({
-                        ...newCourse,
-                        credits: parseInt(e.target.value),
-                      })
-                    }
-                    min="1"
-                    max="6"
-                    className="form-input"
-                  />
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Department Code</label>
-                <input
-                  type="text"
-                  value={newCourse.department_code}
-                  onChange={(e) =>
-                    setNewCourse({
-                      ...newCourse,
-                      department_code: e.target.value,
-                    })
-                  }
-                  placeholder="e.g., ENG, SCT"
-                  className="form-input"
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Department Name</label>
-                <input
-                  type="text"
-                  value={newCourse.department}
-                  onChange={(e) =>
-                    setNewCourse({ ...newCourse, department: e.target.value })
-                  }
-                  placeholder="e.g., Science and Technology"
-                  className="form-input"
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Program</label>
-                <input
-                  type="text"
-                  value={newCourse.program}
-                  onChange={(e) =>
-                    setNewCourse({ ...newCourse, program: e.target.value })
-                  }
-                  placeholder="e.g., Computer Engineering"
-                  className="form-input"
-                />
-              </div>
-
+              <div className="form-group"><label>Course Code *</label><input type="text" value={newCourse.course_code} onChange={(e) => setNewCourse({ ...newCourse, course_code: e.target.value })} placeholder="e.g., CS-401" className="form-input" /></div>
+              <div className="form-group"><label>Course Name *</label><input type="text" value={newCourse.course_name} onChange={(e) => setNewCourse({ ...newCourse, course_name: e.target.value })} placeholder="e.g., Machine Learning" className="form-input" /></div>
+              <div className="form-group"><label>Description</label><textarea value={newCourse.description} onChange={(e) => setNewCourse({ ...newCourse, description: e.target.value })} placeholder="Course description" rows="3" className="form-textarea" /></div>
+              <div className="form-row"><div className="form-group"><label>Year</label><select value={newCourse.year} onChange={(e) => setNewCourse({ ...newCourse, year: parseInt(e.target.value) })} className="form-select">{[1, 2, 3, 4].map(y => <option key={y} value={y}>Year {y}</option>)}</select></div><div className="form-group"><label>Semester</label><select value={newCourse.semester} onChange={(e) => setNewCourse({ ...newCourse, semester: parseInt(e.target.value) })} className="form-select"><option value={1}>Semester 1</option><option value={2}>Semester 2</option></select></div><div className="form-group"><label>Credits</label><input type="number" value={newCourse.credits} onChange={(e) => setNewCourse({ ...newCourse, credits: parseInt(e.target.value) })} min="1" max="6" className="form-input" /></div></div>
+              <div className="form-group"><label>Department Code</label><input type="text" value={newCourse.department_code} onChange={(e) => setNewCourse({ ...newCourse, department_code: e.target.value })} placeholder="e.g., ENG, SCT" className="form-input" /></div>
+              <div className="form-group"><label>Program</label><input type="text" value={newCourse.program} onChange={(e) => setNewCourse({ ...newCourse, program: e.target.value })} placeholder="e.g., Computer Engineering" className="form-input" /></div>
               <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => setShowCourseModal(false)}
-                >
-                  Cancel
-                </button>
-                <button className="confirm-button" onClick={handleAddCourse}>
-                  Add Course
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Lecture Modal */}
-      {showLectureModal && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>Schedule New Lecture</h3>
-            {/* REQUIRED COHORT SELECTION FOR LECTURES */}
-            <div
-              style={{
-                background: "#f0fff4",
-                padding: "20px",
-                borderRadius: "10px",
-                marginBottom: "25px",
-                border: "2px solid #388e3c",
-              }}
-            >
-              <h4 style={{ margin: "0 0 10px 0", color: "#388e3c" }}>
-                Target Student Cohort (REQUIRED)
-              </h4>
-              <p
-                style={{
-                  fontSize: "14px",
-                  marginBottom: "15px",
-                  color: "#555",
-                }}
-              >
-                Select the exact group of students who should see this lecture.
-              </p>
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Academic Year *</label>
-                  <input
-                    type="text"
-                    value={selectedCohort.academic_year}
-                    onChange={(e) =>
-                      setSelectedCohort({
-                        ...selectedCohort,
-                        academic_year: e.target.value.trim(),
-                      })
-                    }
-                    placeholder="e.g. 2025/2029"
-                    className="form-input"
-                    style={{ borderColor: cohortError ? "#d32f2f" : "" }}
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Year of Study *</label>
-                  <select
-                    value={selectedCohort.year_of_study}
-                    onChange={(e) =>
-                      setSelectedCohort({
-                        ...selectedCohort,
-                        year_of_study: parseInt(e.target.value),
-                      })
-                    }
-                    className="form-select"
-                  >
-                    <option value={1}>Year 1</option>
-                    <option value={2}>Year 2</option>
-                    <option value={3}>Year 3</option>
-                    <option value={4}>Year 4</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Semester *</label>
-                  <select
-                    value={selectedCohort.semester}
-                    onChange={(e) =>
-                      setSelectedCohort({
-                        ...selectedCohort,
-                        semester: parseInt(e.target.value),
-                      })
-                    }
-                    className="form-select"
-                  >
-                    <option value={1}>Semester 1</option>
-                    <option value={2}>Semester 2</option>
-                  </select>
-                </div>
-              </div>
-              {cohortError && (
-                <p
-                  style={{
-                    color: "#d32f2f",
-                    fontWeight: "bold",
-                    marginTop: "10px",
-                  }}
-                >
-                  ⚠️ {cohortError}
-                </p>
-              )}
-            </div>
-            <div className="modal-form">
-              <div className="form-group">
-                <label className="form-label">Course</label>
-                <select
-                  value={newLecture.course_id}
-                  onChange={(e) =>
-                    setNewLecture({ ...newLecture, course_id: e.target.value })
-                  }
-                  className="form-select"
-                  required
-                >
-                  <option value="">Select a course</option>
-                  {courses
-                    .filter((course) => course.lecturer_id === profile.id)
-                    .map((course) => (
-                      <option key={course.id} value={course.id}>
-                        {course.course_code} - {course.course_name} (
-                        {course.department_code})
-                      </option>
-                    ))}
-                </select>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Title</label>
-                <input
-                  type="text"
-                  value={newLecture.title}
-                  onChange={(e) =>
-                    setNewLecture({ ...newLecture, title: e.target.value })
-                  }
-                  placeholder="Lecture title"
-                  className="form-input"
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Description</label>
-                <textarea
-                  value={newLecture.description}
-                  onChange={(e) =>
-                    setNewLecture({
-                      ...newLecture,
-                      description: e.target.value,
-                    })
-                  }
-                  placeholder="Lecture description"
-                  rows="3"
-                  className="form-textarea"
-                />
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Date</label>
-                  <input
-                    type="date"
-                    value={newLecture.scheduled_date}
-                    onChange={(e) =>
-                      setNewLecture({
-                        ...newLecture,
-                        scheduled_date: e.target.value,
-                      })
-                    }
-                    className="form-input"
-                    required
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Start Time</label>
-                  <input
-                    type="time"
-                    value={newLecture.start_time}
-                    onChange={(e) =>
-                      setNewLecture({
-                        ...newLecture,
-                        start_time: e.target.value,
-                      })
-                    }
-                    className="form-input"
-                    required
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">End Time</label>
-                  <input
-                    type="time"
-                    value={newLecture.end_time}
-                    onChange={(e) =>
-                      setNewLecture({ ...newLecture, end_time: e.target.value })
-                    }
-                    className="form-input"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">
-                  Google Meet Link (Optional)
-                </label>
-                <input
-                  type="url"
-                  value={newLecture.google_meet_link}
-                  onChange={(e) =>
-                    setNewLecture({
-                      ...newLecture,
-                      google_meet_link: e.target.value,
-                    })
-                  }
-                  placeholder="https://meet.google.com/xxx-xxxx-xxx"
-                  className="form-input"
-                />
-              </div>
-
-              <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => {
-                    setShowLectureModal(false);
-                    setSelectedCohort({
-                      academic_year: "",
-                      year_of_study: 1,
-                      semester: 1,
-                    });
-                    setCohortError("");
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="confirm-button"
-                  onClick={() => {
-                    if (!validateCohort()) return;
-                    handleAddLecture();
-                  }}
-                >
-                  Schedule Lecture
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Lecture Modal */}
-      {editingLecture && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>Edit Lecture</h3>
-            <div className="modal-form">
-              <div className="form-group">
-                <label className="form-label">Title</label>
-                <input
-                  type="text"
-                  value={editLecture.title}
-                  onChange={(e) =>
-                    setEditLecture({ ...editLecture, title: e.target.value })
-                  }
-                  className="form-input"
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Description</label>
-                <textarea
-                  value={editLecture.description}
-                  onChange={(e) =>
-                    setEditLecture({
-                      ...editLecture,
-                      description: e.target.value,
-                    })
-                  }
-                  rows="3"
-                  className="form-textarea"
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Google Meet Link</label>
-                <input
-                  type="url"
-                  value={editLecture.google_meet_link}
-                  onChange={(e) =>
-                    setEditLecture({
-                      ...editLecture,
-                      google_meet_link: e.target.value,
-                    })
-                  }
-                  placeholder="https://meet.google.com/xxx-xxxx-xxx"
-                  className="form-input"
-                />
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Date</label>
-                  <input
-                    type="date"
-                    value={editLecture.scheduled_date}
-                    onChange={(e) =>
-                      setEditLecture({
-                        ...editLecture,
-                        scheduled_date: e.target.value,
-                      })
-                    }
-                    className="form-input"
-                    required
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Start Time</label>
-                  <input
-                    type="time"
-                    value={editLecture.start_time}
-                    onChange={(e) =>
-                      setEditLecture({
-                        ...editLecture,
-                        start_time: e.target.value,
-                      })
-                    }
-                    className="form-input"
-                    required
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">End Time</label>
-                  <input
-                    type="time"
-                    value={editLecture.end_time}
-                    onChange={(e) =>
-                      setEditLecture({
-                        ...editLecture,
-                        end_time: e.target.value,
-                      })
-                    }
-                    className="form-input"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => setEditingLecture(null)}
-                >
-                  Cancel
-                </button>
-                <button className="confirm-button" onClick={handleEditLecture}>
-                  Update Lecture
-                </button>
+                <button className="cancel-button" onClick={() => setShowCourseModal(false)}>Cancel</button>
+                <button className="confirm-button" onClick={handleAddCourse}>Add Course</button>
               </div>
             </div>
           </div>
@@ -14417,2063 +4685,118 @@ useEffect(() => {
       )}
 
       {showExamsModal && (
-        <div className="modal-overlay">
-          <div className="modal large-modal">
+        <div className="modal-overlay" onClick={() => setShowExamsModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>Schedule New Exam</h3>
-
-            {/* Cohort Targeting - Replace this with your existing cohort section if different */}
-            <div
-              style={{
-                background: "#ffebee",
-                padding: "20px",
-                borderRadius: "10px",
-                marginBottom: "25px",
-                border: "2px solid #c62828",
-              }}
-            >
-              <h4 style={{ margin: "0 0 15px 0", color: "#c62828" }}>
-                🎯 Target Student Cohort (REQUIRED)
-              </h4>
-              <div className="form-row">
-                {/* Program Selection */}
-                <div className="form-group">
-                  <label>Program *</label>
-                  <select
-                    value={examTargetProgram}
-                    onChange={(e) => {
-                      setExamTargetProgram(e.target.value);
-                      setNewExam({ ...newExam, course_id: "" }); // Reset course when program changes
-                    }}
-                    className="form-select"
-                    required
-                  >
-                    <option value="">Select Program</option>
-                    {programs.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name} ({p.code})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Academic Year */}
-                <div className="form-group">
-                  <label>Academic Year *</label>
-                  <input
-                    type="text"
-                    value={examTargetCohort.academic_year}
-                    onChange={(e) =>
-                      setExamTargetCohort({
-                        ...examTargetCohort,
-                        academic_year: e.target.value.trim(),
-                      })
-                    }
-                    placeholder="e.g. 2025/2029"
-                    className="form-input"
-                    required
-                  />
-                </div>
-
-                {/* Year of Study */}
-                <div className="form-group">
-                  <label>Year of Study *</label>
-                  <select
-                    value={examTargetCohort.year_of_study}
-                    onChange={(e) =>
-                      setExamTargetCohort({
-                        ...examTargetCohort,
-                        year_of_study: parseInt(e.target.value),
-                      })
-                    }
-                    className="form-select"
-                    required
-                  >
-                    <option value="">Select Year</option>
-                    {[1, 2, 3, 4].map((y) => (
-                      <option key={y} value={y}>
-                        Year {y}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Semester */}
-                <div className="form-group">
-                  <label>Semester *</label>
-                  <select
-                    value={examTargetCohort.semester}
-                    onChange={(e) =>
-                      setExamTargetCohort({
-                        ...examTargetCohort,
-                        semester: parseInt(e.target.value),
-                      })
-                    }
-                    className="form-select"
-                    required
-                  >
-                    <option value="">Select Semester</option>
-                    <option value={1}>Semester 1</option>
-                    <option value={2}>Semester 2</option>
-                  </select>
-                </div>
-              </div>
-              {examCohortError && (
-                <p
-                  style={{
-                    color: "#d32f2f",
-                    fontWeight: "bold",
-                    marginTop: "10px",
-                  }}
-                >
-                  ⚠️ {examCohortError}
-                </p>
-              )}
-            </div>
-
             <div className="modal-form">
-              {/* Course Selection - Filtered by selected program */}
-              <div className="form-group">
-                <label>Course *</label>
-                <select
-                  value={newExam.course_id}
-                  onChange={(e) =>
-                    setNewExam({ ...newExam, course_id: e.target.value })
-                  }
-                  className="form-select"
-                  required
-                  disabled={!examTargetProgram}
-                >
-                  <option value="">
-                    {examTargetProgram
-                      ? examFilteredCourses.length === 0
-                        ? "No courses available"
-                        : "Select Course"
-                      : "Select Program first"}
-                  </option>
-                  {examFilteredCourses
-                    .filter((course) => course.lecturer_id === profile.id) // Only my courses
-                    .map((course) => (
-                      <option key={course.id} value={course.id}>
-                        {course.course_code} - {course.course_name} (
-                        {course.department_code})
-                      </option>
-                    ))}
-                </select>
-              </div>
-
-              {/* Exam Title */}
-              <div className="form-group">
-                <label>Title *</label>
-                <input
-                  type="text"
-                  value={newExam.title}
-                  onChange={(e) =>
-                    setNewExam({ ...newExam, title: e.target.value })
-                  }
-                  placeholder="e.g. Midterm Examination"
-                  className="form-input"
-                  required
-                />
-              </div>
-
-              {/* Description */}
-              <div className="form-group">
-                <label>Description</label>
-                <textarea
-                  value={newExam.description}
-                  onChange={(e) =>
-                    setNewExam({ ...newExam, description: e.target.value })
-                  }
-                  placeholder="Brief description of the exam"
-                  rows="3"
-                  className="form-textarea"
-                />
-              </div>
-
-              {/* Exam Type */}
-              <div className="form-group">
-                <label>Exam Type</label>
-                <select
-                  value={newExam.exam_type}
-                  onChange={(e) =>
-                    setNewExam({ ...newExam, exam_type: e.target.value })
-                  }
-                  className="form-select"
-                >
-                  <option value="written">Written</option>
-                  <option value="practical">Practical</option>
-                  <option value="oral">Oral</option>
-                  <option value="online">Online</option>
-                </select>
-              </div>
-              {/* ⭐ Submission Type - New! */}
-<div className="form-group">
-  <label>Submission Type *</label>
-  <select
-    value={newExam.submission_type || "both"}
-    onChange={(e) => {
-      const value = e.target.value;
-      setNewExam({ ...newExam, submission_type: value });
-      // If submission_type is 'text', clear exam files
-      if (value === 'text') {
-        setExamFiles([]);
-      }
-    }}
-    className="form-select"
-    required
-  >
-    <option value="text">📝 Text Answer Only</option>
-    <option value="file">📎 File Upload Only</option>
-    <option value="both">📝 Text + File Upload</option>
-  </select>
-  <small style={{ display: "block", marginTop: "5px", color: "#6c757d" }}>
-    {newExam.submission_type === "text" && "Students can only type their answers in the text area."}
-    {newExam.submission_type === "file" && "Students can only upload files as answers."}
-    {newExam.submission_type === "both" && "Students can type answers AND upload files."}
-  </small>
-</div>
-
-              {/* Total Marks */}
-              <div className="form-group">
-                <label>Total Marks *</label>
-                <input
-                  type="number"
-                  value={newExam.total_marks}
-                  onChange={(e) =>
-                    setNewExam({
-                      ...newExam,
-                      total_marks: parseInt(e.target.value) || 100,
-                    })
-                  }
-                  min="1"
-                  className="form-input"
-                  required
-                />
-              </div>
-
-              {/* Start & End Time */}
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Start Date & Time *</label>
-                  <input
-                    type="datetime-local"
-                    value={newExam.start_time}
-                    onChange={(e) =>
-                      setNewExam({ ...newExam, start_time: e.target.value })
-                    }
-                    className="form-input"
-                    required
-                  />
-                </div>
-                <div className="form-group">
-                  <label>End Date & Time *</label>
-                  <input
-                    type="datetime-local"
-                    value={newExam.end_time}
-                    onChange={(e) =>
-                      setNewExam({ ...newExam, end_time: e.target.value })
-                    }
-                    className="form-input"
-                    required
-                  />
-                </div>
-              </div>
-
-              {/* Duration Preview */}
-              <div
-                style={{
-                  padding: "12px 16px",
-                  backgroundColor: "#f0f8ff",
-                  borderRadius: "8px",
-                  margin: "15px 0",
-                  textAlign: "center",
-                  fontSize: "16px",
-                  color: "#1976d2",
-                }}
-              >
-                <strong>Calculated Duration:</strong>{" "}
-                <span style={{ fontSize: "18px", fontWeight: "bold" }}>
-                  {(() => {
-                    if (!newExam.start_time || !newExam.end_time) return "N/A";
-                    const start = new Date(newExam.start_time);
-                    const end = new Date(newExam.end_time);
-                    if (end <= start)
-                      return (
-                        <span style={{ color: "#d32f2f" }}>
-                          Invalid (end before start)
-                        </span>
-                      );
-                    const mins = Math.round((end - start) / 60000);
-                    return `${mins} minute${mins !== 1 ? "s" : ""}`;
-                  })()}
-                </span>
-              </div>
-
-              {/* Venue */}
-              <div className="form-group">
-                <label>Location/Venue</label>
-                <input
-                  type="text"
-                  value={newExam.venue || newExam.location || ""}
-                  onChange={(e) =>
-                    setNewExam({
-                      ...newExam,
-                      venue: e.target.value,
-                      location: e.target.value,
-                    })
-                  }
-                  placeholder="e.g. Main Hall, Online"
-                  className="form-input"
-                />
-              </div>
-
-             {/* Exam Files Upload - Only show if not 'text' only */}
-{newExam.submission_type !== "text" && (
-  <div className="form-group">
-    <label>
-      Exam Files (PDF, Word, etc.) - Students will download these
-      {newExam.submission_type === "file" && (
-        <span style={{ color: "#dc3545", fontWeight: "bold" }}> *Required</span>
-      )}
-    </label>
-    <div
-      className="file-upload-area"
-      onClick={() => examFileInputRef.current?.click()}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.currentTarget.classList.add("drag-over");
-      }}
-      onDragLeave={(e) => {
-        e.preventDefault();
-        e.currentTarget.classList.remove("drag-over");
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        e.currentTarget.classList.remove("drag-over");
-        setExamFiles((prev) => [
-          ...prev,
-          ...Array.from(e.dataTransfer.files),
-        ]);
-      }}
-      style={{
-        border: newExam.submission_type === "file" && examFiles.length === 0 
-          ? "2px dashed #dc3545" 
-          : "2px dashed #007bff"
-      }}
-    >
-      <input
-        type="file"
-        ref={examFileInputRef}
-        multiple
-        accept=".pdf,.doc,.docx,.ppt,.pptx,.zip"
-        onChange={(e) =>
-          setExamFiles((prev) => [
-            ...prev,
-            ...Array.from(e.target.files),
-          ])
-        }
-        style={{ display: "none" }}
-      />
-      <div className="upload-icon">📤</div>
-      <p>
-        <strong>Upload exam papers</strong>
-        {newExam.submission_type === "file" && (
-          <span style={{ color: "#dc3545" }}> *Required</span>
-        )}
-      </p>
-      <p className="small-text">
-        PDF, Word, PPT, ZIP (students download from student portal)
-      </p>
-      {newExam.submission_type === "file" && examFiles.length === 0 && (
-        <p style={{ color: "#dc3545", fontSize: "12px", marginTop: "5px" }}>
-          ⚠️ Please upload at least one file for file-only submission
-        </p>
-      )}
-    </div>
-
-    {uploadingExamFiles && (
-      <div className="upload-progress">
-        <div className="progress-bar">
-          <div
-            className="progress-fill"
-            style={{ width: `${examUploadProgress}%` }}
-          ></div>
-        </div>
-        <p>Uploading: {examUploadProgress}%</p>
-      </div>
-    )}
-
-    {examFiles.length > 0 && (
-      <div className="file-list">
-        <h4>Selected ({examFiles.length})</h4>
-        <div className="files-grid">
-          {examFiles.map((file, idx) => (
-            <div key={idx} className="file-item">
-              <span>
-                {file.name} ({(file.size / 1024 / 1024).toFixed(2)} MB)
-              </span>
-              <button
-                onClick={() =>
-                  setExamFiles((prev) =>
-                    prev.filter((_, i) => i !== idx),
-                  )
-                }
-              >
-                ×
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-    )}
-  </div>
-)}
-
-              {/* Modal Actions */}
+              <div className="form-group"><label>Course *</label><select value={newExam.course_id} onChange={(e) => setNewExam({ ...newExam, course_id: e.target.value })} className="form-select"><option value="">Select Course</option>{courses.map((course) => (<option key={course.id} value={course.id}>{course.course_code} - {course.course_name}</option>))}</select></div>
+              <div className="form-group"><label>Title *</label><input type="text" value={newExam.title} onChange={(e) => setNewExam({ ...newExam, title: e.target.value })} placeholder="e.g. Midterm Examination" className="form-input" /></div>
+              <div className="form-group"><label>Description</label><textarea value={newExam.description} onChange={(e) => setNewExam({ ...newExam, description: e.target.value })} placeholder="Brief description" rows="3" className="form-textarea" /></div>
+              <div className="form-row"><div className="form-group"><label>Start Date & Time *</label><input type="datetime-local" value={newExam.start_time} onChange={(e) => setNewExam({ ...newExam, start_time: e.target.value })} className="form-input" /></div><div className="form-group"><label>End Date & Time *</label><input type="datetime-local" value={newExam.end_time} onChange={(e) => setNewExam({ ...newExam, end_time: e.target.value })} className="form-input" /></div></div>
+              <div className="form-row"><div className="form-group"><label>Total Marks *</label><input type="number" value={newExam.total_marks} onChange={(e) => setNewExam({ ...newExam, total_marks: parseInt(e.target.value) || 100 })} min="1" className="form-input" /></div><div className="form-group"><label>Venue</label><input type="text" value={newExam.venue} onChange={(e) => setNewExam({ ...newExam, venue: e.target.value })} placeholder="e.g. Main Hall, Online" className="form-input" /></div></div>
               <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => {
-                    setShowExamsModal(false);
-                    setExamFiles([]);
-                    setExamTargetProgram("");
-                    setExamTargetCohort({
-                      academic_year: "",
-                      year_of_study: 1,
-                      semester: 1,
-                    });
-                    setExamCohortError("");
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="confirm-button"
-                  onClick={handleAddExam}
-                  disabled={uploadingExamFiles}
-                >
-                  {uploadingExamFiles ? "Uploading Files..." : "Schedule Exam"}
-                </button>
+                <button className="cancel-button" onClick={() => setShowExamsModal(false)}>Cancel</button>
+                <button className="confirm-button" onClick={handleAddExam}>Schedule Exam</button>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Finance Modal */}
       {showFinanceModal && (
-        <div className="modal-overlay">
-          <div className="modal">
+        <div className="modal-overlay" onClick={() => setShowFinanceModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>Add Financial Record</h3>
             <div className="modal-form">
-              <div className="form-group">
-                <label className="form-label">Student ID</label>
-                <input
-                  type="text"
-                  value={newFinanceRecord.student_id}
-                  onChange={(e) =>
-                    setNewFinanceRecord({
-                      ...newFinanceRecord,
-                      student_id: e.target.value,
-                    })
-                  }
-                  placeholder="Enter student ID"
-                  className="form-input"
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Description</label>
-                <input
-                  type="text"
-                  value={newFinanceRecord.description}
-                  onChange={(e) =>
-                    setNewFinanceRecord({
-                      ...newFinanceRecord,
-                      description: e.target.value,
-                    })
-                  }
-                  placeholder="e.g., Tuition Fee, Library Fine, etc."
-                  className="form-input"
-                  required
-                />
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Amount ($)</label>
-                  <input
-                    type="number"
-                    value={newFinanceRecord.amount}
-                    onChange={(e) =>
-                      setNewFinanceRecord({
-                        ...newFinanceRecord,
-                        amount: parseFloat(e.target.value),
-                      })
-                    }
-                    min="0"
-                    step="0.01"
-                    className="form-input"
-                    required
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Payment Date</label>
-                  <input
-                    type="date"
-                    value={newFinanceRecord.payment_date}
-                    onChange={(e) =>
-                      setNewFinanceRecord({
-                        ...newFinanceRecord,
-                        payment_date: e.target.value,
-                      })
-                    }
-                    className="form-input"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Status</label>
-                <select
-                  value={newFinanceRecord.status}
-                  onChange={(e) =>
-                    setNewFinanceRecord({
-                      ...newFinanceRecord,
-                      status: e.target.value,
-                    })
-                  }
-                  className="form-select"
-                >
-                  <option value="pending">Pending</option>
-                  <option value="paid">Paid</option>
-                  <option value="cancelled">Cancelled</option>
-                </select>
-              </div>
-
+              <div className="form-group"><label>Student ID *</label><input type="text" value={newFinanceRecord.student_id} onChange={(e) => setNewFinanceRecord({ ...newFinanceRecord, student_id: e.target.value })} placeholder="Enter student ID" className="form-input" /></div>
+              <div className="form-group"><label>Description *</label><input type="text" value={newFinanceRecord.description} onChange={(e) => setNewFinanceRecord({ ...newFinanceRecord, description: e.target.value })} placeholder="e.g., Tuition Fee, Library Fine" className="form-input" /></div>
+              <div className="form-row"><div className="form-group"><label>Amount ($) *</label><input type="number" value={newFinanceRecord.amount} onChange={(e) => setNewFinanceRecord({ ...newFinanceRecord, amount: parseFloat(e.target.value) || 0 })} min="0" step="0.01" className="form-input" /></div><div className="form-group"><label>Payment Date</label><input type="date" value={newFinanceRecord.payment_date} onChange={(e) => setNewFinanceRecord({ ...newFinanceRecord, payment_date: e.target.value })} className="form-input" /></div></div>
+              <div className="form-group"><label>Status</label><select value={newFinanceRecord.status} onChange={(e) => setNewFinanceRecord({ ...newFinanceRecord, status: e.target.value })} className="form-select"><option value="pending">Pending</option><option value="paid">Paid</option><option value="cancelled">Cancelled</option></select></div>
               <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => setShowFinanceModal(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="confirm-button"
-                  onClick={handleAddFinanceRecord}
-                >
-                  Add Record
-                </button>
+                <button className="cancel-button" onClick={() => setShowFinanceModal(false)}>Cancel</button>
+                <button className="confirm-button" onClick={handleAddFinanceRecord}>Add Record</button>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Attendance Modal */}
-      {showAttendanceModal && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>Add Attendance Record</h3>
-            <div className="modal-form">
-              <div className="form-group">
-                <label className="form-label">Student ID</label>
-                <input
-                  type="text"
-                  value={newAttendanceRecord.student_id}
-                  onChange={(e) =>
-                    setNewAttendanceRecord({
-                      ...newAttendanceRecord,
-                      student_id: e.target.value,
-                    })
-                  }
-                  placeholder="Enter student ID"
-                  className="form-input"
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Lecture ID (Optional)</label>
-                <input
-                  type="text"
-                  value={newAttendanceRecord.lecture_id}
-                  onChange={(e) =>
-                    setNewAttendanceRecord({
-                      ...newAttendanceRecord,
-                      lecture_id: e.target.value,
-                    })
-                  }
-                  placeholder="Enter lecture ID"
-                  className="form-input"
-                />
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Date</label>
-                  <input
-                    type="date"
-                    value={newAttendanceRecord.date}
-                    onChange={(e) =>
-                      setNewAttendanceRecord({
-                        ...newAttendanceRecord,
-                        date: e.target.value,
-                      })
-                    }
-                    className="form-input"
-                    required
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Status</label>
-                  <select
-                    value={newAttendanceRecord.status}
-                    onChange={(e) =>
-                      setNewAttendanceRecord({
-                        ...newAttendanceRecord,
-                        status: e.target.value,
-                      })
-                    }
-                    className="form-select"
-                  >
-                    <option value="present">Present</option>
-                    <option value="absent">Absent</option>
-                    <option value="late">Late</option>
-                    <option value="excused">Excused</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Check-in Time</label>
-                  <input
-                    type="time"
-                    value={newAttendanceRecord.check_in_time}
-                    onChange={(e) =>
-                      setNewAttendanceRecord({
-                        ...newAttendanceRecord,
-                        check_in_time: e.target.value,
-                      })
-                    }
-                    className="form-input"
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Check-out Time</label>
-                  <input
-                    type="time"
-                    value={newAttendanceRecord.check_out_time}
-                    onChange={(e) =>
-                      setNewAttendanceRecord({
-                        ...newAttendanceRecord,
-                        check_out_time: e.target.value,
-                      })
-                    }
-                    className="form-input"
-                  />
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Remarks</label>
-                <textarea
-                  value={newAttendanceRecord.remarks}
-                  onChange={(e) =>
-                    setNewAttendanceRecord({
-                      ...newAttendanceRecord,
-                      remarks: e.target.value,
-                    })
-                  }
-                  placeholder="Any remarks or notes"
-                  rows="3"
-                  className="form-textarea"
-                />
-              </div>
-
-              <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => setShowAttendanceModal(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="confirm-button"
-                  onClick={handleAddAttendanceRecord}
-                >
-                  Add Record
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Create/Edit Program Timetable Modal */}
       {showTimetableModal && (
-        <div className="modal-overlay">
-          <div className="modal">
+        <div className="modal-overlay" onClick={() => setShowTimetableModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>{selectedTimetable ? "Edit" : "Create New"} Timetable</h3>
             <div className="modal-form">
-              <div className="form-group">
-                <label>Program</label>
-                <select
-                  value={newTimetable.program_id}
-                  onChange={(e) =>
-                    setNewTimetable({
-                      ...newTimetable,
-                      program_id: e.target.value,
-                    })
-                  }
-                  className="form-select"
-                  disabled={selectedTimetable} // Can't change program after creation
-                >
-                  <option value="">Select Program</option>
-                  {programs.map((prog) => (
-                    <option key={prog.id} value={prog.id}>
-                      {prog.name} ({prog.code})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Academic Year</label>
-                  <input
-                    type="text"
-                    value={newTimetable.academic_year}
-                    onChange={(e) =>
-                      setNewTimetable({
-                        ...newTimetable,
-                        academic_year: e.target.value,
-                      })
-                    }
-                    placeholder="e.g. 2024/2025"
-                    className="form-input"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Semester</label>
-                  <select
-                    value={newTimetable.semester}
-                    onChange={(e) =>
-                      setNewTimetable({
-                        ...newTimetable,
-                        semester: parseInt(e.target.value),
-                      })
-                    }
-                    className="form-select"
-                  >
-                    <option value={1}>Semester 1</option>
-                    <option value={2}>Semester 2</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Year of Study</label>
-                  <select
-                    value={newTimetable.year_of_study}
-                    onChange={(e) =>
-                      setNewTimetable({
-                        ...newTimetable,
-                        year_of_study: parseInt(e.target.value),
-                      })
-                    }
-                    className="form-select"
-                  >
-                    {[1, 2, 3, 4].map((y) => (
-                      <option key={y} value={y}>
-                        Year {y}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
+              <div className="form-group"><label>Program</label><select value={newTimetable.program_id} onChange={(e) => setNewTimetable({ ...newTimetable, program_id: e.target.value })} className="form-select" disabled={selectedTimetable}><option value="">Select Program</option>{programs.map((prog) => (<option key={prog.id} value={prog.id}>{prog.name} ({prog.code})</option>))}</select></div>
+              <div className="form-row"><div className="form-group"><label>Academic Year</label><input type="text" value={newTimetable.academic_year} onChange={(e) => setNewTimetable({ ...newTimetable, academic_year: e.target.value })} placeholder="e.g. 2024/2025" className="form-input" /></div><div className="form-group"><label>Semester</label><select value={newTimetable.semester} onChange={(e) => setNewTimetable({ ...newTimetable, semester: parseInt(e.target.value) })} className="form-select"><option value={1}>Semester 1</option><option value={2}>Semester 2</option></select></div><div className="form-group"><label>Year of Study</label><select value={newTimetable.year_of_study} onChange={(e) => setNewTimetable({ ...newTimetable, year_of_study: parseInt(e.target.value) })} className="form-select">{[1, 2, 3, 4].map((y) => (<option key={y} value={y}>Year {y}</option>))}</select></div></div>
               <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => {
-                    setShowTimetableModal(false);
-                    setSelectedTimetable(null);
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="confirm-button"
-                  onClick={handleSaveTimetable}
-                >
-                  Save Timetable
-                </button>
+                <button className="cancel-button" onClick={() => setShowTimetableModal(false)}>Cancel</button>
+                <button className="confirm-button" onClick={handleSaveTimetable}>Save Timetable</button>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Add/Edit Slot Modal */}
       {showSlotModal && selectedTimetable && (
-        <div className="modal-overlay">
-          <div className="modal">
+        <div className="modal-overlay" onClick={() => setShowSlotModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>{editingSlot ? "Edit" : "Add New"} Time Slot</h3>
             <div className="modal-form">
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Course Code</label>
-                  <input
-                    type="text"
-                    value={newSlot.course_code}
-                    onChange={(e) =>
-                      setNewSlot({ ...newSlot, course_code: e.target.value })
-                    }
-                    placeholder="e.g. CSC301"
-                    className="form-input"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Course Name</label>
-                  <input
-                    type="text"
-                    value={newSlot.course_name}
-                    onChange={(e) =>
-                      setNewSlot({ ...newSlot, course_name: e.target.value })
-                    }
-                    placeholder="e.g. Database Systems"
-                    className="form-input"
-                  />
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label>Lecturer</label>
-                <select
-                  value={newSlot.lecturer_id}
-                  onChange={(e) =>
-                    setNewSlot({ ...newSlot, lecturer_id: e.target.value })
-                  }
-                  className="form-select"
-                >
-                  <option value="">Not Assigned</option>
-                  {lecturersList.map((lec) => (
-                    <option key={lec.id} value={lec.id}>
-                      {lec.full_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Day</label>
-                  <select
-                    value={newSlot.day_of_week}
-                    onChange={(e) =>
-                      setNewSlot({
-                        ...newSlot,
-                        day_of_week: parseInt(e.target.value),
-                      })
-                    }
-                    className="form-select"
-                  >
-                    <option value={1}>Monday</option>
-                    <option value={2}>Tuesday</option>
-                    <option value={3}>Wednesday</option>
-                    <option value={4}>Thursday</option>
-                    <option value={5}>Friday</option>
-                    <option value={6}>Saturday</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Start Time</label>
-                  <input
-                    type="time"
-                    value={newSlot.start_time}
-                    onChange={(e) =>
-                      setNewSlot({ ...newSlot, start_time: e.target.value })
-                    }
-                    className="form-input"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>End Time</label>
-                  <input
-                    type="time"
-                    value={newSlot.end_time}
-                    onChange={(e) =>
-                      setNewSlot({ ...newSlot, end_time: e.target.value })
-                    }
-                    className="form-input"
-                  />
-                </div>
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Room</label>
-                  <input
-                    type="text"
-                    value={newSlot.room_number}
-                    onChange={(e) =>
-                      setNewSlot({ ...newSlot, room_number: e.target.value })
-                    }
-                    placeholder="e.g. 101"
-                    className="form-input"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Building</label>
-                  <input
-                    type="text"
-                    value={newSlot.building}
-                    onChange={(e) =>
-                      setNewSlot({ ...newSlot, building: e.target.value })
-                    }
-                    placeholder="e.g. CS Building"
-                    className="form-input"
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Type</label>
-                  <select
-                    value={newSlot.slot_type}
-                    onChange={(e) =>
-                      setNewSlot({ ...newSlot, slot_type: e.target.value })
-                    }
-                    className="form-select"
-                  >
-                    <option value="lecture">Lecture</option>
-                    <option value="lab">Lab</option>
-                    <option value="tutorial">Tutorial</option>
-                    <option value="practical">Practical</option>
-                  </select>
-                </div>
-              </div>
-
+              <div className="form-row"><div className="form-group"><label>Course Code</label><input type="text" value={newSlot.course_code} onChange={(e) => setNewSlot({ ...newSlot, course_code: e.target.value })} placeholder="e.g. CSC301" className="form-input" /></div><div className="form-group"><label>Course Name</label><input type="text" value={newSlot.course_name} onChange={(e) => setNewSlot({ ...newSlot, course_name: e.target.value })} placeholder="e.g. Database Systems" className="form-input" /></div></div>
+              <div className="form-group"><label>Lecturer</label><select value={newSlot.lecturer_id} onChange={(e) => setNewSlot({ ...newSlot, lecturer_id: e.target.value })} className="form-select"><option value="">Not Assigned</option>{lecturersList.map((lec) => (<option key={lec.id} value={lec.id}>{lec.full_name}</option>))}</select></div>
+              <div className="form-row"><div className="form-group"><label>Day</label><select value={newSlot.day_of_week} onChange={(e) => setNewSlot({ ...newSlot, day_of_week: parseInt(e.target.value) })} className="form-select"><option value={1}>Monday</option><option value={2}>Tuesday</option><option value={3}>Wednesday</option><option value={4}>Thursday</option><option value={5}>Friday</option><option value={6}>Saturday</option></select></div><div className="form-group"><label>Start Time</label><input type="time" value={newSlot.start_time} onChange={(e) => setNewSlot({ ...newSlot, start_time: e.target.value })} className="form-input" /></div><div className="form-group"><label>End Time</label><input type="time" value={newSlot.end_time} onChange={(e) => setNewSlot({ ...newSlot, end_time: e.target.value })} className="form-input" /></div></div>
+              <div className="form-row"><div className="form-group"><label>Room</label><input type="text" value={newSlot.room_number} onChange={(e) => setNewSlot({ ...newSlot, room_number: e.target.value })} placeholder="e.g. 101" className="form-input" /></div><div className="form-group"><label>Building</label><input type="text" value={newSlot.building} onChange={(e) => setNewSlot({ ...newSlot, building: e.target.value })} placeholder="e.g. CS Building" className="form-input" /></div><div className="form-group"><label>Type</label><select value={newSlot.slot_type} onChange={(e) => setNewSlot({ ...newSlot, slot_type: e.target.value })} className="form-select"><option value="lecture">Lecture</option><option value="lab">Lab</option><option value="tutorial">Tutorial</option><option value="practical">Practical</option></select></div></div>
               <div className="modal-actions">
-                <button
-                  className="cancel-button"
-                  onClick={() => {
-                    setShowSlotModal(false);
-                    setEditingSlot(null);
-                  }}
-                >
-                  Cancel
-                </button>
-                <button className="confirm-button" onClick={handleSaveSlot}>
-                  {editingSlot ? "Update" : "Add"} Slot
-                </button>
+                <button className="cancel-button" onClick={() => setShowSlotModal(false)}>Cancel</button>
+                <button className="confirm-button" onClick={handleSaveSlot}>{editingSlot ? "Update" : "Add"} Slot</button>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Logout Modal */}
+      {showProgramModal && (
+        <div className="modal-overlay" onClick={() => setShowProgramModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>{editingProgram ? "Edit" : "Add New"} Program</h3>
+            <div className="modal-form">
+              <div className="form-group"><label>Program Name *</label><input type="text" value={newProgram.name} onChange={(e) => setNewProgram({ ...newProgram, name: e.target.value })} placeholder="e.g. Bachelor of Science in Computer Engineering" className="form-input" /></div>
+              <div className="form-group"><label>Program Code *</label><input type="text" value={newProgram.code} onChange={(e) => setNewProgram({ ...newProgram, code: e.target.value.toUpperCase().replace(/\s/g, "") })} placeholder="e.g. BSCE" className="form-input" /></div>
+              <div className="modal-actions">
+                <button className="cancel-button" onClick={() => setShowProgramModal(false)}>Cancel</button>
+                <button className="confirm-button" onClick={handleSaveProgram}>{editingProgram ? "Update" : "Add"} Program</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeptAssignmentModal && selectedLecturerForDept && (
+        <DepartmentAssignmentModal lecturer={selectedLecturerForDept} onClose={() => { setShowDeptAssignmentModal(false); setSelectedLecturerForDept(null); }} onAssign={() => { fetchLecturers(); fetchDashboardStats(); }} />
+      )}
+
+      {showCourseAssignmentModal && selectedLecturerForCourses && (
+        <CourseAssignmentModal lecturer={selectedLecturerForCourses} onClose={() => { setShowCourseAssignmentModal(false); setSelectedLecturerForCourses(null); }} onAssign={() => { fetchLecturers(); }} />
+      )}
+
+      {showProfilePictureModal && selectedStudentForPicture && (
+        <StudentProfilePictureModal student={selectedStudentForPicture} onClose={() => { setShowProfilePictureModal(false); setSelectedStudentForPicture(null); }} onUpdate={handleStudentPictureUpdate} />
+      )}
+
       {showLogoutModal && (
-        <div className="modal-overlay">
-          <div className="small-modal">
+        <div className="modal-overlay" onClick={() => setShowLogoutModal(false)}>
+          <div className="small-modal" onClick={(e) => e.stopPropagation()}>
             <h3>Confirm Logout</h3>
             <p>Are you sure you want to logout?</p>
             <div className="modal-actions">
-              <button
-                className="cancel-button"
-                onClick={() => setShowLogoutModal(false)}
-              >
-                Cancel
-              </button>
-              <button className="confirm-logout-button" onClick={handleLogout}>
-                Logout
-              </button>
+              <button className="cancel-button" onClick={() => setShowLogoutModal(false)}>Cancel</button>
+              <button className="confirm-logout-button" onClick={handleLogout}>Logout</button>
             </div>
           </div>
         </div>
       )}
-
-      {/* Enroll Courses Modal */}
-      {showEnrollModal && enrollStudent && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>Enroll {enrollStudent.full_name} in Courses</h3>
-            <p>
-              <strong>ID:</strong> {enrollStudent.student_id}
-              <br />
-              <strong>Program:</strong> {enrollStudent.program} (
-              {enrollStudent.program_code})<br />
-              <strong>Current:</strong> Year {enrollStudent.year_of_study},
-              Semester {enrollStudent.semester}
-            </p>
-
-            <div className="enrollment-options">
-              <div className="option-card">
-                <h4>Enroll in All Program Courses</h4>
-                <p>
-                  This will enroll the student in{" "}
-                  <strong>ALL active courses</strong> belonging to their
-                  program:
-                </p>
-                <ul>
-                  <li>
-                    Program: <strong>{enrollStudent.program}</strong>
-                  </li>
-                  <li>
-                    Program Code: <strong>{enrollStudent.program_code}</strong>
-                  </li>
-                  <li>
-                    Total Active Courses Found: Will be shown after confirmation
-                  </li>
-                </ul>
-                <p>
-                  <strong>
-                    Includes courses from all years and semesters.
-                  </strong>
-                </p>
-                <button
-                  className="confirm-button"
-                  onClick={async () => {
-                    if (
-                      !window.confirm(
-                        `Enroll ${enrollStudent.full_name} in ALL active courses for program ${enrollStudent.program_code}?\n\n` +
-                          `This includes courses from all years and semesters.\n` +
-                          `Already enrolled courses will be skipped safely.`,
-                      )
-                    )
-                      return;
-
-                    try {
-                      // Fetch all active courses for this program code
-                      const { data: courses, error: fetchError } =
-                        await supabase
-                          .from("courses")
-                          .select("id")
-                          .eq("program_code", enrollStudent.program_code)
-                          .eq("is_active", true);
-
-                      if (fetchError) throw fetchError;
-
-                      if (courses.length === 0) {
-                        alert(
-                          `No active courses found for program code: ${enrollStudent.program_code}`,
-                        );
-                        return;
-                      }
-
-                      const enrollments = courses.map((c) => ({
-                        student_id: enrollStudent.id,
-                        course_id: c.id,
-                        program_code: enrollStudent.program_code
-                          .trim()
-                          .toUpperCase(), // ← ADD THIS LINE
-                        status: "enrolled",
-                        enrollment_date: new Date().toISOString().split("T")[0],
-                        created_at: new Date().toISOString(),
-                        updated_at: new Date().toISOString(),
-                      }));
-
-                      const { error: insertError } = await supabase
-                        .from("student_courses")
-                        .upsert(enrollments, {
-                          onConflict: "student_id,course_id", // ← Only these two columns
-                          ignoreDuplicates: true,
-                        });
-
-                      if (insertError) {
-                        console.error("Upsert error:", insertError);
-                        alert(
-                          "Some enrollments may have failed: " +
-                            insertError.message,
-                        );
-                      } else {
-                        alert(
-                          `✅ Successfully enrolled in ${enrollments.length} course(s)! (Duplicates skipped safely)`,
-                        );
-                      }
-
-                      setShowEnrollModal(false);
-                      setEnrollStudent(null);
-                    } catch (err) {
-                      console.error("Enrollment failed:", err);
-                      alert("Enrollment failed: " + err.message);
-                    }
-                  }}
-                >
-                  Enroll in All Courses ({enrollStudent.program_code})
-                </button>
-              </div>
-
-              <div className="option-card">
-                <h4>Custom Enrollment Later</h4>
-                <p>
-                  You can create a custom SQL query or use bulk tools if needed.
-                </p>
-              </div>
-            </div>
-
-            <div className="modal-actions">
-              <button
-                className="cancel-button"
-                onClick={() => {
-                  setShowEnrollModal(false);
-                  setEnrollStudent(null);
-                }}
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <footer className="footer">
-        <p>
-          © {new Date().getFullYear()} NLE University •{" "}
-          {isAdmin ? "Admin Portal" : "Lecturer Portal"}
-        </p>
-        <p className="footer-stats">
-          {isAdmin
-            ? `Total Students: ${stats.totalStudents} | Lecturers: ${stats.totalLecturers} | Last Updated: ${new Date().toLocaleTimeString()}`
-            : `Your Students: ${stats.totalStudents} | Courses: ${stats.totalCourses} | Departments: ${allowedDepartments?.length || 0}`}
-        </p>
-      </footer>
-      {/* Profile Picture Modal */}
-      {showProfilePictureModal && selectedStudentForPicture && (
-        <StudentProfilePictureModal
-          student={selectedStudentForPicture}
-          onClose={() => {
-            setShowProfilePictureModal(false);
-            setSelectedStudentForPicture(null);
-          }}
-          onUpdate={handleStudentPictureUpdate}
-        />
-      )}
-     {/* Text Answers Modal - Word Document Style */}
-{showTextAnswersModal && (
-  <div className="modal-overlay" onClick={() => {
-    setShowTextAnswersModal(false);
-    setSelectedTextAnswer(null);
-  }}>
-    <div className="modal large-modal" style={{ maxWidth: "900px", maxHeight: "90vh", overflow: "hidden" }} onClick={(e) => e.stopPropagation()}>
-      <div style={{ 
-        display: "flex", 
-        justifyContent: "space-between", 
-        alignItems: "center", 
-        padding: "20px 24px",
-        borderBottom: "2px solid #e9ecef",
-        backgroundColor: "#f8f9fa",
-        borderRadius: "16px 16px 0 0"
-      }}>
-        <div>
-          <h3 style={{ margin: 0, color: "#2c3e50" }}>
-            <i className="fas fa-file-word" style={{ color: "#2b579a", marginRight: "10px" }}></i>
-            Text Answer
-          </h3>
-          <p style={{ margin: "5px 0 0 0", color: "#6c757d", fontSize: "14px" }}>
-            {selectedTextAnswer?.student_name || "Student"} - {selectedExamForGrading?.course_code || "Exam"}
-          </p>
-        </div>
-        <button 
-          onClick={() => {
-            setShowTextAnswersModal(false);
-            setSelectedTextAnswer(null);
-          }}
-          style={{
-            background: "none",
-            border: "none",
-            fontSize: "24px",
-            cursor: "pointer",
-            color: "#6c757d",
-            padding: "5px 10px",
-            borderRadius: "4px",
-            transition: "all 0.2s"
-          }}
-          onMouseEnter={(e) => e.target.style.backgroundColor = "#e9ecef"}
-          onMouseLeave={(e) => e.target.style.backgroundColor = "transparent"}
-        >
-          ✕
-        </button>
-      </div>
-      
-      <div style={{ 
-        padding: "24px", 
-        overflowY: "auto", 
-        maxHeight: "calc(90vh - 150px)",
-        backgroundColor: "white"
-      }}>
-        {/* Document Header */}
-        <div style={{ 
-          textAlign: "center", 
-          borderBottom: "2px solid #2b579a", 
-          paddingBottom: "20px", 
-          marginBottom: "30px"
-        }}>
-          <h2 style={{ margin: 0, color: "#2b579a", fontSize: "24px" }}>
-            NLE UNIVERSITY
-          </h2>
-          <h3 style={{ margin: "5px 0", color: "#333", fontSize: "18px" }}>
-            EXAMINATION TEXT ANSWER
-          </h3>
-          <p style={{ margin: "5px 0", color: "#666", fontSize: "14px" }}>
-            {selectedExamForGrading?.title || "Exam"} - {selectedExamForGrading?.course_code || "N/A"}
-          </p>
-          <p style={{ margin: "5px 0", color: "#999", fontSize: "12px" }}>
-            Generated: {new Date().toLocaleString()}
-          </p>
-        </div>
-
-        {/* Student Info */}
-        {selectedTextAnswer && (
-          <div style={{
-            backgroundColor: "#f8f9fa",
-            padding: "20px",
-            borderRadius: "8px",
-            marginBottom: "30px",
-            border: "1px solid #e9ecef"
-          }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "15px" }}>
-              <div>
-                <div style={{ fontSize: "12px", color: "#999", marginBottom: "4px" }}>STUDENT NAME</div>
-                <div style={{ fontSize: "16px", fontWeight: "bold", color: "#2c3e50" }}>
-                  {selectedTextAnswer.student_name || "Unknown Student"}
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: "12px", color: "#999", marginBottom: "4px" }}>REGISTRATION NUMBER</div>
-                <div style={{ fontSize: "16px", fontWeight: "bold", color: "#2c3e50" }}>
-                  {selectedTextAnswer.registration_number || "N/A"}
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: "12px", color: "#999", marginBottom: "4px" }}>EMAIL</div>
-                <div style={{ fontSize: "16px", fontWeight: "bold", color: "#2c3e50" }}>
-                  {selectedTextAnswer.student_email || "N/A"}
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: "12px", color: "#999", marginBottom: "4px" }}>SUBMITTED AT</div>
-                <div style={{ fontSize: "16px", fontWeight: "bold", color: "#2c3e50" }}>
-                  {selectedTextAnswer.submitted_at ? new Date(selectedTextAnswer.submitted_at).toLocaleString() : "N/A"}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Status Badge */}
-        {selectedTextAnswer && (
-          <div style={{ marginBottom: "20px", display: "flex", gap: "10px", alignItems: "center" }}>
-            <span style={{
-              padding: "6px 16px",
-              borderRadius: "20px",
-              fontSize: "14px",
-              fontWeight: "bold",
-              backgroundColor: selectedTextAnswer.status === "graded" ? "#4caf50" : "#ff9800",
-              color: "white"
-            }}>
-              {selectedTextAnswer.status === "graded" ? "✓ GRADED" : "⏳ PENDING"}
-            </span>
-            {selectedTextAnswer.status === "graded" && selectedTextAnswer.total_marks_obtained !== null && (
-              <span style={{
-                padding: "6px 16px",
-                borderRadius: "20px",
-                fontSize: "14px",
-                fontWeight: "bold",
-                backgroundColor: "#1976d2",
-                color: "white"
-              }}>
-                Score: {selectedTextAnswer.total_marks_obtained}/{selectedExamForGrading?.total_marks || 100}
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* Answer Text - Full View */}
-        {selectedTextAnswer && (
-          <div style={{
-            padding: "25px",
-            backgroundColor: "white",
-            borderRadius: "8px",
-            border: "2px solid #e0e0e0",
-            minHeight: "300px",
-            marginBottom: "20px"
-          }}>
-            <div style={{
-              fontSize: "14px",
-              color: "#999",
-              marginBottom: "15px",
-              fontWeight: "bold",
-              letterSpacing: "1px",
-              borderBottom: "1px solid #e9ecef",
-              paddingBottom: "10px"
-            }}>
-              📝 ANSWER TEXT
-            </div>
-            <div style={{
-              fontSize: "17px",
-              lineHeight: "2",
-              color: "#333",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word"
-            }}>
-              {selectedTextAnswer.answer_text}
-            </div>
-          </div>
-        )}
-
-        {/* Feedback if graded */}
-        {selectedTextAnswer?.status === "graded" && selectedTextAnswer?.feedback && (
-          <div style={{
-            padding: "15px 20px",
-            backgroundColor: "#e8f5e9",
-            borderRadius: "8px",
-            borderLeft: "4px solid #4caf50"
-          }}>
-            <div style={{ fontSize: "14px", fontWeight: "bold", color: "#2e7d32" }}>
-              <i className="fas fa-comment"></i> Feedback:
-            </div>
-            <div style={{ fontSize: "15px", color: "#333", marginTop: "8px", lineHeight: "1.6" }}>
-              {selectedTextAnswer.feedback}
-            </div>
-          </div>
-        )}
-        
-        {/* Footer */}
-        <div style={{
-          textAlign: "center",
-          borderTop: "2px solid #e9ecef",
-          paddingTop: "20px",
-          marginTop: "30px",
-          color: "#999",
-          fontSize: "12px"
-        }}>
-          <p style={{ margin: 0 }}>
-            NLE University - Examination Department
-          </p>
-          <p style={{ margin: "5px 0 0 0" }}>
-            Generated on: {new Date().toLocaleString()}
-          </p>
-        </div>
-      </div>
-      
-      {/* Footer Actions */}
-      <div style={{
-        padding: "16px 24px",
-        borderTop: "1px solid #e9ecef",
-        backgroundColor: "#f8f9fa",
-        borderRadius: "0 0 16px 16px",
-        display: "flex",
-        justifyContent: "flex-end",
-        gap: "12px"
-      }}>
-        <button
-          onClick={() => {
-            setShowTextAnswersModal(false);
-            setSelectedTextAnswer(null);
-          }}
-          style={{
-            padding: "10px 24px",
-            backgroundColor: "#6c757d",
-            color: "white",
-            border: "none",
-            borderRadius: "8px",
-            fontSize: "14px",
-            fontWeight: "500",
-            cursor: "pointer"
-          }}
-        >
-          Close
-        </button>
-        {selectedTextAnswer && (
-          <button
-            onClick={() => {
-              // Copy to clipboard
-              navigator.clipboard.writeText(selectedTextAnswer.answer_text)
-                .then(() => alert("Answer text copied to clipboard!"))
-                .catch(() => alert("Failed to copy"));
-            }}
-            style={{
-              padding: "10px 24px",
-              backgroundColor: "#28a745",
-              color: "white",
-              border: "none",
-              borderRadius: "8px",
-              fontSize: "14px",
-              fontWeight: "500",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "8px"
-            }}
-          >
-            <i className="fas fa-copy"></i>
-            Copy Text
-          </button>
-        )}
-      </div>
-    </div>
-  </div>
-      )}
-      
-      {/* Edit Exam Modal */}
-{editingExam && (
-  <div className="modal-overlay">
-    <div className="modal large-modal">
-      <h3>✏️ Edit Exam</h3>
-      <p style={{ color: "#666", marginBottom: "15px" }}>
-        Editing: <strong>{editingExam.title}</strong> ({editingExam.courses?.course_code || "N/A"})
-      </p>
-      
-      <div className="modal-form">
-        <div className="form-group">
-          <label className="form-label">Title *</label>
-          <input
-            type="text"
-            value={editExam.title || ""}
-            onChange={(e) =>
-              setEditExam({ ...editExam, title: e.target.value })
-            }
-            className="form-input"
-            required
-          />
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Description</label>
-          <textarea
-            value={editExam.description || ""}
-            onChange={(e) =>
-              setEditExam({ ...editExam, description: e.target.value })
-            }
-            rows="3"
-            className="form-textarea"
-          />
-        </div>
-
-        <div className="form-row">
-          <div className="form-group">
-            <label className="form-label">Start Date & Time *</label>
-            <input
-              type="datetime-local"
-              value={editExam.start_time || ""}
-              onChange={(e) =>
-                setEditExam({ ...editExam, start_time: e.target.value })
-              }
-              className="form-input"
-              required
-            />
-          </div>
-          <div className="form-group">
-            <label className="form-label">End Date & Time *</label>
-            <input
-              type="datetime-local"
-              value={editExam.end_time || ""}
-              onChange={(e) =>
-                setEditExam({ ...editExam, end_time: e.target.value })
-              }
-              className="form-input"
-              required
-            />
-          </div>
-        </div>
-
-        <div className="form-row">
-          <div className="form-group">
-            <label className="form-label">Total Marks *</label>
-            <input
-              type="number"
-              value={editExam.total_marks || 100}
-              onChange={(e) =>
-                setEditExam({ ...editExam, total_marks: parseInt(e.target.value) || 100 })
-              }
-              min="1"
-              className="form-input"
-              required
-            />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Exam Type</label>
-            <select
-              value={editExam.exam_type || "online"}
-              onChange={(e) =>
-                setEditExam({ ...editExam, exam_type: e.target.value })
-              }
-              className="form-select"
-            >
-              <option value="written">Written</option>
-              <option value="practical">Practical</option>
-              <option value="oral">Oral</option>
-              <option value="online">Online</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="form-row">
-          <div className="form-group">
-            <label className="form-label">Venue/Location</label>
-            <input
-              type="text"
-              value={editExam.venue || ""}
-              onChange={(e) =>
-                setEditExam({ ...editExam, venue: e.target.value })
-              }
-              placeholder="e.g. Main Hall, Online"
-              className="form-input"
-            />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Status</label>
-            <select
-              value={editExam.status || "published"}
-              onChange={(e) =>
-                setEditExam({ ...editExam, status: e.target.value })
-              }
-              className="form-select"
-            >
-              <option value="published">Published</option>
-              <option value="draft">Draft</option>
-              <option value="closed">Closed</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="form-group">
-          <label className="form-label">Submission Type</label>
-          <select
-            value={editExam.submission_type || "both"}
-            onChange={(e) =>
-              setEditExam({ ...editExam, submission_type: e.target.value })
-            }
-            className="form-select"
-          >
-            <option value="text">📝 Text Answer Only</option>
-            <option value="file">📎 File Upload Only</option>
-            <option value="both">📝 Text + File Upload</option>
-          </select>
-          <small style={{ display: "block", marginTop: "5px", color: "#6c757d" }}>
-            {editExam.submission_type === "text" && "Students can only type their answers."}
-            {editExam.submission_type === "file" && "Students can only upload files."}
-            {editExam.submission_type === "both" && "Students can type AND upload files."}
-          </small>
-        </div>
-
-        {/* Duration Preview */}
-        <div style={{
-          padding: "12px 16px",
-          backgroundColor: "#f0f8ff",
-          borderRadius: "8px",
-          margin: "15px 0",
-          textAlign: "center",
-          fontSize: "16px",
-          color: "#1976d2",
-        }}>
-          <strong>Calculated Duration:</strong>{" "}
-          <span style={{ fontSize: "18px", fontWeight: "bold" }}>
-            {(() => {
-              if (!editExam.start_time || !editExam.end_time) return "N/A";
-              const start = new Date(editExam.start_time);
-              const end = new Date(editExam.end_time);
-              if (end <= start) return <span style={{ color: "#d32f2f" }}>⚠️ Invalid (end before start)</span>;
-              const mins = Math.round((end - start) / 60000);
-              return `${mins} minute${mins !== 1 ? "s" : ""}`;
-            })()}
-          </span>
-        </div>
-
-        <div className="modal-actions">
-          <button
-            className="cancel-button"
-            onClick={() => setEditingExam(null)}
-          >
-            Cancel
-          </button>
-          <button className="confirm-button" onClick={handleEditExam}>
-            ✅ Update Exam
-          </button>
-        </div>
-      </div>
-    </div>
-  </div>
-      )}
-      {/* View Exam Details Modal */}
-{selectedExam && (
-  <div className="modal-overlay" onClick={() => setSelectedExam(null)}>
-    <div className="modal large-modal" onClick={(e) => e.stopPropagation()}>
-      <div style={{ 
-        display: "flex", 
-        justifyContent: "space-between", 
-        alignItems: "center",
-        marginBottom: "20px"
-      }}>
-        <h3 style={{ margin: 0 }}>📋 Exam Details</h3>
-        <button
-          className="cancel-button"
-          onClick={() => setSelectedExam(null)}
-          style={{ padding: "8px 16px" }}
-        >
-          ✕ Close
-        </button>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
-        <div>
-          <strong>Title:</strong>
-          <p>{selectedExam.title || "N/A"}</p>
-        </div>
-        <div>
-          <strong>Course:</strong>
-          <p>{selectedExam.courses?.course_code || "N/A"} - {selectedExam.courses?.course_name || "N/A"}</p>
-        </div>
-        <div>
-          <strong>Description:</strong>
-          <p>{selectedExam.description || "No description"}</p>
-        </div>
-        <div>
-          <strong>Status:</strong>
-          <span className={`status-badge ${selectedExam.status || "scheduled"}`}>
-            {selectedExam.status?.toUpperCase() || "SCHEDULED"}
-          </span>
-        </div>
-        <div>
-          <strong>Start Time:</strong>
-          <p>{selectedExam.start_time ? new Date(selectedExam.start_time).toLocaleString() : "N/A"}</p>
-        </div>
-        <div>
-          <strong>End Time:</strong>
-          <p>{selectedExam.end_time ? new Date(selectedExam.end_time).toLocaleString() : "N/A"}</p>
-        </div>
-        <div>
-          <strong>Duration:</strong>
-          <p>{selectedExam.duration_minutes || "N/A"} minutes</p>
-        </div>
-        <div>
-          <strong>Total Marks:</strong>
-          <p>{selectedExam.total_marks || 100}</p>
-        </div>
-        <div>
-          <strong>Exam Type:</strong>
-          <p>{selectedExam.exam_type || "online"}</p>
-        </div>
-        <div>
-          <strong>Venue/Location:</strong>
-          <p>{selectedExam.venue || selectedExam.location || "Online"}</p>
-        </div>
-        <div>
-          <strong>Submission Type:</strong>
-          <p>{selectedExam.submission_type || "both"}</p>
-        </div>
-        <div>
-          <strong>Exam Files:</strong>
-          {selectedExam.exam_files && selectedExam.exam_files.length > 0 ? (
-            <div className="file-links" style={{ marginTop: "5px" }}>
-              {selectedExam.exam_files.map((filePath, idx) => {
-                const fileName = filePath.split('/').pop() || `Exam_File_${idx + 1}`;
-                const { data: urlData } = supabase.storage
-                  .from("Lecturer exam")
-                  .getPublicUrl(filePath);
-                return (
-                  <div key={idx} className="file-download-item">
-                    <a
-                      href={urlData.publicUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="file-link"
-                    >
-                      📄 {fileName}
-                    </a>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p>No files attached</p>
-          )}
-        </div>
-        <div>
-          <strong>Target Cohort:</strong>
-          <p>
-            {selectedExam.target_academic_year || "N/A"} • 
-            Year {selectedExam.target_year_of_study || "?"} • 
-            Semester {selectedExam.target_semester || "?"}
-          </p>
-        </div>
-      </div>
-
-      <div style={{ marginTop: "30px", display: "flex", gap: "10px", justifyContent: "flex-end" }}>
-        <button
-          className="action-btn edit"
-          onClick={() => {
-            setSelectedExam(null);
-            // Open edit modal
-            setEditingExam(selectedExam);
-            setEditExam({
-              title: selectedExam.title || "",
-              description: selectedExam.description || "",
-              start_time: selectedExam.start_time || "",
-              end_time: selectedExam.end_time || "",
-              venue: selectedExam.venue || "",
-              status: selectedExam.status || "published",
-              total_marks: selectedExam.total_marks || 100,
-              exam_type: selectedExam.exam_type || "online",
-              submission_type: selectedExam.submission_type || "both",
-            });
-          }}
-        >
-          ✏️ Edit Exam
-        </button>
-        <button
-          className="cancel-button"
-          onClick={() => setSelectedExam(null)}
-        >
-          Close
-        </button>
-      </div>
-    </div>
-  </div>
-      )}
-      {/* Toast Notification */}
-{toast.show && (
-  <div className={`toast-notification ${toast.type}`} style={{
-    position: 'fixed',
-    bottom: '30px',
-    right: '30px',
-    padding: '16px 24px',
-    borderRadius: '12px',
-    backgroundColor: toast.type === 'success' ? '#28a745' : 
-                    toast.type === 'error' ? '#dc3545' : '#17a2b8',
-    color: 'white',
-    boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
-    zIndex: 9999,
-    maxWidth: '450px',
-    animation: 'slideIn 0.5s ease',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-    fontSize: '15px',
-    fontWeight: '500',
-  }}>
-    <span style={{ fontSize: '24px' }}>
-      {toast.type === 'success' ? '✅' : toast.type === 'error' ? '❌' : 'ℹ️'}
-    </span>
-    <span style={{ flex: 1 }}>{toast.message}</span>
-    <button
-      onClick={hideToast}
-      style={{
-        background: 'none',
-        border: 'none',
-        color: 'white',
-        fontSize: '20px',
-        cursor: 'pointer',
-        marginLeft: '8px',
-        opacity: 0.7,
-        padding: '0 4px'
-      }}
-    >
-      ✕
-    </button>
-  </div>
-      )}
-      {/* ===== NEW: Student Selection Modal for Reversal ===== */}
-{showStudentSelectionModal && studentsInCompletedCourses.length > 0 && (
-  <div className="modal-overlay" onClick={() => {
-    if (!reversalInProgress) {
-      setShowStudentSelectionModal(false);
-      setSelectedStudentsForReversal([]);
-      setSelectedCourseForStudentView(null);
-    }
-  }}>
-    <div className="modal large-modal" onClick={(e) => e.stopPropagation()}>
-      <div style={{ 
-        display: "flex", 
-        justifyContent: "space-between", 
-        alignItems: "center",
-        marginBottom: "20px"
-      }}>
-        <h3 style={{ margin: 0 }}>
-          👥 Select Students to Reverse
-          <span style={{ fontSize: "14px", fontWeight: "normal", color: "#666", marginLeft: "10px" }}>
-            Course: {completedCourses.find(c => c.id === selectedCourseForStudentView)?.course_code || "N/A"}
-          </span>
-        </h3>
-        <button
-          className="cancel-button"
-          onClick={() => {
-            if (!reversalInProgress) {
-              setShowStudentSelectionModal(false);
-              setSelectedStudentsForReversal([]);
-              setSelectedCourseForStudentView(null);
-            }
-          }}
-          style={{ padding: "8px 16px" }}
-        >
-          ✕ Close
-        </button>
-      </div>
-
-      <div style={{ marginBottom: "15px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <p style={{ margin: 0, color: "#666" }}>
-          <strong>{studentsInCompletedCourses.length}</strong> students have completed this course.
-          Select which ones to revert to "enrolled" status.
-        </p>
-        <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={selectedStudentsForReversal.length === studentsInCompletedCourses.length && studentsInCompletedCourses.length > 0}
-            onChange={selectAllStudentsForReversal}
-          />
-          Select All ({selectedStudentsForReversal.length} selected)
-        </label>
-      </div>
-
-      <div className="table-container">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th style={{ width: "50px" }}>Select</th>
-              <th>Student ID</th>
-              <th>Full Name</th>
-              <th>Email</th>
-              <th>Program</th>
-              <th>Department</th>
-            </tr>
-          </thead>
-          <tbody>
-            {studentsInCompletedCourses.map((record) => (
-              <tr key={record.id}>
-                <td>
-                  <input
-                    type="checkbox"
-                    checked={selectedStudentsForReversal.includes(record.id)}
-                    onChange={() => toggleStudentReversalSelection(record.id)}
-                  />
-                </td>
-                <td>
-                  <strong>{record.students?.student_id || "N/A"}</strong>
-                </td>
-                <td>{record.students?.full_name || "Unknown"}</td>
-                <td>{record.students?.email || "N/A"}</td>
-                <td>{record.students?.program || "N/A"}</td>
-                <td>
-                  <span className="dept-badge">
-                    {record.students?.department_code || "N/A"}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ 
-        marginTop: "20px", 
-        display: "flex", 
-        justifyContent: "flex-end", 
-        gap: "12px",
-        borderTop: "1px solid #e9ecef",
-        paddingTop: "20px"
-      }}>
-        <button
-          className="cancel-button"
-          onClick={() => {
-            if (!reversalInProgress) {
-              setShowStudentSelectionModal(false);
-              setSelectedStudentsForReversal([]);
-              setSelectedCourseForStudentView(null);
-            }
-          }}
-        >
-          Cancel
-        </button>
-        <button
-          className="confirm-button"
-          onClick={handleReverseStudentCompletion}
-          disabled={reversalInProgress || selectedStudentsForReversal.length === 0}
-          style={{
-            background: reversalInProgress ? "#6c757d" : "#dc3545",
-            borderColor: reversalInProgress ? "#6c757d" : "#dc3545",
-          }}
-        >
-          {reversalInProgress 
-            ? "Processing..." 
-            : `↩️ Reverse ${selectedStudentsForReversal.length} Student(s)`}
-        </button>
-      </div>
-
-      <p style={{ marginTop: "12px", fontSize: "12px", color: "#666", textAlign: "center" }}>
-        This will only affect the selected students. Other students will remain "completed".
-      </p>
-    </div>
-  </div>
-      )}
-      {/* ===== NEW: Student Selection Modal for Individual Completion ===== */}
-{showStudentCompletionModal && studentsInEnrolledCourses.length > 0 && (
-  <div
-    className="modal-overlay"
-    onClick={() => {
-      if (!markingStudentsInProgress) {
-        setShowStudentCompletionModal(false);
-        setSelectedStudentsForCompletion([]);
-        setSelectedCourseForStudentCompletion(null);
-      }
-    }}
-  >
-    <div className="modal large-modal" onClick={(e) => e.stopPropagation()}>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: "20px",
-        }}
-      >
-        <h3 style={{ margin: 0 }}>
-          ✅ Select Students to Mark as Completed
-          <span
-            style={{
-              fontSize: "14px",
-              fontWeight: "normal",
-              color: "#666",
-              marginLeft: "10px",
-            }}
-          >
-            Course:{" "}
-            {coursesForCompletion.find(
-              (c) => c.id === selectedCourseForStudentCompletion
-            )?.course_code || "N/A"}
-          </span>
-        </h3>
-        <button
-          className="cancel-button"
-          onClick={() => {
-            if (!markingStudentsInProgress) {
-              setShowStudentCompletionModal(false);
-              setSelectedStudentsForCompletion([]);
-              setSelectedCourseForStudentCompletion(null);
-            }
-          }}
-          style={{ padding: "8px 16px" }}
-        >
-          ✕ Close
-        </button>
-      </div>
-
-      <div
-        style={{
-          marginBottom: "15px",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <p style={{ margin: 0, color: "#666" }}>
-          <strong>{studentsInEnrolledCourses.length}</strong> student(s) are currently{" "}
-          <strong>enrolled</strong> in this course (including previously reversed students).
-          Select which ones to mark as completed.
-        </p>
-        <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={
-              selectedStudentsForCompletion.length === studentsInEnrolledCourses.length &&
-              studentsInEnrolledCourses.length > 0
-            }
-            onChange={selectAllStudentsForCompletion}
-          />
-          Select All ({selectedStudentsForCompletion.length} selected)
-        </label>
-      </div>
-
-      <div className="table-container">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th style={{ width: "50px" }}>Select</th>
-              <th>Student ID</th>
-              <th>Full Name</th>
-              <th>Email</th>
-              <th>Program</th>
-              <th>Department</th>
-            </tr>
-          </thead>
-          <tbody>
-            {studentsInEnrolledCourses.map((record) => (
-              <tr key={record.id}>
-                <td>
-                  <input
-                    type="checkbox"
-                    checked={selectedStudentsForCompletion.includes(record.id)}
-                    onChange={() => toggleStudentCompletionSelection(record.id)}
-                  />
-                </td>
-                <td>
-                  <strong>{record.students?.student_id || "N/A"}</strong>
-                </td>
-                <td>{record.students?.full_name || "Unknown"}</td>
-                <td>{record.students?.email || "N/A"}</td>
-                <td>{record.students?.program || "N/A"}</td>
-                <td>
-                  <span className="dept-badge">
-                    {record.students?.department_code || "N/A"}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div
-        style={{
-          marginTop: "20px",
-          display: "flex",
-          justifyContent: "flex-end",
-          gap: "12px",
-          borderTop: "1px solid #e9ecef",
-          paddingTop: "20px",
-        }}
-      >
-        <button
-          className="cancel-button"
-          onClick={() => {
-            if (!markingStudentsInProgress) {
-              setShowStudentCompletionModal(false);
-              setSelectedStudentsForCompletion([]);
-              setSelectedCourseForStudentCompletion(null);
-            }
-          }}
-        >
-          Cancel
-        </button>
-        <button
-          className="confirm-button"
-          onClick={handleMarkStudentCompletion}
-          disabled={markingStudentsInProgress || selectedStudentsForCompletion.length === 0}
-          style={{
-            background: markingStudentsInProgress ? "#6c757d" : "#28a745",
-            borderColor: markingStudentsInProgress ? "#6c757d" : "#28a745",
-          }}
-        >
-          {markingStudentsInProgress
-            ? "Processing..."
-            : `✅ Mark ${selectedStudentsForCompletion.length} Student(s) as Completed`}
-        </button>
-      </div>
-
-      <p style={{ marginTop: "12px", fontSize: "12px", color: "#666", textAlign: "center" }}>
-        This only affects the selected students. Other students remain unchanged.
-        Perfect for re-completing a student after a reversal.
-      </p>
-    </div>
-  </div>
-)}
-
     </div>
   );
-};;;
+};
 
 export default AdminDashboard;

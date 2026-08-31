@@ -1,16 +1,18 @@
-﻿import { Routes, Route, Navigate } from 'react-router-dom';
+﻿// App.jsx - FIXED for Lecturer
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { BrowserRouter as Router } from 'react-router-dom';
 import { AdminAuthProvider, useAdminAuth } from './context/AdminAuthContext';
 import AdminLogin from './components/AdminLogin';
 import AdminDashboard from './components/AdminDashboard';
+import DeanDashboard from './components/DeanDashboard';
+import HODDashboard from './components/HODDashboard';
+import FinanceDashboard from './components/FinanceDashboard';
 import { App as CapacitorApp } from '@capacitor/app';
 import { useEffect } from 'react';
 
-// Protected Route wrapper component - FIXED for all roles
+// Protected Route wrapper component
 const ProtectedRoute = ({ children }) => {
-  const { isAuthenticated, isAdmin, isLecturer, isFinance, loading, profile } = useAdminAuth();
-  
-  console.log('🔒 ProtectedRoute check:', { isAuthenticated, isAdmin, isLecturer, isFinance, loading, profile });
+  const { isAuthenticated, loading } = useAdminAuth();
   
   if (loading) {
     return (
@@ -27,32 +29,62 @@ const ProtectedRoute = ({ children }) => {
     );
   }
   
-  // Check if user is authenticated (admin, lecturer, or finance)
   if (!isAuthenticated) {
-    console.log('❌ Not authenticated, redirecting to login');
     return <Navigate to="/login" replace />;
   }
   
-  // User is authenticated, render children
-  console.log('✅ Authenticated, rendering protected content');
   return children;
 };
 
+// Role-Based Dashboard Router
+const RoleBasedDashboard = () => {
+  const { role } = useAdminAuth();
+  
+  console.log('🎯 RoleBasedDashboard - Current role:', role);
+  
+  switch (role) {
+    case 'admin':
+      return <AdminDashboard />;
+    case 'dean':
+      return <DeanDashboard />;
+    case 'hod':
+      return <HODDashboard />;
+    case 'finance':
+      return <FinanceDashboard />;
+    case 'lecturer':
+      // Lecturer can use AdminDashboard (it has lecturer support built-in)
+      return <AdminDashboard />;
+    default:
+      return <AdminDashboard />;
+  }
+};
+
 function App() {
-  // Capacitor back button handling
+  // Capacitor back button handling - FIXED
   useEffect(() => {
-    const backButtonListener = CapacitorApp.addListener('backButton', ({ canGoBack }) => {
-      if (canGoBack) {
-        window.history.back();
-      } else {
-        CapacitorApp.minimizeApp();
-      }
-    });
+    let backButtonListener = null;
+    
+    try {
+      backButtonListener = CapacitorApp.addListener('backButton', ({ canGoBack }) => {
+        if (canGoBack) {
+          window.history.back();
+        } else {
+          CapacitorApp.minimizeApp();
+        }
+      });
+    } catch (err) {
+      console.warn('Capacitor not available:', err);
+    }
 
     return () => {
-      // Fixed: Check if remove exists before calling
-      if (backButtonListener && typeof backButtonListener.remove === 'function') {
-        backButtonListener.remove();
+      if (backButtonListener) {
+        try {
+          if (typeof backButtonListener.remove === 'function') {
+            backButtonListener.remove();
+          }
+        } catch (err) {
+          console.warn('Error removing back button listener:', err);
+        }
       }
     };
   }, []);
@@ -61,44 +93,17 @@ function App() {
     <Router>
       <AdminAuthProvider>
         <Routes>
-          {/* Public route - login page */}
           <Route path="/login" element={<AdminLogin />} />
           
-          {/* Protected routes - accessible by Admin, Lecturer, and Finance */}
           <Route 
             path="/dashboard" 
             element={
               <ProtectedRoute>
-                <AdminDashboard />
+                <RoleBasedDashboard />
               </ProtectedRoute>
             } 
           />
           
-          <Route 
-            path="/lectures" 
-            element={
-              <ProtectedRoute>
-                <div style={{ padding: '20px' }}>
-                  <h1>Lectures</h1>
-                  <p>Lectures management page - coming soon</p>
-                </div>
-              </ProtectedRoute>
-            } 
-          />
-          
-          <Route 
-            path="/materials" 
-            element={
-              <ProtectedRoute>
-                <div style={{ padding: '20px' }}>
-                  <h1>Materials</h1>
-                  <p>Course materials page - coming soon</p>
-                </div>
-              </ProtectedRoute>
-            } 
-          />
-          
-          {/* Redirects */}
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>

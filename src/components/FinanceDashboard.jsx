@@ -1131,11 +1131,23 @@ const categoryData = Object.entries(categoryDistribution)
     previewWindow.document.close();
   };
 
-  const confirmLogout = () => {
-    signOut();
+ const confirmLogout = async () => {
+  try {
+    if (typeof signOut === 'function') {
+      await signOut();
+    } else {
+      // Fallback: manual logout
+      localStorage.removeItem('admin_user');
+      await supabase.auth.signOut();
+    }
     navigate('/login');
-  };
-
+  } catch (error) {
+    console.error('Logout error:', error);
+    // Force navigation even if there's an error
+    localStorage.removeItem('admin_user');
+    navigate('/login');
+  }
+};
   // Filter controls component
   const FilterControls = () => (
     <div className="finance-filter-controls">

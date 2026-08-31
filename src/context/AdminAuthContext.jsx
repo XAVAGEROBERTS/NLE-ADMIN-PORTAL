@@ -7,7 +7,7 @@ export const AdminAuthProvider = ({ children }) => {
   const [admin, setAdmin] = useState(null)
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [role, setRole] = useState(null) // 'admin' or 'lecturer' or 'finance'
+  const [role, setRole] = useState(null) // 'admin', 'dean', 'hod', 'lecturer', or 'finance'
 
   useEffect(() => {
     const checkAdminSession = async () => {
@@ -43,75 +43,111 @@ export const AdminAuthProvider = ({ children }) => {
 
         console.log('✅ Supabase session found for:', session.user.email)
 
-        // Get user role from user_roles table (using email as per your SQL)
+        // Get all roles for this user (not just single)
         const { data: roleData, error: roleError } = await supabase
           .from('user_roles')
-          .select('role, table_id')
+          .select('*')
           .eq('email', session.user.email)
-          .single()
 
         if (roleError) {
-          console.log('⚠️ No role found in user_roles table:', roleError)
+          console.log('⚠️ No roles found in user_roles table:', roleError)
           setLoading(false)
           return
         }
 
-        console.log('📋 User role from database:', roleData.role)
+        console.log('📋 User roles from database:', roleData)
 
-        // Allow admin, lecturer, or finance
-        if (roleData.role === 'admin' || roleData.role === 'lecturer' || roleData.role === 'finance') {
-          setRole(roleData.role)
-          setAdmin(session.user)
+        // Filter for admin/lecturer/finance/dean/hod roles
+        const allowedRoles = ['admin', 'dean', 'hod', 'lecturer', 'finance']
+        const validRoles = roleData.filter(r => allowedRoles.includes(r.role))
+        
+        if (validRoles.length === 0) {
+          console.log('⚠️ User has no admin/lecturer/finance/dean/hod roles')
+          setLoading(false)
+          return
+        }
+
+        // Choose primary role (priority: admin > dean > hod > finance > lecturer)
+        const rolePriority = { admin: 5, dean: 4, hod: 3, finance: 2, lecturer: 1 }
+        validRoles.sort((a, b) => rolePriority[b.role] - rolePriority[a.role])
+        const primaryRoleData = validRoles[0]
+        
+        setRole(primaryRoleData.role)
+        setAdmin(session.user)
+        
+        // Fetch profile based on role
+        let profileData = null
+        
+        if (primaryRoleData.role === 'admin') {
+          const { data: adminProfile } = await supabase
+            .from('system_admins')
+            .select('*')
+            .eq('id', primaryRoleData.table_id)
+            .single()
+          profileData = adminProfile
+        } else if (primaryRoleData.role === 'lecturer') {
+          console.log('🔍 Loading lecturer with ID:', primaryRoleData.table_id)
+          const { data: lecturerProfile, error: lecturerError } = await supabase
+            .from('lecturers')
+            .select('*')
+            .eq('id', primaryRoleData.table_id)
+            .single()
           
-          // Fetch profile from appropriate table
-          let profileData = null
-          
-          if (roleData.role === 'admin') {
-            const { data: adminProfile } = await supabase
-              .from('system_admins')
-              .select('*')
-              .eq('id', roleData.table_id)
-              .single()
-            profileData = adminProfile
-          } else if (roleData.role === 'lecturer') {
-            console.log('🔍 Loading lecturer with ID:', roleData.table_id)
-            const { data: lecturerProfile, error: lecturerError } = await supabase
-              .from('lecturers')
-              .select('*')
-              .eq('id', roleData.table_id)
-              .single()
-            
-            if (lecturerError) {
-              console.error('❌ Lecturer load error:', lecturerError)
-              profileData = null
-            } else {
-              profileData = lecturerProfile
-              console.log('✅ Lecturer profile loaded from session:', lecturerProfile)
-            }
-          } else if (roleData.role === 'finance') {
-            const { data: financeProfile } = await supabase
-              .from('finance_officers')
-              .select('*')
-              .eq('id', roleData.table_id)
-              .single()
-            profileData = financeProfile
+          if (lecturerError) {
+            console.error('❌ Lecturer load error:', lecturerError)
+            profileData = null
+          } else {
+            profileData = lecturerProfile
+            console.log('✅ Lecturer profile loaded:', lecturerProfile)
           }
-          
-          if (profileData) {
-            const fullProfile = {
-              ...profileData,
-              role: roleData.role,
-              full_name: profileData.full_name || session.user.email,
-              table_id: roleData.table_id
-            }
-            setProfile(fullProfile)
-            localStorage.setItem('admin_user', JSON.stringify(fullProfile))
-            console.log('✅ Profile set from session:', fullProfile)
+        } else if (primaryRoleData.role === 'finance') {
+          const { data: financeProfile } = await supabase
+            .from('finance_officers')
+            .select('*')
+            .eq('id', primaryRoleData.table_id)
+            .single()
+          profileData = financeProfile
+        } else if (primaryRoleData.role === 'dean') {
+          // For dean, fetch faculty info
+          const { data: facultyData } = await supabase
+            .from('faculties')
+            .select('*')
+            .eq('id', primaryRoleData.faculty_id)
+            .single()
+          profileData = {
+            ...facultyData,
+            full_name: session.user.email,
+            faculty_id: primaryRoleData.faculty_id
           }
-        } else {
-          console.log('⚠️ User is not admin/lecturer/finance, signing out...')
-          await supabase.auth.signOut()
-          localStorage.removeItem('admin_user')
+        } else if (primaryRoleData.role === 'hod') {
+          // For HOD, fetch department info
+          const { data: deptData } = await supabase
+            .from('departments')
+            .select('*')
+            .eq('id', primaryRoleData.department_id)
+            .single()
+          profileData = {
+            ...deptData,
+            full_name: session.user.email,
+            department_id: primaryRoleData.department_id,
+            faculty_id: primaryRoleData.faculty_id
+          }
+        }
+        
+        if (profileData) {
+          const fullProfile = {
+            ...profileData,
+            role: primaryRoleData.role,
+            full_name: profileData.full_name || session.user.email,
+            table_id: primaryRoleData.table_id,
+            faculty_id: primaryRoleData.faculty_id,
+            department_id: primaryRoleData.department_id,
+            // Include all roles for permission checking
+            roles: validRoles.map(r => r.role)
+          }
+          setProfile(fullProfile)
+          localStorage.setItem('admin_user', JSON.stringify(fullProfile))
+          console.log('✅ Profile set from session:', fullProfile)
         }
       } catch (error) {
         console.error('❌ Auth check error:', error)
@@ -166,13 +202,14 @@ export const AdminAuthProvider = ({ children }) => {
       const user = data[0]
       console.log('👤 Authenticated user:', user)
 
-      // Check if user is admin, lecturer, or finance
-      if (!['admin', 'lecturer', 'finance'].includes(user.role)) {
+      // Check if user has allowed role
+      const allowedRoles = ['admin', 'dean', 'hod', 'lecturer', 'finance']
+      if (!allowedRoles.includes(user.role)) {
         setLoading(false)
-        return { success: false, error: 'Access denied. Only Admin, Lecturer, or Finance Officer accounts allowed.' }
+        return { success: false, error: 'Access denied. Your role is not authorized for this portal.' }
       }
 
-      // Update last login - FIXED: Use try/catch instead of .catch()
+      // Update last login
       try {
         await supabase.rpc('update_last_login', {
           user_email: email,
@@ -180,10 +217,9 @@ export const AdminAuthProvider = ({ children }) => {
         })
       } catch (updateError) {
         console.warn('⚠️ Last login update failed (non-critical):', updateError.message)
-        // Continue anyway - this is not critical
       }
 
-      // Get additional profile data - FIXED: Use table_id from RPC, not email
+      // Get additional profile data
       let profileData = {}
       let tableName = ''
       
@@ -210,12 +246,11 @@ export const AdminAuthProvider = ({ children }) => {
         const { data: lecturerData, error: lecturerError } = await supabase
           .from('lecturers')
           .select('*')
-          .eq('id', user.table_id) // Use table_id, NOT email
+          .eq('id', user.table_id)
           .single()
         
         if (lecturerError) {
           console.error('❌ Lecturer fetch error:', lecturerError)
-          console.error('Error details:', lecturerError.message)
           setLoading(false)
           return { 
             success: false, 
@@ -231,7 +266,7 @@ export const AdminAuthProvider = ({ children }) => {
         const { data: financeData, error: financeError } = await supabase
           .from('finance_officers')
           .select('*')
-          .eq('id', user.table_id) // Use table_id, NOT email
+          .eq('id', user.table_id)
           .single()
         
         if (financeError) {
@@ -239,15 +274,31 @@ export const AdminAuthProvider = ({ children }) => {
         } else {
           profileData = financeData || {}
         }
-      }
-
-      // Check if we got profile data
-      if (!profileData || Object.keys(profileData).length === 0) {
-        console.error('❌ No profile data found for user ID:', user.table_id)
-        setLoading(false)
-        return { 
-          success: false, 
-          error: `Profile not found for ${user.role}. Please contact administrator.` 
+      } else if (user.role === 'dean') {
+        tableName = 'faculties'
+        const { data: facultyData, error: facultyError } = await supabase
+          .from('faculties')
+          .select('*')
+          .eq('id', user.faculty_id || user.table_id)
+          .single()
+        
+        if (facultyError) {
+          console.error('Dean faculty fetch error:', facultyError)
+        } else {
+          profileData = facultyData || {}
+        }
+      } else if (user.role === 'hod') {
+        tableName = 'departments'
+        const { data: deptData, error: deptError } = await supabase
+          .from('departments')
+          .select('*')
+          .eq('id', user.department_id || user.table_id)
+          .single()
+        
+        if (deptError) {
+          console.error('HOD department fetch error:', deptError)
+        } else {
+          profileData = deptData || {}
         }
       }
 
@@ -259,7 +310,11 @@ export const AdminAuthProvider = ({ children }) => {
         full_name: user.full_name || profileData.full_name || email,
         permissions: user.permissions || [],
         table_id: user.table_id,
-        table_name: tableName
+        table_name: tableName,
+        faculty_id: user.faculty_id || profileData.faculty_id || null,
+        department_id: user.department_id || profileData.department_id || null,
+        // Include all roles if available
+        roles: user.roles || [user.role]
       }
 
       console.log('✅ Final user profile:', userProfile)
@@ -270,7 +325,6 @@ export const AdminAuthProvider = ({ children }) => {
       setProfile(userProfile)
       localStorage.setItem('admin_user', JSON.stringify(userProfile))
       
-      // Add a small delay to ensure state updates are processed
       await new Promise(resolve => setTimeout(resolve, 100))
       
       console.log('✅ Sign in complete, returning success')
@@ -290,15 +344,10 @@ export const AdminAuthProvider = ({ children }) => {
 
   const signOut = async () => {
     try {
-      // Clear local storage
       localStorage.removeItem('admin_user')
-      
-      // Clear state
       setAdmin(null)
       setProfile(null)
       setRole(null)
-      
-      // Sign out from Supabase if using auth
       await supabase.auth.signOut()
     } catch (error) {
       console.error('Sign out error:', error)
@@ -309,41 +358,104 @@ export const AdminAuthProvider = ({ children }) => {
   const canAccess = (feature) => {
     if (!role) return false
     
-    const lecturerPermissions = {
-      dashboard: true,
-      lectures: true,
-      materials: true,
-      students: true,
-      assignments: true,
-      grades: true,
-      profile: true,
-      
-      // Restricted for lecturers:
-      system_settings: false,
-      user_management: false,
-      all_users: false,
-      system_logs: false,
-      database_management: false
+    const permissions = {
+      admin: {
+        dashboard: true,
+        lectures: true,
+        materials: true,
+        students: true,
+        assignments: true,
+        grades: true,
+        profile: true,
+        system_settings: true,
+        user_management: true,
+        all_users: true,
+        system_logs: true,
+        database_management: true,
+        faculty_management: true,
+        department_management: true,
+        finance_management: true,
+        course_management: true
+      },
+      dean: {
+        dashboard: true,
+        lectures: true,
+        materials: true,
+        students: true,
+        assignments: true,
+        grades: true,
+        profile: true,
+        faculty_management: true,
+        department_management: true,
+        course_management: true,
+        // Restricted for dean:
+        system_settings: false,
+        user_management: false,
+        all_users: false,
+        system_logs: false,
+        database_management: false,
+        finance_management: false
+      },
+      hod: {
+        dashboard: true,
+        lectures: true,
+        materials: true,
+        students: true,
+        assignments: true,
+        grades: true,
+        profile: true,
+        department_management: true,
+        course_management: true,
+        // Restricted for HOD:
+        system_settings: false,
+        user_management: false,
+        all_users: false,
+        system_logs: false,
+        database_management: false,
+        finance_management: false,
+        faculty_management: false
+      },
+      finance: {
+        dashboard: true,
+        profile: true,
+        finance_management: true,
+        // Restricted for finance:
+        lectures: false,
+        materials: false,
+        students: false,
+        assignments: false,
+        grades: false,
+        system_settings: false,
+        user_management: false,
+        all_users: false,
+        system_logs: false,
+        database_management: false,
+        faculty_management: false,
+        department_management: false,
+        course_management: false
+      },
+      lecturer: {
+        dashboard: true,
+        lectures: true,
+        materials: true,
+        students: true,
+        assignments: true,
+        grades: true,
+        profile: true,
+        // Restricted for lecturers:
+        system_settings: false,
+        user_management: false,
+        all_users: false,
+        system_logs: false,
+        database_management: false,
+        faculty_management: false,
+        department_management: false,
+        finance_management: false,
+        course_management: false
+      }
     }
 
-    const adminPermissions = {
-      // Admin has all permissions
-      dashboard: true,
-      lectures: true,
-      materials: true,
-      students: true,
-      assignments: true,
-      grades: true,
-      profile: true,
-      system_settings: true,
-      user_management: true,
-      all_users: true,
-      system_logs: true,
-      database_management: true
-    }
-
-    const permissions = role === 'admin' ? adminPermissions : lecturerPermissions
-    return permissions[feature] || false
+    return permissions[role]?.[feature] || false
   }
 
   return (
@@ -354,6 +466,8 @@ export const AdminAuthProvider = ({ children }) => {
       loading,
       isAuthenticated: !!profile,
       isAdmin: role === 'admin',
+      isDean: role === 'dean',
+      isHOD: role === 'hod',
       isLecturer: role === 'lecturer',
       isFinance: role === 'finance',
       signIn,
