@@ -986,3 +986,69 @@
     height: 80vh;
   }
 }
+.hod-dean-card-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+/* ==================== STATUS BADGES ==================== */
+.hod-status {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+  letter-spacing: 0.3px;
+}
+
+/* Active – Green */
+.hod-status.active {
+  background-color: #d4edda;
+  color: #155724;
+  border: 1px solid #c3e6cb;
+}
+
+/* Inactive – Gray */
+.hod-status.inactive {
+  background-color: #e2e3e5;
+  color: #383d41;
+  border: 1px solid #d6d8db;
+}
+
+/* Suspended – Red */
+.hod-status.suspended {
+  background-color: #f8d7da;
+  color: #721c24;
+  border: 1px solid #f5c6cb;
+}
+
+/* Pending – Orange / Amber */
+.hod-status.pending {
+  background-color: #fff3cd;
+  color: #856404;
+  border: 1px solid #ffeeba;
+}
+
+/* Graduated – Blue */
+.hod-status.graduated {
+  background-color: #cce5ff;
+  color: #004085;
+  border: 1px solid #b8daff;
+}
+
+/* Deferred / On Leave – Purple */
+.hod-status.deferred,
+.hod-status.on-leave,
+.hod-status.onleave {
+  background-color: #e2d5f1;
+  color: #5a3d7a;
+  border: 1px solid #d1bce8;
+}
+
+/* Default fallback for any unknown status */
+.hod-status:not(.active):not(.inactive):not(.suspended):not(.pending):not(.graduated):not(.deferred):not(.on-leave):not(.onleave) {
+  background-color: #f1f3f5;
+  color: #495057;
+  border: 1px solid #dee2e6;
+}

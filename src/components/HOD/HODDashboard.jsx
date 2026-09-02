@@ -1,27 +1,25 @@
-// HODDashboard.jsx - MAIN ORCHESTRATOR (FIXED)
+// HODDashboard.jsx - Main Orchestrator
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext';
 import { supabase } from '../services/supabase';
 
-// ✅ HOD Components Only
-import HODOverview from './HOD/HODOverview';
-import HODCourseAllocations from './HOD/HODCourseAllocations';
-import HODWorkload from './HOD/HODWorkload';
-import HODLeaveRequests from './HOD/HODLeaveRequests';
-import HODComplaints from './HOD/HODComplaints';
-import HODTimetable from './HOD/HODTimetable';
-import HODExamModeration from './HOD/HODExamModeration';
-import HODStaffAppraisal from './HOD/HODStaffAppraisal';
-import HODBudgetRequests from './HOD/HODBudgetRequests';
-import HODAttendance from './HOD/HODAttendance';
-import HODSettings from './HOD/HODSettings';
-import HODChat from './HOD/HODChat';
-import HODNotifications from './HOD/HODNotifications';
-import HOStatsCards from './HOD/HOStatsCards';
-import HODStudents from './HOD/HODStudents';
+// Import all components
+import HODOverview from './HODOverview';
+import HODCourseAllocations from './HODCourseAllocations';
+import HODWorkload from './HODWorkload';
+import HODLeaveRequests from './HODLeaveRequests';
+import HODComplaints from './HODComplaints';
+import HODTimetable from './HODTimetable';
+import HODExamModeration from './HODExamModeration';
+import HODStaffAppraisal from './HODStaffAppraisal';
+import HODBudgetRequests from './HODBudgetRequests';
+import HODAttendance from './HODAttendance';
+import HODSettings from './HODSettings';
+import HODChat from './HODChat';
+import HODNotifications from './HODNotifications';
 
-import './HOD/HODDashboard.css';
+import './HODDashboard.css';
 
 const HODDashboard = () => {
   const { profile, signOut } = useAdminAuth();
@@ -76,34 +74,17 @@ const HODDashboard = () => {
     try {
       const { data: adminRoles, error } = await supabase
         .from('user_roles')
-        .select('id, email, role, profile_picture_url, table_id, user_id, created_at')
+        .select('id, email, role, profile_picture_url, full_name')
         .eq('role', 'admin')
         .limit(10);
 
-      if (error) {
-        console.error('Error fetching admins:', error);
-        setAdmins([]);
-        return [];
-      }
+      if (error) throw error;
 
-      if (!adminRoles || adminRoles.length === 0) {
-        console.log('No admins found');
-        setAdmins([]);
-        return [];
-      }
-
-      const list = adminRoles.map((a) => {
-        const displayName = a.email?.split('@')[0]
-          ?.replace(/\./g, ' ')
-          ?.replace(/\b\w/g, (l) => l.toUpperCase()) || 'Admin';
-        
-        return {
-          ...a,
-          display_name: displayName,
-          full_name: displayName,
-          name: displayName,
-        };
-      });
+      const list = (adminRoles || []).map((a) => ({
+        ...a,
+        display_name: a.full_name || a.email?.split('@')[0]?.replace(/\./g, ' ')?.replace(/\b\w/g, (l) => l.toUpperCase()) || 'Admin',
+        full_name: a.full_name || a.email?.split('@')[0] || 'Admin',
+      }));
 
       setAdmins(list);
       return list;
@@ -174,6 +155,7 @@ const HODDashboard = () => {
 
     setLoading(true);
     try {
+      // Department
       const { data: dept } = await supabase
         .from('departments')
         .select('*')
@@ -281,6 +263,7 @@ const HODDashboard = () => {
         }
       }
 
+      // Fetch pending counts for HOD responsibilities
       await fetchPendingCounts(deptCode);
 
       setStats((prev) => ({
@@ -290,6 +273,7 @@ const HODDashboard = () => {
         totalLecturers: lectList.length,
       }));
 
+      // Profile picture
       const { data: roleData } = await supabase
         .from('user_roles')
         .select('profile_picture_url')
@@ -310,26 +294,26 @@ const HODDashboard = () => {
 
   const fetchPendingCounts = async (deptCode) => {
     try {
+      // Leave requests
       const { count: leaveCount } = await supabase
         .from('lecturer_leave_requests')
         .select('id', { count: 'exact', head: true })
         .eq('department_code', deptCode)
-        .eq('status', 'pending')
-        .catch(() => ({ count: 0 }));
+        .eq('status', 'pending');
 
+      // Complaints
       const { count: complaintCount } = await supabase
         .from('student_complaints')
         .select('id', { count: 'exact', head: true })
         .eq('department_code', deptCode)
-        .eq('status', 'pending')
-        .catch(() => ({ count: 0 }));
+        .eq('status', 'pending');
 
+      // Course allocations pending
       const { count: allocationCount } = await supabase
         .from('course_allocations')
         .select('id', { count: 'exact', head: true })
         .eq('department_code', deptCode)
-        .eq('status', 'pending')
-        .catch(() => ({ count: 0 }));
+        .eq('status', 'pending');
 
       setStats((prev) => ({
         ...prev,
@@ -501,8 +485,6 @@ const HODDashboard = () => {
       name: user.display_name || user.full_name || user.name || user.email,
       display_name: user.display_name || user.full_name || user.name || user.email,
       id: user.id,
-      department_id: user.department_id || null,
-      faculty_id: user.faculty_id || null,
     });
     setSelectedUserType(type);
     setShowChat(true);
@@ -571,8 +553,6 @@ const HODDashboard = () => {
     switch (activeTab) {
       case 'overview':
         return <HODOverview {...commonProps} />;
-      case 'students':
-        return <HODStudents {...commonProps} />;
       case 'allocations':
         return <HODCourseAllocations {...commonProps} />;
       case 'workload':
@@ -598,9 +578,9 @@ const HODDashboard = () => {
     }
   };
 
+  // Tab configuration
   const tabs = [
     { id: 'overview', label: '📊 Overview' },
-    { id: 'students', label: '👥 Students' },
     { id: 'allocations', label: '📚 Course Allocations' },
     { id: 'workload', label: '⚖️ Workload' },
     { id: 'leave', label: '📝 Leave Requests' },
@@ -710,9 +690,6 @@ const HODDashboard = () => {
           sendingMessage={sendingMessage}
           onClose={() => setShowChat(false)}
           chatEndRef={chatEndRef}
-          hodEmail={hodEmail}
-          hodName={hodName}
-          profile={profile}
         />
       )}
     </div>

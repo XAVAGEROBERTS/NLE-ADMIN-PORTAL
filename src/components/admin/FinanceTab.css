@@ -1,0 +1,313 @@
+/* src/components/admin/FinanceTab.css */
+.finance-tab {
+  width: 100%;
+}
+
+.revenue-summary {
+  background: #f8fafc;
+  padding: 25px;
+  border-radius: 12px;
+  margin-bottom: 30px;
+  border: 1px solid #e8ecf1;
+}
+
+.revenue-summary h3 {
+  margin: 0 0 20px 0;
+  color: #1a1a2e;
+  font-size: 20px;
+}
+
+.revenue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 20px;
+}
+
+.revenue-card {
+  padding: 20px;
+  border-radius: 8px;
+  text-align: center;
+}
+
+.revenue-card.billed {
+  background: #e3f2fd;
+  border-left: 5px solid #2196f3;
+}
+
+.revenue-card.paid {
+  background: #e8f5e9;
+  border-left: 5px solid #4caf50;
+}
+
+.revenue-card.outstanding {
+  background: #fff3e0;
+  border-left: 5px solid #ff9800;
+}
+
+.revenue-card h4 {
+  margin: 0 0 10px 0;
+  color: #1a1a2e;
+  font-size: 16px;
+}
+
+.revenue-amount {
+  font-size: 32px;
+  font-weight: 800;
+  margin: 10px 0;
+  color: #1a1a2e;
+}
+
+.revenue-card small {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.bypass-tool {
+  background: #fff3e0;
+  padding: 25px;
+  border-radius: 12px;
+  margin-bottom: 30px;
+  border: 2px dashed #ff9800;
+}
+
+.bypass-tool h3 {
+  margin: 0 0 10px 0;
+  color: #e65100;
+}
+
+.bypass-tool > p {
+  color: #6b7280;
+  margin-bottom: 20px;
+}
+
+.bypass-search {
+  display: flex;
+  gap: 15px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.bypass-search-input {
+  flex: 1;
+  min-width: 300px;
+}
+
+.bypass-search-input label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.bypass-search-input .search-input {
+  width: 100%;
+  padding: 12px;
+}
+
+.bypass-result {
+  margin-top: 20px;
+  padding: 20px;
+  background: #fff8e1;
+  border-radius: 8px;
+  border: 1px solid #ffb74d;
+}
+
+.bypass-student-info {
+  font-size: 16px;
+  margin-bottom: 15px;
+}
+
+.bypass-status {
+  margin-bottom: 15px;
+}
+
+.bypass-status .status-row {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+
+.enabled {
+  color: #28a745;
+  font-weight: 600;
+}
+
+.disabled {
+  color: #dc3545;
+  font-weight: 600;
+}
+
+.expiry-info {
+  margin-top: 10px;
+  padding: 10px 15px;
+  background: #fff3cd;
+  border-radius: 6px;
+  border: 1px solid #ffc107;
+}
+
+.expiry-info .expiry-date {
+  font-size: 12px;
+  color: #856404;
+}
+
+.expiry-info .expiry-note {
+  font-size: 12px;
+  color: #856404;
+}
+
+.bypass-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 15px 0;
+}
+
+.bypass-actions .action-btn.toggle {
+  background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+  color: white;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.bypass-actions .action-btn.toggle:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(255, 152, 0, 0.3);
+}
+
+.bypass-result .warning {
+  font-size: 12px;
+  color: #d32f2f;
+  margin-top: 10px;
+}
+
+.bypass-result .error {
+  color: #dc3545;
+  margin-top: 10px;
+}
+
+.action-btn.search {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 12px 30px;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.action-btn.search:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+}
+
+.finance-officers-section {
+  margin-bottom: 40px;
+}
+
+.finance-officers-section h3 {
+  margin-bottom: 20px;
+  color: #1a1a2e;
+}
+
+.student-finance-section {
+  border-top: 2px solid #e8ecf1;
+  padding-top: 30px;
+}
+
+.student-finance-section h3 {
+  margin-bottom: 20px;
+  color: #1a1a2e;
+}
+
+.student-search {
+  margin-bottom: 20px;
+}
+
+.student-search .search-input {
+  width: 500px;
+  padding: 12px;
+  font-size: 16px;
+}
+
+.student-id-label {
+  font-weight: normal;
+  color: #6b7280;
+  font-size: 16px;
+}
+
+.back-button-container {
+  margin-bottom: 20px;
+}
+
+.back-button {
+  background: #6b7280;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.back-button:hover {
+  background: #4b5563;
+  transform: translateX(-3px);
+}
+
+.student-summary {
+  display: flex;
+  gap: 20px;
+  margin: 20px 0 30px 0;
+  flex-wrap: wrap;
+}
+
+.summary-card {
+  flex: 1;
+  min-width: 200px;
+  padding: 20px;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #e8ecf1;
+  text-align: center;
+}
+
+.summary-card h4 {
+  margin: 0 0 10px 0;
+  color: #6b7280;
+  font-size: 14px;
+}
+
+.summary-card .amount {
+  font-size: 28px;
+  font-weight: 800;
+  margin: 0;
+}
+
+.summary-card.success .amount {
+  color: #28a745;
+}
+
+.summary-card.warning .amount {
+  color: #dc3545;
+}
+
+.action-btn.success.small {
+  background: #28a745;
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 4px;
+}
+
+.action-btn.warning.small {
+  background: #ff9800;
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 4px;
+}

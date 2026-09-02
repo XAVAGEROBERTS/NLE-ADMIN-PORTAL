@@ -1,0 +1,546 @@
+/* LecturerTimetable.css - Clean grid style like student timetable */
+
+.lecturer-timetable-container {
+  padding: 20px;
+  background: #f8f9fa;
+  border-radius: 12px;
+  min-height: 400px;
+}
+
+/* Header */
+.lecturer-timetable-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.lecturer-timetable-header h2 {
+  margin: 0;
+  color: #1a237e;
+  font-size: 24px;
+}
+
+.lecturer-timetable-header .subtitle {
+  color: #666;
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+.lecturer-timetable-actions {
+  display: flex;
+  gap: 10px;
+}
+
+/* Refresh Button */
+.lecturer-refresh-btn {
+  padding: 8px 16px;
+  background: #f8f9fa;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: #333;
+}
+
+.lecturer-refresh-btn:hover {
+  background: #e9ecef;
+}
+
+.lecturer-refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Export Button */
+.lecturer-export-btn {
+  padding: 8px 16px;
+  background: #2b579a;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.lecturer-export-btn:hover:not(:disabled) {
+  background: #1d3f70;
+}
+
+.lecturer-export-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Loading State */
+.lecturer-loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  background: white;
+  border-radius: 10px;
+}
+
+.lecturer-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #f3f3f3;
+  border-top: 3px solid #3498db;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.lecturer-loading-content p {
+  margin-top: 16px;
+  color: #666;
+}
+
+/* Empty State */
+.lecturer-empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  background: white;
+  border-radius: 10px;
+}
+
+.lecturer-empty-state .empty-icon {
+  font-size: 48px;
+  display: block;
+  margin-bottom: 16px;
+}
+
+.lecturer-empty-state h3 {
+  margin: 0 0 8px 0;
+  color: #333;
+  font-size: 20px;
+}
+
+.lecturer-empty-state p {
+  margin: 0 0 16px 0;
+  color: #888;
+  font-size: 15px;
+}
+
+.lecturer-empty-state .assigned-courses {
+  margin-top: 16px;
+}
+
+.lecturer-empty-state .assigned-courses-label {
+  font-size: 14px;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+.lecturer-empty-state .course-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.lecturer-empty-state .course-tag {
+  background: #e3f2fd;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #1565c0;
+}
+
+.lecturer-empty-state .hint-text {
+  margin-top: 12px;
+  font-size: 14px;
+  color: #e65100;
+}
+
+/* Clear Filters Button */
+.lecturer-clear-filters-btn {
+  padding: 8px 20px;
+  background: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.lecturer-clear-filters-btn:hover {
+  background: #c82333;
+}
+
+/* ===== TIMETABLE GRID ===== */
+
+/* Container */
+.lecturer-timetable-wrapper {
+  background: white;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+/* Scrollable container */
+.lecturer-timetable-scroll {
+  overflow-x: auto;
+  padding: 0;
+}
+
+/* Table */
+.lecturer-timetable-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  min-width: 700px;
+}
+
+/* Table Header */
+.lecturer-timetable-table thead th {
+  background: #1e88e5;
+  color: white;
+  padding: 12px 10px;
+  text-align: left;
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.lecturer-timetable-table .day-header {
+  text-align: center;
+  white-space: nowrap;
+  min-width: 100px;
+}
+
+.lecturer-timetable-table .time-header {
+  text-align: left;
+  min-width: 100px;
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: #1565c0;
+}
+
+/* Table Body */
+.lecturer-timetable-table tbody tr {
+  transition: background 0.2s;
+}
+
+.lecturer-timetable-table tbody tr:nth-child(even) {
+  background: #f8f9fa;
+}
+
+.lecturer-timetable-table tbody tr:nth-child(odd) {
+  background: #ffffff;
+}
+
+.lecturer-timetable-table tbody tr:hover {
+  background: #e3f2fd;
+}
+
+/* Day Cell */
+.lecturer-timetable-table .day-cell {
+  padding: 14px 12px;
+  font-weight: 600;
+  border-bottom: 1px solid #e0e0e0;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: inherit;
+  min-width: 100px;
+}
+
+/* Time Slot Cell */
+.lecturer-timetable-table .time-slot-cell {
+  padding: 8px;
+  border-bottom: 1px solid #e0e0e0;
+  vertical-align: top;
+  min-width: 160px;
+  height: 80px;
+}
+
+/* Empty Cell */
+.lecturer-timetable-table .empty-cell {
+  color: #ccc;
+  text-align: center;
+  padding: 12px;
+  font-size: 14px;
+}
+
+/* ===== SLOT CARD ===== */
+.lecturer-timetable-table .slot-card {
+  border-radius: 6px;
+  padding: 10px 8px;
+  font-size: 13px;
+  line-height: 1.35;
+  height: 100%;
+  min-height: 60px;
+  transition: all 0.2s;
+}
+
+.lecturer-timetable-table .slot-card:hover {
+  transform: scale(1.02);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+/* Slot Types */
+.lecturer-timetable-table .slot-card.lecture {
+  background: #f0f7ff;
+  border-left: 4px solid #3498db;
+}
+
+.lecturer-timetable-table .slot-card.lab {
+  background: #fff5f5;
+  border-left: 4px solid #e74c3c;
+}
+
+.lecturer-timetable-table .slot-card.tutorial {
+  background: #f0f7f0;
+  border-left: 4px solid #27ae60;
+}
+
+.lecturer-timetable-table .slot-card.practical {
+  background: #fff8f0;
+  border-left: 4px solid #e67e22;
+}
+
+/* Slot Content */
+.lecturer-timetable-table .slot-course-code {
+  font-weight: 600;
+  margin-bottom: 2px;
+  font-size: 14px;
+  color: #1a237e;
+}
+
+.lecturer-timetable-table .slot-type-badge {
+  font-size: 10px;
+  font-weight: 700;
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.lecturer-timetable-table .slot-type-badge.lab {
+  background: #e74c3c;
+  color: white;
+}
+
+.lecturer-timetable-table .slot-type-badge.tutorial {
+  background: #27ae60;
+  color: white;
+}
+
+.lecturer-timetable-table .slot-type-badge.practical {
+  background: #e67e22;
+  color: white;
+}
+
+.lecturer-timetable-table .slot-type-badge.lecture {
+  background: #3498db;
+  color: white;
+}
+
+.lecturer-timetable-table .slot-course-name {
+  color: #555;
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+
+.lecturer-timetable-table .slot-lecturer {
+  color: #666;
+  font-size: 12px;
+}
+
+.lecturer-timetable-table .slot-room {
+  color: #888;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.lecturer-timetable-table .slot-program-info {
+  color: #999;
+  font-size: 10px;
+  margin-top: 2px;
+  font-style: italic;
+}
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 768px) {
+  .lecturer-timetable-container {
+    padding: 12px 8px;
+  }
+
+  .lecturer-timetable-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .lecturer-timetable-header h2 {
+    font-size: 20px;
+  }
+
+  .lecturer-timetable-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .lecturer-timetable-actions button {
+    flex: 1;
+    min-width: 100px;
+    font-size: 12px;
+    padding: 6px 12px;
+  }
+
+  .lecturer-timetable-table {
+    font-size: 12px;
+    min-width: 600px;
+  }
+
+  .lecturer-timetable-table thead th {
+    padding: 8px 6px;
+    font-size: 11px;
+  }
+
+  .lecturer-timetable-table .day-cell {
+    padding: 10px 8px;
+    font-size: 12px;
+    min-width: 80px;
+  }
+
+  .lecturer-timetable-table .time-slot-cell {
+    padding: 4px;
+    min-width: 120px;
+    height: 60px;
+  }
+
+  .lecturer-timetable-table .slot-card {
+    padding: 6px 4px;
+    font-size: 11px;
+    min-height: 40px;
+  }
+
+  .lecturer-timetable-table .slot-course-code {
+    font-size: 12px;
+  }
+
+  .lecturer-timetable-table .slot-course-name {
+    font-size: 10px;
+  }
+
+  .lecturer-timetable-table .slot-lecturer,
+  .lecturer-timetable-table .slot-room {
+    font-size: 10px;
+  }
+
+  .lecturer-timetable-table .slot-program-info {
+    font-size: 9px;
+  }
+
+  .lecturer-empty-state {
+    padding: 40px 16px;
+  }
+
+  .lecturer-empty-state h3 {
+    font-size: 18px;
+  }
+
+  .lecturer-empty-state p {
+    font-size: 13px;
+  }
+}
+
+@media (max-width: 480px) {
+  .lecturer-timetable-table {
+    font-size: 10px;
+    min-width: 500px;
+  }
+
+  .lecturer-timetable-table thead th {
+    padding: 6px 4px;
+    font-size: 10px;
+  }
+
+  .lecturer-timetable-table .day-cell {
+    padding: 8px 4px;
+    font-size: 10px;
+    min-width: 60px;
+  }
+
+  .lecturer-timetable-table .time-slot-cell {
+    padding: 2px;
+    min-width: 100px;
+    height: 50px;
+  }
+
+  .lecturer-timetable-table .slot-card {
+    padding: 4px 3px;
+    font-size: 9px;
+    min-height: 30px;
+    border-left-width: 3px;
+  }
+
+  .lecturer-timetable-table .slot-course-code {
+    font-size: 10px;
+  }
+
+  .lecturer-timetable-table .slot-course-name {
+    font-size: 8px;
+  }
+
+  .lecturer-timetable-table .slot-lecturer,
+  .lecturer-timetable-table .slot-room {
+    font-size: 8px;
+  }
+
+  .lecturer-timetable-table .slot-program-info {
+    font-size: 7px;
+  }
+
+  .lecturer-timetable-table .slot-type-badge {
+    font-size: 8px;
+    padding: 0 4px;
+  }
+
+  .lecturer-timetable-table .empty-cell {
+    font-size: 10px;
+    padding: 6px;
+  }
+}
+
+/* Spinner */
+.timetable-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #f3f3f3;
+  border-top: 3px solid #3498db;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Scrollbar */
+.lecturer-timetable-container::-webkit-scrollbar {
+  height: 8px;
+}
+
+.lecturer-timetable-container::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+.lecturer-timetable-container::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}

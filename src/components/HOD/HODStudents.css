@@ -1,0 +1,886 @@
+/* HODStudents.css - Complete styles for HOD Students component */
+
+/* ===== BASE ===== */
+.hod-students-container {
+  padding: 20px;
+}
+
+/* ===== HEADER ===== */
+.hod-students-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.hod-students-header h2 {
+  margin: 0;
+  color: #1a237e;
+  font-size: 24px;
+}
+
+.hod-students-header p {
+  margin: 4px 0 0 0;
+  color: #666;
+  font-size: 14px;
+}
+
+.hod-students-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.hod-students-actions .hod-search-input {
+  padding: 10px 16px;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 14px;
+  min-width: 280px;
+  transition: border-color 0.3s;
+  background: white;
+}
+
+.hod-students-actions .hod-search-input:focus {
+  border-color: #1a237e;
+  outline: none;
+}
+
+.hod-students-actions .hod-search-input::placeholder {
+  color: #999;
+}
+
+.hod-refresh-btn {
+  padding: 10px 20px;
+  background: #f5f5f5;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.3s;
+  color: #333;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hod-refresh-btn:hover {
+  background: #e8e8e8;
+  border-color: #1a237e;
+}
+
+.hod-refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ===== STATS GRID ===== */
+.hod-students-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.hod-students-stats .hod-stat-card {
+  background: white;
+  padding: 20px;
+  border-radius: 12px;
+  text-align: center;
+  border: 1px solid #e5e7eb;
+  transition: all 0.3s ease;
+}
+
+.hod-students-stats .hod-stat-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  border-color: #1a237e;
+}
+
+.hod-students-stats .hod-stat-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+  display: block;
+}
+
+.hod-students-stats .hod-stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: #1a237e;
+}
+
+.hod-students-stats .hod-stat-label {
+  font-size: 13px;
+  color: #888;
+  margin-top: 4px;
+}
+
+/* ===== TABLE ===== */
+.hod-students-table-container {
+  overflow-x: auto;
+  background: white;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.hod-students-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 800px;
+}
+
+.hod-students-table thead {
+  background: #f8f9fa;
+}
+
+.hod-students-table th {
+  padding: 14px 16px;
+  text-align: left;
+  font-weight: 600;
+  color: #444;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 2px solid #e5e7eb;
+  white-space: nowrap;
+}
+
+.hod-students-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f0f0;
+  vertical-align: middle;
+  font-size: 14px;
+}
+
+.hod-students-table tbody tr {
+  transition: background 0.2s;
+}
+
+.hod-students-table tbody tr:hover {
+  background: #f8f9fa;
+}
+
+.hod-students-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ===== STUDENT AVATAR ===== */
+.hod-student-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 2px solid #e0e0e0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e3f2fd;
+  flex-shrink: 0;
+  transition: border-color 0.2s;
+}
+
+.hod-student-avatar:hover {
+  border-color: #1a237e;
+}
+
+.hod-student-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.hod-student-avatar span {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1a237e;
+}
+
+/* ===== STATUS BADGE ===== */
+.hod-status-badge {
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-block;
+  text-transform: capitalize;
+}
+
+.hod-status-badge.active {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.hod-status-badge.inactive {
+  background: #f5f5f5;
+  color: #757575;
+}
+
+.hod-status-badge.suspended {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.hod-status-badge.graduated {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.hod-status-badge.completed {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.hod-status-badge.pending {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.hod-status-badge.enrolled {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.hod-status-badge.in_progress {
+  background: #fff8e1;
+  color: #f57f17;
+}
+
+.hod-status-badge.dropped {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.hod-status-badge.failed {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.hod-status-badge.submitted {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.hod-status-badge.graded {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.hod-status-badge.returned {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.hod-status-badge.present {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.hod-status-badge.absent {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.hod-status-badge.late {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.hod-status-badge.excused {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.hod-status-badge.medical {
+  background: #f3e5f5;
+  color: #6a1b9a;
+}
+
+.hod-status-badge.paid {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.hod-status-badge.overdue {
+  background: #ffebee;
+  color: #c62828;
+}
+
+/* ===== ACTION BUTTONS ===== */
+.hod-action-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hod-action-btn {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hod-action-btn.view {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.hod-action-btn.view:hover {
+  background: #bbdefb;
+}
+
+.hod-action-btn.message {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.hod-action-btn.message:hover {
+  background: #c8e6c9;
+}
+
+.hod-action-btn.edit {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.hod-action-btn.edit:hover {
+  background: #ffe0b2;
+}
+
+.hod-action-btn.delete {
+  background: #ffebee;
+  color: #c62828;
+}
+
+.hod-action-btn.delete:hover {
+  background: #ffcdd2;
+}
+
+/* ===== MODAL ===== */
+.hod-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  backdrop-filter: blur(4px);
+  animation: hodFadeIn 0.3s ease;
+}
+
+@keyframes hodFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.hod-modal {
+  background: white;
+  border-radius: 16px;
+  width: 95%;
+  max-width: 1100px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: hodSlideUp 0.3s ease;
+}
+
+@keyframes hodSlideUp {
+  from {
+    transform: translateY(30px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.hod-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  border-bottom: 2px solid #e0e0e0;
+  background: linear-gradient(135deg, #1a237e, #283593);
+  border-radius: 16px 16px 0 0;
+  color: white;
+  flex-shrink: 0;
+}
+
+.hod-modal-header h3 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.hod-modal-header p {
+  margin: 4px 0 0 0;
+  font-size: 14px;
+  opacity: 0.85;
+}
+
+.hod-modal-close {
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  color: white;
+  font-size: 20px;
+  cursor: pointer;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.hod-modal-close:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: rotate(90deg);
+}
+
+.hod-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.hod-modal-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.hod-modal-body::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+.hod-modal-body::-webkit-scrollbar-thumb {
+  background: #1a237e;
+  border-radius: 4px;
+}
+
+.hod-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 24px;
+  border-top: 1px solid #e0e0e0;
+  background: #f8f9fa;
+  border-radius: 0 0 16px 16px;
+  flex-shrink: 0;
+}
+
+.hod-cancel-btn {
+  padding: 10px 24px;
+  background: transparent;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s;
+  color: #666;
+}
+
+.hod-cancel-btn:hover {
+  background: #f5f5f5;
+  border-color: #ccc;
+}
+
+.hod-chat-btn {
+  padding: 10px 24px;
+  background: #1a237e;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hod-chat-btn:hover {
+  background: #0d1445;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(26, 35, 126, 0.3);
+}
+
+/* ===== STUDENT PROFILE IN MODAL ===== */
+.hod-student-profile {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 20px;
+  background: #f8f9fa;
+  border-radius: 12px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.hod-student-avatar-large {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 3px solid #1a237e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e3f2fd;
+  flex-shrink: 0;
+}
+
+.hod-student-avatar-large img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.hod-student-avatar-large span {
+  font-size: 36px;
+  font-weight: 700;
+  color: #1a237e;
+}
+
+.hod-student-info {
+  flex: 1;
+}
+
+.hod-student-info h4 {
+  margin: 0 0 8px 0;
+  font-size: 20px;
+  color: #1a237e;
+}
+
+.hod-student-info p {
+  margin: 4px 0;
+  font-size: 14px;
+  color: #555;
+}
+
+.hod-student-info p strong {
+  color: #333;
+}
+
+/* ===== STUDENT STATS IN MODAL ===== */
+.hod-student-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.hod-student-stats .stat-item {
+  background: white;
+  padding: 16px;
+  border-radius: 10px;
+  text-align: center;
+  border: 1px solid #e5e7eb;
+}
+
+.hod-student-stats .stat-value {
+  font-size: 26px;
+  font-weight: 700;
+  color: #1a237e;
+}
+
+.hod-student-stats .stat-label {
+  font-size: 12px;
+  color: #888;
+  margin-top: 4px;
+}
+
+/* ===== STUDENT SECTIONS ===== */
+.hod-student-section {
+  margin-top: 24px;
+  border-top: 1px solid #e5e7eb;
+  padding-top: 20px;
+}
+
+.hod-student-section h4 {
+  margin: 0 0 12px 0;
+  color: #1a237e;
+  font-size: 16px;
+}
+
+.hod-student-section .section-subtitle {
+  color: #666;
+  font-size: 13px;
+  margin-left: 8px;
+  font-weight: 400;
+}
+
+.hod-sub-table-container {
+  overflow-x: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: white;
+}
+
+.hod-sub-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.hod-sub-table thead {
+  background: #f8f9fa;
+}
+
+.hod-sub-table th {
+  padding: 10px 14px;
+  text-align: left;
+  font-weight: 600;
+  color: #444;
+  border-bottom: 2px solid #e5e7eb;
+  white-space: nowrap;
+}
+
+.hod-sub-table td {
+  padding: 8px 14px;
+  border-bottom: 1px solid #f0f0f0;
+  vertical-align: middle;
+}
+
+.hod-sub-table tbody tr:hover {
+  background: #f8f9fa;
+}
+
+.hod-sub-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.hod-empty-cell {
+  text-align: center;
+  padding: 30px !important;
+  color: #999;
+  font-size: 14px;
+}
+
+/* ===== LOADING ===== */
+.hod-loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  background: white;
+  border-radius: 12px;
+}
+
+.hod-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #f3f3f3;
+  border-top: 3px solid #1a237e;
+  border-radius: 50%;
+  animation: hodSpin 1s linear infinite;
+  margin-bottom: 16px;
+}
+
+@keyframes hodSpin {
+  to { transform: rotate(360deg); }
+}
+
+.hod-loading-content p {
+  color: #666;
+  font-size: 15px;
+}
+
+/* ===== EMPTY STATE ===== */
+.hod-empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  background: white;
+  border-radius: 12px;
+}
+
+.hod-empty-icon {
+  font-size: 48px;
+  display: block;
+  margin-bottom: 16px;
+}
+
+.hod-empty-state h3 {
+  margin: 0 0 8px 0;
+  color: #333;
+  font-size: 20px;
+}
+
+.hod-empty-state p {
+  margin: 0;
+  color: #888;
+  font-size: 15px;
+}
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 768px) {
+  .hod-students-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .hod-students-actions {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .hod-students-actions .hod-search-input {
+    min-width: 100%;
+    width: 100%;
+  }
+
+  .hod-students-actions .hod-refresh-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .hod-students-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .hod-modal {
+    width: 100%;
+    max-width: 100%;
+    max-height: 100vh;
+    border-radius: 0;
+    height: 100vh;
+  }
+
+  .hod-modal-header {
+    border-radius: 0;
+  }
+
+  .hod-modal-footer {
+    border-radius: 0;
+  }
+
+  .hod-student-profile {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .hod-student-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .hod-students-table {
+    font-size: 13px;
+    min-width: 600px;
+  }
+
+  .hod-students-table th,
+  .hod-students-table td {
+    padding: 8px 12px;
+  }
+
+  .hod-action-btn {
+    font-size: 11px;
+    padding: 4px 10px;
+  }
+}
+
+@media (max-width: 480px) {
+  .hod-students-stats {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .hod-students-stats .hod-stat-value {
+    font-size: 22px;
+  }
+
+  .hod-student-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .hod-student-stats .stat-value {
+    font-size: 20px;
+  }
+}
+/* ===== LOADING PROGRESS ===== */
+.hod-loading-progress {
+  width: 100%;
+  max-width: 400px;
+  margin-top: 20px;
+}
+
+.hod-progress-bar {
+  width: 100%;
+  height: 8px;
+  background: #e0e0e0;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.hod-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #1a237e, #283593, #4f46e5);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+  animation: hodProgressPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes hodProgressPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.hod-loading-label {
+  margin: 0;
+  font-size: 14px;
+  color: #555;
+  text-align: center;
+}
+
+.hod-loading-percent {
+  margin: 4px 0 0 0;
+  font-size: 12px;
+  color: #999;
+  text-align: center;
+}
+/* ===== EXPORT BUTTON ===== */
+.hod-export-btn {
+  padding: 10px 20px;
+  background: #2b579a;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hod-export-btn:hover:not(:disabled) {
+  background: #1d3f70;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(43, 87, 154, 0.3);
+}
+
+.hod-export-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}

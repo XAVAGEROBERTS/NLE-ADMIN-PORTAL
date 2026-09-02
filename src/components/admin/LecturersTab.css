@@ -1,0 +1,90 @@
+/* src/components/admin/LecturersTab.css */
+.lecturers-tab {
+  width: 100%;
+}
+
+.lecturer-avatar {
+  width: 35px;
+  height: 35px;
+  border-radius: 50%;
+  overflow: hidden;
+  cursor: pointer;
+  border: 2px solid #e8ecf1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f0f2f5;
+  transition: all 0.2s;
+}
+
+.lecturer-avatar:hover {
+  border-color: #667eea;
+  transform: scale(1.05);
+}
+
+.lecturer-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.lecturer-avatar span {
+  font-size: 14px;
+  color: #6b7280;
+  font-weight: 600;
+}
+
+.lecturer-id {
+  color: #8b5cf6;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.lecturer-name {
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.lecturer-email {
+  color: #6b7280;
+  font-size: 14px;
+}
+
+.specialization {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.departments-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.department-badge {
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+  color: white;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-block;
+}
+
+.action-btn.dept {
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+}
+
+.action-btn.dept:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3);
+}
+
+.action-btn.courses {
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+}
+
+.action-btn.courses:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+}

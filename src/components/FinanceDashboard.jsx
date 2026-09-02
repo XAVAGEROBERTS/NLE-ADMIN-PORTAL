@@ -17,7 +17,7 @@ import {
   ArrowUpRight, ArrowDownRight, Percent, Target, Zap, Sparkles, Layers,
   Package, Globe, ShieldCheck, History, FileCheck, AlertOctagon, File
 } from 'lucide-react';
-import './FinanceDashboard.css';
+import './finance/FinanceDashboard.css';
 import { format, parseISO, subMonths, startOfMonth, endOfMonth, isWithinInterval, addDays, subDays, eachMonthOfInterval } from 'date-fns';
 import * as XLSX from 'xlsx';
 

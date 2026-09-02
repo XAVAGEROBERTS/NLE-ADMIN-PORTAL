@@ -1,0 +1,180 @@
+/* src/components/admin/TimetablesTab.css */
+.timetables-tab {
+  width: 100%;
+}
+
+.timetables-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+  gap: 25px;
+  margin-top: 10px;
+}
+
+.timetable-card {
+  background: white;
+  border: 1px solid #e8ecf1;
+  border-radius: 16px;
+  padding: 25px;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.04);
+}
+
+.timetable-card:hover {
+  transform: translateY(-4px);
+  border-color: #667eea;
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.06);
+}
+
+.timetable-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.timetable-header h3 {
+  margin: 0;
+  color: #1a1a2e;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.timetable-badges {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.semester-badge {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.timetable-year {
+  color: #6b7280;
+  font-size: 14px;
+  margin: 5px 0 10px 0;
+}
+
+.slot-count {
+  color: #6b7280;
+  font-size: 13px;
+  margin-bottom: 15px;
+}
+
+.expand-btn {
+  width: 100%;
+  padding: 10px;
+  background: #f8fafc;
+  border: 1px solid #e8ecf1;
+  border-radius: 8px;
+  font-weight: 600;
+  color: #1a1a2e;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.expand-btn:hover {
+  background: #f0f2f5;
+}
+
+.expand-btn.expanded {
+  background: #667eea;
+  color: white;
+  border-color: #667eea;
+}
+
+.expanded-slots {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 2px solid #e8ecf1;
+}
+
+.slots-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.slots-header h4 {
+  margin: 0;
+  color: #1a1a2e;
+}
+
+.add-button.small {
+  padding: 6px 16px;
+  font-size: 13px;
+}
+
+.day {
+  font-weight: 600;
+  color: #1a1a2e;
+}
+
+.time {
+  font-weight: 500;
+  color: #6b7280;
+}
+
+.course-code {
+  color: #667eea;
+}
+
+.course-name {
+  color: #6b7280;
+}
+
+.slot-type-badge {
+  background: #e3f2fd;
+  color: #1976d2;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.slot-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.action-btn.edit.small {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+  color: white;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.action-btn.edit.small:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+}
+
+.action-btn.delete.small {
+  background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+  color: white;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.action-btn.delete.small:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(107, 114, 128, 0.3);
+}
+
+.no-slots {
+  text-align: center;
+  padding: 20px;
+  color: #6b7280;
+}

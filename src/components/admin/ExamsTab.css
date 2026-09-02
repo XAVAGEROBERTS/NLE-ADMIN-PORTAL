@@ -1,0 +1,130 @@
+/* src/components/admin/ExamsTab.css */
+.exams-tab {
+  width: 100%;
+}
+
+.exams-list {
+  display: grid;
+  gap: 20px;
+  margin-top: 10px;
+}
+
+.exam-card {
+  background: white;
+  border: 1px solid #e8ecf1;
+  border-radius: 16px;
+  padding: 25px;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.04);
+}
+
+.exam-card:hover {
+  transform: translateX(5px);
+  border-color: #667eea;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+}
+
+.exam-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 15px;
+}
+
+.exam-header h3 {
+  margin: 0;
+  color: #1a1a2e;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.course-info {
+  color: #6b7280;
+  font-size: 14px;
+  margin: 5px 0 0 0;
+}
+
+.exam-status {
+  padding: 6px 16px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: white;
+}
+
+.exam-status.active {
+  background: #dc3545;
+}
+
+.exam-status.upcoming {
+  background: #1976d2;
+}
+
+.exam-status.ended {
+  background: #6b7280;
+}
+
+.exam-description {
+  color: #6b7280;
+  margin: 10px 0 15px 0;
+}
+
+.exam-status-bar {
+  padding: 12px 20px;
+  border-radius: 8px;
+  margin: 15px 0;
+  text-align: center;
+}
+
+.exam-status-bar.active {
+  background: #fde8e8;
+  color: #dc3545;
+}
+
+.exam-status-bar.upcoming {
+  background: #e3f2fd;
+  color: #1976d2;
+}
+
+.exam-status-bar.ended {
+  background: #f0f2f5;
+  color: #6b7280;
+}
+
+.exam-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin: 15px 0;
+  color: #6b7280;
+  font-size: 14px;
+}
+
+.exam-details div {
+  background: #f8fafc;
+  padding: 6px 14px;
+  border-radius: 8px;
+}
+
+.exam-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.action-btn.delete {
+  background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+  color: white;
+  padding: 8px 20px;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.action-btn.delete:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(107, 114, 128, 0.3);
+}
