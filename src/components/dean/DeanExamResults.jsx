@@ -1,20 +1,22 @@
-// dean/DeanExamResults.jsx - COMPLETE FIXED VERSION
-// Only shows results that HOD has approved (status: approved_by_hod)
+// dean/DeanExamResults.jsx - SEPARATE SECTIONS FOR EXAMS AND ASSIGNMENTS
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../../services/supabase';
 
 const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) => {
   const [examResults, setExamResults] = useState([]);
+  const [assignmentResults, setAssignmentResults] = useState([]);
+  const [allResults, setAllResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [showMarksModal, setShowMarksModal] = useState(false);
-  const [selectedExam, setSelectedExam] = useState(null);
+  const [selectedItem, setSelectedItem] = useState(null);
   const [deanNotes, setDeanNotes] = useState('');
   const [processing, setProcessing] = useState(false);
-  const [examMarks, setExamMarks] = useState([]);
-  const [examStats, setExamStats] = useState({});
+  const [itemMarks, setItemMarks] = useState([]);
+  const [itemStats, setItemStats] = useState({});
+  const [itemType, setItemType] = useState('exam');
   const [facultyDepartments, setFacultyDepartments] = useState([]);
 
   // Get departments under this faculty
@@ -46,18 +48,16 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
     return facultyDepartments.map(d => d.department_code).filter(Boolean);
   }, [departments, facultyDepartments]);
 
+  // ===== FETCH EXAM RESULTS =====
   const fetchExamResults = useCallback(async () => {
     if (deptCodes.length === 0) {
       console.log('⚠️ Dean - No department codes available');
-      setExamResults([]);
-      return;
+      return [];
     }
 
-    setLoading(true);
     try {
       console.log('🔍 Dean - Fetching HOD-approved exam results for departments:', deptCodes);
       
-      // ✅ ONLY fetch results that are approved_by_hod (pending Dean) or already processed
       const { data, error } = await supabase
         .from('exam_results_approvals')
         .select('*')
@@ -67,49 +67,37 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
 
       if (error) {
         console.error('❌ Error fetching exam results:', error);
-        throw error;
+        return [];
       }
 
       console.log('📋 Dean - Raw exam results:', data?.length || 0);
 
-      if (!data || data.length === 0) {
-        setExamResults([]);
-        setLoading(false);
-        return;
-      }
+      if (!data || data.length === 0) return [];
 
-      // Fetch related data separately
+      // Fetch exam details
       const examIds = [...new Set(data.map(r => r.exam_id).filter(Boolean))];
       const courseIds = [...new Set(data.map(r => r.course_id).filter(Boolean))];
 
-      // Fetch exams
       let examsMap = {};
+      let coursesMap = {};
+
       if (examIds.length > 0) {
-        const { data: exams, error: examsError } = await supabase
+        const { data: exams } = await supabase
           .from('examinations')
           .select('id, title, exam_type, total_marks, start_time, end_time')
           .in('id', examIds);
-        
-        if (!examsError && exams) {
-          exams.forEach(e => { examsMap[e.id] = e; });
-        }
+        if (exams) exams.forEach(e => { examsMap[e.id] = e; });
       }
 
-      // Fetch courses
-      let coursesMap = {};
       if (courseIds.length > 0) {
-        const { data: coursesData, error: coursesError } = await supabase
+        const { data: coursesData } = await supabase
           .from('courses')
           .select('id, course_code, course_name, credits')
           .in('id', courseIds);
-        
-        if (!coursesError && coursesData) {
-          coursesData.forEach(c => { coursesMap[c.id] = c; });
-        }
+        if (coursesData) coursesData.forEach(c => { coursesMap[c.id] = c; });
       }
 
-      // Combine data
-      const processedResults = data.map(r => ({
+      return data.map(r => ({
         ...r,
         examinations: examsMap[r.exam_id] || { 
           id: r.exam_id, 
@@ -121,63 +109,189 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
           id: r.course_id, 
           course_code: 'N/A', 
           course_name: 'Unknown Course' 
-        }
+        },
+        result_type: 'exam',
+        item_id: r.exam_id
       }));
-
-      console.log('✅ Dean - Processed results:', processedResults.length);
-      console.log('📊 Status breakdown:', {
-        pendingDean: processedResults.filter(r => r.status === 'approved_by_hod').length,
-        approved: processedResults.filter(r => r.status === 'approved_by_dean').length,
-        rejected: processedResults.filter(r => r.status === 'rejected').length
-      });
-      
-      setExamResults(processedResults);
     } catch (err) {
-      console.error('❌ Error fetching exam results:', err);
-    } finally {
-      setLoading(false);
+      console.error('❌ Error in fetchExamResults:', err);
+      return [];
     }
   }, [deptCodes]);
 
-  useEffect(() => {
-    fetchExamResults();
-  }, [fetchExamResults]);
+  // ===== FETCH ASSIGNMENT RESULTS =====
+  const fetchAssignmentResults = useCallback(async () => {
+    if (deptCodes.length === 0) {
+      console.log('⚠️ Dean - No department codes available');
+      return [];
+    }
 
-  // View marks for an exam - Uses exam_submissions table
-  const viewMarks = async (exam) => {
-    setSelectedExam(exam);
-    
     try {
-      console.log('📊 Dean - Viewing marks for exam:', exam.exam_id);
+      console.log('🔍 Dean - Fetching HOD-approved assignment results for departments:', deptCodes);
       
-      // Fetch from exam_submissions table
-      const { data: submissions, error: marksError } = await supabase
-        .from('exam_submissions')
-        .select(`
-          id,
-          student_id,
-          total_marks_obtained,
-          grade,
-          grade_points,
-          percentage,
-          feedback,
-          status,
-          submitted_at,
-          graded_at
-        `)
-        .eq('exam_id', exam.exam_id)
-        .eq('status', 'graded')
-        .order('total_marks_obtained', { ascending: false });
+      const { data, error } = await supabase
+        .from('assignment_results_approvals')
+        .select('*')
+        .in('department_code', deptCodes)
+        .in('status', ['approved_by_hod', 'approved_by_dean', 'rejected'])
+        .order('created_at', { ascending: false });
 
-      if (marksError) {
-        console.error('❌ Error fetching exam submissions:', marksError);
-        throw marksError;
+      if (error) {
+        console.error('❌ Error fetching assignment results:', error);
+        return [];
       }
 
-      console.log('📊 Dean - Found submissions:', submissions?.length || 0);
+      console.log('📋 Dean - Raw assignment results:', data?.length || 0);
+
+      if (!data || data.length === 0) return [];
+
+      // Fetch assignment details
+      const assignmentIds = [...new Set(data.map(r => r.assignment_id).filter(Boolean))];
+      const courseIds = [...new Set(data.map(r => r.course_id).filter(Boolean))];
+
+      let assignmentsMap = {};
+      let coursesMap = {};
+
+      if (assignmentIds.length > 0) {
+        const { data: assignments } = await supabase
+          .from('assignments')
+          .select('id, title, total_marks, due_date, status')
+          .in('id', assignmentIds);
+        if (assignments) assignments.forEach(a => { assignmentsMap[a.id] = a; });
+      }
+
+      if (courseIds.length > 0) {
+        const { data: coursesData } = await supabase
+          .from('courses')
+          .select('id, course_code, course_name, credits')
+          .in('id', courseIds);
+        if (coursesData) coursesData.forEach(c => { coursesMap[c.id] = c; });
+      }
+
+      return data.map(r => ({
+        ...r,
+        assignments: assignmentsMap[r.assignment_id] || { 
+          id: r.assignment_id, 
+          title: 'Unknown Assignment', 
+          total_marks: 100 
+        },
+        courses: coursesMap[r.course_id] || { 
+          id: r.course_id, 
+          course_code: 'N/A', 
+          course_name: 'Unknown Course' 
+        },
+        result_type: 'assignment',
+        item_id: r.assignment_id
+      }));
+    } catch (err) {
+      console.error('❌ Error in fetchAssignmentResults:', err);
+      return [];
+    }
+  }, [deptCodes]);
+
+  // ===== FETCH ALL RESULTS =====
+  const fetchAllResults = useCallback(async () => {
+    if (deptCodes.length === 0) {
+      setExamResults([]);
+      setAssignmentResults([]);
+      setAllResults([]);
+      if (setStats) {
+        setStats({ pending: 0, approved: 0, rejected: 0, total: 0, examCount: 0, assignmentCount: 0 });
+      }
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const [exams, assignments] = await Promise.all([
+        fetchExamResults(),
+        fetchAssignmentResults()
+      ]);
+
+      setExamResults(exams);
+      setAssignmentResults(assignments);
+
+      const combined = [...exams, ...assignments];
+      combined.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      setAllResults(combined);
+
+      console.log('✅ Dean - Combined results:', combined.length);
+      console.log('📊 Status breakdown:', {
+        pendingDean: combined.filter(r => r.status === 'approved_by_hod').length,
+        approved: combined.filter(r => r.status === 'approved_by_dean').length,
+        rejected: combined.filter(r => r.status === 'rejected').length,
+        exams: exams.length,
+        assignments: assignments.length
+      });
+
+      // Update stats
+      if (setStats) {
+        const pending = combined.filter(r => r.status === 'approved_by_hod').length;
+        const approved = combined.filter(r => r.status === 'approved_by_dean').length;
+        const rejected = combined.filter(r => r.status === 'rejected').length;
+        
+        setStats({
+          pending,
+          approved,
+          rejected,
+          total: combined.length,
+          examCount: exams.length,
+          assignmentCount: assignments.length
+        });
+      }
+    } catch (err) {
+      console.error('❌ Error fetching all results:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [deptCodes, fetchExamResults, fetchAssignmentResults, setStats]);
+
+  useEffect(() => {
+    fetchAllResults();
+  }, [fetchAllResults]);
+
+  // ===== VIEW MARKS =====
+  const viewMarks = async (item) => {
+    setSelectedItem(item);
+    setItemType(item.result_type);
+    
+    try {
+      console.log(`📊 Dean - Viewing marks for ${item.result_type}:`, item.item_id);
+      
+      let submissions = [];
+      let tableName = '';
+      let idField = '';
+
+      if (item.result_type === 'exam') {
+        tableName = 'exam_submissions';
+        idField = 'exam_id';
+        const { data, error } = await supabase
+          .from(tableName)
+          .select('id, student_id, total_marks_obtained, grade, grade_points, percentage, feedback, status, submitted_at, graded_at')
+          .eq(idField, item.item_id)
+          .eq('status', 'graded')
+          .order('total_marks_obtained', { ascending: false });
+        
+        if (error) throw error;
+        submissions = data || [];
+      } else {
+        tableName = 'assignment_submissions';
+        idField = 'assignment_id';
+        const { data, error } = await supabase
+          .from(tableName)
+          .select('id, student_id, marks_obtained, feedback, status, submission_date')
+          .eq(idField, item.item_id)
+          .eq('status', 'graded')
+          .order('marks_obtained', { ascending: false });
+        
+        if (error) throw error;
+        submissions = data || [];
+      }
+
+      console.log('📊 Submissions found:', submissions.length);
 
       // Get student details
-      const studentIds = [...new Set((submissions || []).map(s => s.student_id).filter(Boolean))];
+      const studentIds = [...new Set(submissions.map(s => s.student_id).filter(Boolean))];
       let studentsMap = {};
       
       if (studentIds.length > 0) {
@@ -192,24 +306,33 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
       }
 
       // Process marks data
-      const processedMarks = (submissions || []).map(s => ({
-        id: s.id,
-        student_id: s.student_id,
-        students: studentsMap[s.student_id] || { 
-          full_name: 'Unknown Student', 
-          student_id: 'N/A', 
-          email: 'N/A' 
-        },
-        marks_obtained: s.total_marks_obtained || 0,
-        grade: s.grade || '-',
-        grade_points: s.grade_points || 0,
-        percentage: s.percentage || 0,
-        is_passed: s.grade !== 'F' && s.total_marks_obtained !== null && s.total_marks_obtained !== undefined,
-        feedback: s.feedback || '',
-        status: s.status,
-        submitted_at: s.submitted_at,
-        graded_at: s.graded_at
-      }));
+      const totalMarks = item.examinations?.total_marks || item.assignments?.total_marks || 100;
+      
+      const processedMarks = submissions.map(s => {
+        const marksObtained = s.total_marks_obtained || s.marks_obtained || 0;
+        const percentage = totalMarks > 0 ? Math.round((marksObtained / totalMarks) * 100) : 0;
+        const isPassed = percentage >= 50;
+        const grade = s.grade || (isPassed ? 'Pass' : 'Fail');
+
+        return {
+          id: s.id,
+          student_id: s.student_id,
+          students: studentsMap[s.student_id] || { 
+            full_name: 'Unknown Student', 
+            student_id: 'N/A', 
+            email: 'N/A' 
+          },
+          marks_obtained: marksObtained,
+          grade: grade,
+          grade_points: s.grade_points || 0,
+          percentage: percentage,
+          is_passed: isPassed,
+          feedback: s.feedback || '',
+          status: s.status,
+          submitted_at: s.submitted_at || s.submission_date,
+          graded_at: s.graded_at
+        };
+      });
 
       // Calculate stats
       const total = processedMarks.length;
@@ -220,15 +343,15 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
       const highest = marksArray.length > 0 ? Math.max(...marksArray) : 0;
       const lowest = marksArray.length > 0 ? Math.min(...marksArray) : 0;
 
-      setExamMarks(processedMarks);
-      setExamStats({
+      setItemMarks(processedMarks);
+      setItemStats({
         total,
         passed,
         failed,
         avgMarks: avgMarks.toFixed(2),
         highest,
         lowest,
-        averageScore: exam.average_score
+        averageScore: item.average_score
       });
       setShowMarksModal(true);
     } catch (err) {
@@ -237,27 +360,38 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
     }
   };
 
-  // Dean Approves (Final Approval)
-  const handleApprove = async (id) => {
+  // ===== DEAN APPROVES =====
+  const handleApprove = async (id, resultType) => {
     setProcessing(true);
     try {
+      const table = resultType === 'exam' ? 'exam_results_approvals' : 'assignment_results_approvals';
+      
+      const updateData = {
+        status: 'approved_by_dean',
+        dean_approved_at: new Date().toISOString(),
+        dean_approved_by: 'dean',
+        dean_notes: deanNotes || null,
+        updated_at: new Date().toISOString()
+      };
+      
+      // Only add hod_approved_at for exams (it exists in exam_results_approvals)
+      if (resultType === 'exam') {
+        // Keep existing value, don't update
+      }
+      
+      console.log(`📤 Dean approving ${resultType} with data:`, updateData);
+      
       const { error } = await supabase
-        .from('exam_results_approvals')
-        .update({
-          status: 'approved_by_dean',
-          dean_approved_at: new Date().toISOString(),
-          dean_approved_by: 'dean',
-          dean_notes: deanNotes || null,
-          updated_at: new Date().toISOString()
-        })
+        .from(table)
+        .update(updateData)
         .eq('id', id);
 
       if (error) throw error;
 
-      alert('✅ Exam results approved by Dean! Final approval complete.');
+      alert('✅ Results approved by Dean! Final approval complete.');
       setShowModal(false);
       setDeanNotes('');
-      await fetchExamResults();
+      await fetchAllResults();
       if (fetchDeanData) await fetchDeanData();
     } catch (err) {
       console.error('Error approving:', err);
@@ -267,8 +401,8 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
     }
   };
 
-  // Dean Rejects
-  const handleReject = async (id) => {
+  // ===== DEAN REJECTS =====
+  const handleReject = async (id, resultType) => {
     if (!deanNotes.trim()) {
       alert('Please provide a reason for rejection');
       return;
@@ -276,23 +410,29 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
 
     setProcessing(true);
     try {
+      const table = resultType === 'exam' ? 'exam_results_approvals' : 'assignment_results_approvals';
+      
+      const updateData = {
+        status: 'rejected',
+        rejected_at: new Date().toISOString(),
+        rejection_reason: deanNotes,
+        dean_notes: deanNotes || null,
+        updated_at: new Date().toISOString()
+      };
+      
+      console.log(`📤 Dean rejecting ${resultType} with data:`, updateData);
+      
       const { error } = await supabase
-        .from('exam_results_approvals')
-        .update({
-          status: 'rejected',
-          rejected_at: new Date().toISOString(),
-          rejection_reason: deanNotes,
-          dean_notes: deanNotes || null,
-          updated_at: new Date().toISOString()
-        })
+        .from(table)
+        .update(updateData)
         .eq('id', id);
 
       if (error) throw error;
 
-      alert('❌ Exam results rejected');
+      alert('❌ Results rejected');
       setShowModal(false);
       setDeanNotes('');
-      await fetchExamResults();
+      await fetchAllResults();
       if (fetchDeanData) await fetchDeanData();
     } catch (err) {
       console.error('Error rejecting:', err);
@@ -302,8 +442,8 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
     }
   };
 
-  // Return to HOD for revision
-  const handleReturnToHOD = async (id) => {
+  // ===== RETURN TO HOD =====
+  const handleReturnToHOD = async (id, resultType) => {
     if (!deanNotes.trim()) {
       alert('Please provide feedback for the HOD');
       return;
@@ -311,13 +451,19 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
 
     setProcessing(true);
     try {
+      const table = resultType === 'exam' ? 'exam_results_approvals' : 'assignment_results_approvals';
+      
+      const updateData = {
+        status: 'submitted', // Back to HOD
+        dean_notes: deanNotes,
+        updated_at: new Date().toISOString()
+      };
+      
+      console.log(`📤 Dean returning ${resultType} to HOD:`, updateData);
+      
       const { error } = await supabase
-        .from('exam_results_approvals')
-        .update({
-          status: 'submitted', // Back to HOD
-          dean_notes: deanNotes,
-          updated_at: new Date().toISOString()
-        })
+        .from(table)
+        .update(updateData)
         .eq('id', id);
 
       if (error) throw error;
@@ -325,7 +471,7 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
       alert('🔄 Results returned to HOD for revision');
       setShowModal(false);
       setDeanNotes('');
-      await fetchExamResults();
+      await fetchAllResults();
       if (fetchDeanData) await fetchDeanData();
     } catch (err) {
       console.error('Error returning:', err);
@@ -335,20 +481,7 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
     }
   };
 
-  const filteredResults = examResults.filter((r) => {
-    const matchFilter = filter === 'all' || r.status === filter;
-    const matchSearch =
-      r.courses?.course_code?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      r.courses?.course_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      r.examinations?.title?.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchFilter && matchSearch;
-  });
-
-  // Count only HOD-approved results for Dean's pending
-  const pendingCount = examResults.filter(r => r.status === 'approved_by_hod').length;
-  const approvedCount = examResults.filter(r => r.status === 'approved_by_dean').length;
-  const rejectedCount = examResults.filter(r => r.status === 'rejected').length;
-
+  // ===== HELPER FUNCTIONS =====
   const getStatusLabel = (status) => {
     const labels = {
       draft: '📝 Draft',
@@ -360,10 +493,36 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
     return labels[status] || status || 'Unknown';
   };
 
+  // ===== FILTER RESULTS =====
+  const filterResults = (results) => {
+    return results.filter((r) => {
+      const item = r.examinations || r.assignments || {};
+      const title = item.title || '';
+      const courseCode = r.courses?.course_code || '';
+      const courseName = r.courses?.course_name || '';
+      
+      const matchFilter = filter === 'all' || r.status === filter;
+      const matchSearch = 
+        courseCode.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        courseName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        title.toLowerCase().includes(searchTerm.toLowerCase());
+      return matchFilter && matchSearch;
+    });
+  };
+
+  // ===== COUNTS =====
+  const allItems = [...examResults, ...assignmentResults];
+  const pendingCount = allItems.filter(r => r.status === 'approved_by_hod').length;
+  const approvedCount = allItems.filter(r => r.status === 'approved_by_dean').length;
+  const rejectedCount = allItems.filter(r => r.status === 'rejected').length;
+
+  const filteredExams = filterResults(examResults);
+  const filteredAssignments = filterResults(assignmentResults);
+
   return (
     <div className="dean-section">
       <div className="dean-section-header">
-        <h2 className="dean-section-title">📝 Exam Results Approval</h2>
+        <h2 className="dean-section-title">📝 Results Approval - Dean</h2>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           <span style={{ padding: '4px 12px', background: '#fff3e0', color: '#e65100', borderRadius: '12px', fontSize: '12px', fontWeight: '600' }}>
             ⏳ Pending Dean: {pendingCount}
@@ -374,13 +533,19 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
           <span style={{ padding: '4px 12px', background: '#ffebee', color: '#c62828', borderRadius: '12px', fontSize: '12px', fontWeight: '600' }}>
             ❌ Rejected: {rejectedCount}
           </span>
+          {allItems.length > 0 && (
+            <span style={{ padding: '4px 12px', background: '#e3f2fd', color: '#1565c0', borderRadius: '12px', fontSize: '12px', fontWeight: '600' }}>
+              📋 Total: {allItems.length} ({examResults.length} Exams, {assignmentResults.length} Assignments)
+            </span>
+          )}
         </div>
       </div>
 
+      {/* Filters */}
       <div style={{ display: 'flex', gap: '10px', marginBottom: '16px', flexWrap: 'wrap' }}>
         <input
           type="text"
-          placeholder="Search by course or exam..."
+          placeholder="Search by course or title..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           style={{ flex: 1, minWidth: '200px', padding: '8px 12px', border: '1px solid #ddd', borderRadius: '6px' }}
@@ -390,190 +555,424 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
           onChange={(e) => setFilter(e.target.value)}
           style={{ padding: '8px 12px', border: '1px solid #ddd', borderRadius: '6px', background: 'white' }}
         >
-          <option value="all">📋 All ({examResults.length})</option>
+          <option value="all">📋 All Status ({allItems.length})</option>
           <option value="approved_by_hod">⏳ Pending Dean ({pendingCount})</option>
           <option value="approved_by_dean">✅ Approved ({approvedCount})</option>
           <option value="rejected">❌ Rejected ({rejectedCount})</option>
         </select>
         <button
-          onClick={fetchExamResults}
+          onClick={fetchAllResults}
           style={{ padding: '8px 16px', background: '#1976d2', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
         >
           🔄 Refresh
         </button>
       </div>
 
+      {/* Results Table */}
       <div className="dean-card">
         {loading ? (
           <div style={{ textAlign: 'center', padding: '40px' }}>
             <div className="lecturer-spinner"></div>
-            <p>Loading exam results...</p>
+            <p>Loading results...</p>
           </div>
-        ) : examResults.length === 0 ? (
+        ) : allItems.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '40px', color: '#999' }}>
             <span style={{ fontSize: '48px', display: 'block', marginBottom: '12px' }}>📭</span>
-            <p>No exam results pending your approval</p>
+            <p>No results pending your approval</p>
             <p style={{ fontSize: '13px', color: '#bbb' }}>Results will appear here after HOD approval</p>
           </div>
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#f5f5f5' }}>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Exam</th>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Course</th>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Department</th>
-                <th style={{ padding: '10px', textAlign: 'center' }}>Students</th>
-                <th style={{ padding: '10px', textAlign: 'center' }}>Avg Score</th>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Status</th>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredResults.map((r) => (
-                <tr key={r.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                  <td style={{ padding: '10px' }}>
-                    <strong>{r.examinations?.title || 'N/A'}</strong>
-                    <br />
-                    <small style={{ color: '#666' }}>{r.examinations?.exam_type || 'N/A'}</small>
-                  </td>
-                  <td style={{ padding: '10px' }}>
-                    <strong>{r.courses?.course_code || 'N/A'}</strong>
-                    <br />
-                    <small style={{ color: '#666' }}>{r.courses?.course_name || 'N/A'}</small>
-                  </td>
-                  <td style={{ padding: '10px' }}>
-                    <span style={{
-                      padding: '2px 10px',
-                      borderRadius: '12px',
-                      fontSize: '12px',
-                      fontWeight: '600',
-                      background: '#f3e5f5',
-                      color: '#6a1b9a'
-                    }}>
-                      {r.department_code || 'N/A'}
-                    </span>
-                  </td>
-                  <td style={{ padding: '10px', textAlign: 'center' }}>
-                    <strong>{r.total_students || 0}</strong>
-                  </td>
-                  <td style={{ padding: '10px', textAlign: 'center' }}>
-                    <span style={{
-                      padding: '2px 8px',
-                      borderRadius: '4px',
-                      background: (r.average_score || 0) >= 60 ? '#e8f5e9' : '#fff3e0',
-                      color: (r.average_score || 0) >= 60 ? '#2e7d32' : '#e65100',
-                      fontWeight: '600'
-                    }}>
-                      {r.average_score ? r.average_score.toFixed(1) : '-'}%
-                    </span>
-                  </td>
-                  <td style={{ padding: '10px' }}>
-                    <span style={{
-                      padding: '4px 12px',
-                      borderRadius: '12px',
-                      fontSize: '12px',
-                      fontWeight: '600',
-                      background: r.status === 'approved_by_hod' ? '#fff3e0' :
-                                r.status === 'approved_by_dean' ? '#e8f5e9' :
-                                r.status === 'rejected' ? '#ffebee' : '#f5f5f5',
-                      color: r.status === 'approved_by_hod' ? '#e65100' :
-                             r.status === 'approved_by_dean' ? '#2e7d32' :
-                             r.status === 'rejected' ? '#c62828' : '#666'
-                    }}>
-                      {getStatusLabel(r.status)}
-                    </span>
-                  </td>
-                  <td style={{ padding: '10px' }}>
-                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                      <button
-                        onClick={() => viewMarks(r)}
-                        style={{
-                          padding: '4px 12px',
-                          background: '#1976d2',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontSize: '12px'
-                        }}
-                      >
-                        👁️ View Marks
-                      </button>
-                      {r.status === 'approved_by_hod' && (
-                        <>
-                          <button
-                            onClick={() => {
-                              setSelectedExam(r);
-                              setShowModal(true);
-                              setDeanNotes('');
-                            }}
-                            style={{
-                              padding: '4px 12px',
-                              background: '#4caf50',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '4px',
-                              cursor: 'pointer',
+          <div>
+            {/* EXAM RESULTS SECTION */}
+            {filteredExams.length > 0 && (
+              <>
+                <div style={{ 
+                  background: '#e3f2fd', 
+                  padding: '8px 16px', 
+                  borderRadius: '8px',
+                  marginBottom: '8px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}>
+                  <h4 style={{ margin: 0, color: '#1565c0' }}>
+                    📋 EXAM RESULTS ({filteredExams.length})
+                  </h4>
+                  <span style={{ fontSize: '12px', color: '#1565c0' }}>
+                    {filteredExams.filter(r => r.status === 'approved_by_hod').length} pending
+                  </span>
+                </div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '24px' }}>
+                  <thead>
+                    <tr style={{ background: '#e8eaf6' }}>
+                      <th style={{ padding: '10px', textAlign: 'left' }}>Exam</th>
+                      <th style={{ padding: '10px', textAlign: 'left' }}>Course</th>
+                      <th style={{ padding: '10px', textAlign: 'left' }}>Department</th>
+                      <th style={{ padding: '10px', textAlign: 'center' }}>Students</th>
+                      <th style={{ padding: '10px', textAlign: 'center' }}>Avg Score</th>
+                      <th style={{ padding: '10px', textAlign: 'left' }}>Status</th>
+                      <th style={{ padding: '10px', textAlign: 'left' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredExams.map((r) => {
+                      const item = r.examinations || {};
+                      return (
+                        <tr key={`exam-${r.id}`} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                          <td style={{ padding: '10px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span style={{
+                                padding: '2px 8px',
+                                borderRadius: '4px',
+                                fontSize: '10px',
+                                fontWeight: '700',
+                                background: '#e3f2fd',
+                                color: '#1565c0'
+                              }}>
+                                📋 EXAM
+                              </span>
+                              <strong>{item.title || 'N/A'}</strong>
+                            </div>
+                            <br />
+                            <small style={{ color: '#666' }}>{item.exam_type || 'N/A'}</small>
+                          </td>
+                          <td style={{ padding: '10px' }}>
+                            <strong>{r.courses?.course_code || 'N/A'}</strong>
+                            <br />
+                            <small style={{ color: '#666' }}>{r.courses?.course_name || 'N/A'}</small>
+                          </td>
+                          <td style={{ padding: '10px' }}>
+                            <span style={{
+                              padding: '2px 10px',
+                              borderRadius: '12px',
                               fontSize: '12px',
-                              fontWeight: '600'
-                            }}
-                          >
-                            ✅ Approve
-                          </button>
-                          <button
-                            onClick={() => {
-                              setSelectedExam(r);
-                              setShowModal(true);
-                              setDeanNotes('');
-                            }}
-                            style={{
-                              padding: '4px 12px',
-                              background: '#f44336',
-                              color: 'white',
-                              border: 'none',
+                              fontWeight: '600',
+                              background: '#f3e5f5',
+                              color: '#6a1b9a'
+                            }}>
+                              {r.department_code || 'N/A'}
+                            </span>
+                          </td>
+                          <td style={{ padding: '10px', textAlign: 'center' }}>
+                            <strong>{r.total_students || 0}</strong>
+                            <br />
+                            <small style={{ color: '#666' }}>Graded: {r.graded_students || 0}</small>
+                          </td>
+                          <td style={{ padding: '10px', textAlign: 'center' }}>
+                            <span style={{
+                              padding: '2px 8px',
                               borderRadius: '4px',
-                              cursor: 'pointer',
-                              fontSize: '12px',
+                              background: (r.average_score || 0) >= 60 ? '#e8f5e9' : '#fff3e0',
+                              color: (r.average_score || 0) >= 60 ? '#2e7d32' : '#e65100',
                               fontWeight: '600'
-                            }}
-                          >
-                            ❌ Reject
-                          </button>
-                          <button
-                            onClick={() => {
-                              setSelectedExam(r);
-                              setShowModal(true);
-                              setDeanNotes('');
-                            }}
-                            style={{
+                            }}>
+                              {r.average_score ? r.average_score.toFixed(1) : '-'}%
+                            </span>
+                          </td>
+                          <td style={{ padding: '10px' }}>
+                            <span style={{
                               padding: '4px 12px',
-                              background: '#ff9800',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '4px',
-                              cursor: 'pointer',
+                              borderRadius: '12px',
                               fontSize: '12px',
+                              fontWeight: '600',
+                              background: r.status === 'approved_by_hod' ? '#fff3e0' :
+                                        r.status === 'approved_by_dean' ? '#e8f5e9' :
+                                        r.status === 'rejected' ? '#ffebee' : '#f5f5f5',
+                              color: r.status === 'approved_by_hod' ? '#e65100' :
+                                     r.status === 'approved_by_dean' ? '#2e7d32' :
+                                     r.status === 'rejected' ? '#c62828' : '#666'
+                            }}>
+                              {getStatusLabel(r.status)}
+                            </span>
+                          </td>
+                          <td style={{ padding: '10px' }}>
+                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                              <button
+                                onClick={() => viewMarks(r)}
+                                style={{
+                                  padding: '4px 12px',
+                                  background: '#1976d2',
+                                  color: 'white',
+                                  border: 'none',
+                                  borderRadius: '4px',
+                                  cursor: 'pointer',
+                                  fontSize: '12px'
+                                }}
+                              >
+                                👁️ View Marks
+                              </button>
+                              {r.status === 'approved_by_hod' && (
+                                <>
+                                  <button
+                                    onClick={() => {
+                                      setSelectedItem(r);
+                                      setShowModal(true);
+                                      setDeanNotes('');
+                                    }}
+                                    style={{
+                                      padding: '4px 12px',
+                                      background: '#4caf50',
+                                      color: 'white',
+                                      border: 'none',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer',
+                                      fontSize: '12px',
+                                      fontWeight: '600'
+                                    }}
+                                  >
+                                    ✅ Approve
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setSelectedItem(r);
+                                      setShowModal(true);
+                                      setDeanNotes('');
+                                    }}
+                                    style={{
+                                      padding: '4px 12px',
+                                      background: '#f44336',
+                                      color: 'white',
+                                      border: 'none',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer',
+                                      fontSize: '12px',
+                                      fontWeight: '600'
+                                    }}
+                                  >
+                                    ❌ Reject
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setSelectedItem(r);
+                                      setShowModal(true);
+                                      setDeanNotes('');
+                                    }}
+                                    style={{
+                                      padding: '4px 12px',
+                                      background: '#ff9800',
+                                      color: 'white',
+                                      border: 'none',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer',
+                                      fontSize: '12px',
+                                      fontWeight: '600'
+                                    }}
+                                  >
+                                    🔄 Return
+                                  </button>
+                                </>
+                              )}
+                              {r.status === 'approved_by_dean' && (
+                                <span style={{ color: '#2e7d32', fontWeight: '600' }}>✅ Final Approved</span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </>
+            )}
+
+
+            {/* ASSIGNMENT RESULTS SECTION */}
+            {filteredAssignments.length > 0 && (
+              <>
+                <div style={{ 
+                  background: '#f3e5f5', 
+                  padding: '8px 16px', 
+                  borderRadius: '8px',
+                  marginBottom: '8px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}>
+                  <h4 style={{ margin: 0, color: '#6a1b9a' }}>
+                    📝 ASSIGNMENT RESULTS ({filteredAssignments.length})
+                  </h4>
+                  <span style={{ fontSize: '12px', color: '#6a1b9a' }}>
+                    {filteredAssignments.filter(r => r.status === 'approved_by_hod').length} pending
+                  </span>
+                </div>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ background: '#f3e5f5' }}>
+                      <th style={{ padding: '10px', textAlign: 'left' }}>Assignment</th>
+                      <th style={{ padding: '10px', textAlign: 'left' }}>Course</th>
+                      <th style={{ padding: '10px', textAlign: 'left' }}>Department</th>
+                      <th style={{ padding: '10px', textAlign: 'center' }}>Students</th>
+                      <th style={{ padding: '10px', textAlign: 'center' }}>Avg Score</th>
+                      <th style={{ padding: '10px', textAlign: 'left' }}>Status</th>
+                      <th style={{ padding: '10px', textAlign: 'left' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredAssignments.map((r) => {
+                      const item = r.assignments || {};
+                      return (
+                        <tr key={`assignment-${r.id}`} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                          <td style={{ padding: '10px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span style={{
+                                padding: '2px 8px',
+                                borderRadius: '4px',
+                                fontSize: '10px',
+                                fontWeight: '700',
+                                background: '#f3e5f5',
+                                color: '#6a1b9a'
+                              }}>
+                                📝 ASSIGNMENT
+                              </span>
+                              <strong>{item.title || 'N/A'}</strong>
+                            </div>
+                            <br />
+                            <small style={{ color: '#666' }}>Assignment</small>
+                          </td>
+                          <td style={{ padding: '10px' }}>
+                            <strong>{r.courses?.course_code || 'N/A'}</strong>
+                            <br />
+                            <small style={{ color: '#666' }}>{r.courses?.course_name || 'N/A'}</small>
+                          </td>
+                          <td style={{ padding: '10px' }}>
+                            <span style={{
+                              padding: '2px 10px',
+                              borderRadius: '12px',
+                              fontSize: '12px',
+                              fontWeight: '600',
+                              background: '#f3e5f5',
+                              color: '#6a1b9a'
+                            }}>
+                              {r.department_code || 'N/A'}
+                            </span>
+                          </td>
+                          <td style={{ padding: '10px', textAlign: 'center' }}>
+                            <strong>{r.total_students || 0}</strong>
+                            <br />
+                            <small style={{ color: '#666' }}>Graded: {r.graded_students || 0}</small>
+                          </td>
+                          <td style={{ padding: '10px', textAlign: 'center' }}>
+                            <span style={{
+                              padding: '2px 8px',
+                              borderRadius: '4px',
+                              background: (r.average_score || 0) >= 60 ? '#e8f5e9' : '#fff3e0',
+                              color: (r.average_score || 0) >= 60 ? '#2e7d32' : '#e65100',
                               fontWeight: '600'
-                            }}
-                          >
-                            🔄 Return
-                          </button>
-                        </>
-                      )}
-                      {r.status === 'approved_by_dean' && (
-                        <span style={{ color: '#2e7d32', fontWeight: '600' }}>✅ Final Approved</span>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                            }}>
+                              {r.average_score ? r.average_score.toFixed(1) : '-'}%
+                            </span>
+                          </td>
+                          <td style={{ padding: '10px' }}>
+                            <span style={{
+                              padding: '4px 12px',
+                              borderRadius: '12px',
+                              fontSize: '12px',
+                              fontWeight: '600',
+                              background: r.status === 'approved_by_hod' ? '#fff3e0' :
+                                        r.status === 'approved_by_dean' ? '#e8f5e9' :
+                                        r.status === 'rejected' ? '#ffebee' : '#f5f5f5',
+                              color: r.status === 'approved_by_hod' ? '#e65100' :
+                                     r.status === 'approved_by_dean' ? '#2e7d32' :
+                                     r.status === 'rejected' ? '#c62828' : '#666'
+                            }}>
+                              {getStatusLabel(r.status)}
+                            </span>
+                          </td>
+                          <td style={{ padding: '10px' }}>
+                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                              <button
+                                onClick={() => viewMarks(r)}
+                                style={{
+                                  padding: '4px 12px',
+                                  background: '#1976d2',
+                                  color: 'white',
+                                  border: 'none',
+                                  borderRadius: '4px',
+                                  cursor: 'pointer',
+                                  fontSize: '12px'
+                                }}
+                              >
+                                👁️ View Marks
+                              </button>
+                              {r.status === 'approved_by_hod' && (
+                                <>
+                                  <button
+                                    onClick={() => {
+                                      setSelectedItem(r);
+                                      setShowModal(true);
+                                      setDeanNotes('');
+                                    }}
+                                    style={{
+                                      padding: '4px 12px',
+                                      background: '#4caf50',
+                                      color: 'white',
+                                      border: 'none',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer',
+                                      fontSize: '12px',
+                                      fontWeight: '600'
+                                    }}
+                                  >
+                                    ✅ Approve
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setSelectedItem(r);
+                                      setShowModal(true);
+                                      setDeanNotes('');
+                                    }}
+                                    style={{
+                                      padding: '4px 12px',
+                                      background: '#f44336',
+                                      color: 'white',
+                                      border: 'none',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer',
+                                      fontSize: '12px',
+                                      fontWeight: '600'
+                                    }}
+                                  >
+                                    ❌ Reject
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setSelectedItem(r);
+                                      setShowModal(true);
+                                      setDeanNotes('');
+                                    }}
+                                    style={{
+                                      padding: '4px 12px',
+                                      background: '#ff9800',
+                                      color: 'white',
+                                      border: 'none',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer',
+                                      fontSize: '12px',
+                                      fontWeight: '600'
+                                    }}
+                                  >
+                                    🔄 Return
+                                  </button>
+                                </>
+                              )}
+                              {r.status === 'approved_by_dean' && (
+                                <span style={{ color: '#2e7d32', fontWeight: '600' }}>✅ Final Approved</span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </div>
         )}
       </div>
 
       {/* Dean Action Modal */}
-      {showModal && selectedExam && (
+      {showModal && selectedItem && (
         <div
           style={{
             position: 'fixed',
@@ -603,18 +1002,33 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
             onClick={(e) => e.stopPropagation()}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <h3 style={{ margin: 0 }}>📝 Review Exam Results</h3>
+              <h3 style={{ margin: 0 }}>
+                {selectedItem.result_type === 'exam' ? '📋 Review Exam Results' : '📝 Review Assignment Results'}
+              </h3>
               <button onClick={() => setShowModal(false)} disabled={processing} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer' }}>✕</button>
             </div>
             <div style={{ marginBottom: '16px' }}>
-              <p><strong>Exam:</strong> {selectedExam.examinations?.title || 'N/A'}</p>
-              <p><strong>Course:</strong> {selectedExam.courses?.course_code} - {selectedExam.courses?.course_name}</p>
-              <p><strong>Department:</strong> {selectedExam.department_code}</p>
-              <p><strong>Academic Year:</strong> {selectedExam.academic_year}</p>
-              <p><strong>Semester:</strong> {selectedExam.semester}</p>
-              <p><strong>Students:</strong> {selectedExam.total_students}</p>
-              <p><strong>Average Score:</strong> {selectedExam.average_score?.toFixed(2)}%</p>
-              <p><strong>HOD Notes:</strong> {selectedExam.hod_notes || 'None'}</p>
+              <p>
+                <strong>Type:</strong>{' '}
+                <span style={{
+                  padding: '2px 10px',
+                  borderRadius: '4px',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  background: selectedItem.result_type === 'exam' ? '#e3f2fd' : '#f3e5f5',
+                  color: selectedItem.result_type === 'exam' ? '#1565c0' : '#6a1b9a'
+                }}>
+                  {selectedItem.result_type === 'exam' ? 'EXAM' : 'ASSIGNMENT'}
+                </span>
+              </p>
+              <p><strong>Title:</strong> {selectedItem.examinations?.title || selectedItem.assignments?.title || 'N/A'}</p>
+              <p><strong>Course:</strong> {selectedItem.courses?.course_code} - {selectedItem.courses?.course_name}</p>
+              <p><strong>Department:</strong> {selectedItem.department_code}</p>
+              <p><strong>Academic Year:</strong> {selectedItem.academic_year}</p>
+              <p><strong>Semester:</strong> {selectedItem.semester}</p>
+              <p><strong>Students:</strong> {selectedItem.total_students} (Graded: {selectedItem.graded_students})</p>
+              <p><strong>Average Score:</strong> {selectedItem.average_score?.toFixed(2)}%</p>
+              <p><strong>HOD Notes:</strong> {selectedItem.hod_notes || 'None'}</p>
             </div>
             <div style={{ marginBottom: '12px' }}>
               <label style={{ display: 'block', fontWeight: '600', marginBottom: '4px' }}>
@@ -638,7 +1052,7 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
                 Cancel
               </button>
               <button
-                onClick={() => handleReturnToHOD(selectedExam.id)}
+                onClick={() => handleReturnToHOD(selectedItem.id, selectedItem.result_type)}
                 disabled={processing || !deanNotes.trim()}
                 style={{
                   padding: '8px 20px',
@@ -653,7 +1067,7 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
                 🔄 Return to HOD
               </button>
               <button
-                onClick={() => handleReject(selectedExam.id)}
+                onClick={() => handleReject(selectedItem.id, selectedItem.result_type)}
                 disabled={processing || !deanNotes.trim()}
                 style={{
                   padding: '8px 20px',
@@ -668,7 +1082,7 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
                 ❌ Reject
               </button>
               <button
-                onClick={() => handleApprove(selectedExam.id)}
+                onClick={() => handleApprove(selectedItem.id, selectedItem.result_type)}
                 disabled={processing}
                 style={{
                   padding: '8px 20px',
@@ -688,7 +1102,7 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
       )}
 
       {/* View Marks Modal */}
-      {showMarksModal && selectedExam && (
+      {showMarksModal && selectedItem && (
         <div
           style={{
             position: 'fixed',
@@ -718,43 +1132,45 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
             onClick={(e) => e.stopPropagation()}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <h3 style={{ margin: 0 }}>📊 Exam Marks - {selectedExam.courses?.course_code}</h3>
+              <h3 style={{ margin: 0 }}>
+                📊 {selectedItem.result_type === 'exam' ? 'Exam' : 'Assignment'} Marks - {selectedItem.courses?.course_code}
+              </h3>
               <button onClick={() => setShowMarksModal(false)} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer' }}>✕</button>
             </div>
             
             {/* Stats Summary */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '12px', marginBottom: '16px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '12px', marginBottom: '16px' }}>
               <div style={{ background: '#e8f5e9', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#2e7d32' }}>{examStats.total || 0}</div>
-                <div style={{ fontSize: '12px', color: '#666' }}>Graded Students</div>
+                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#2e7d32' }}>{itemStats.total || 0}</div>
+                <div style={{ fontSize: '12px', color: '#666' }}>Graded</div>
               </div>
               <div style={{ background: '#e3f2fd', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#1565c0' }}>{examStats.passed || 0}</div>
+                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#1565c0' }}>{itemStats.passed || 0}</div>
                 <div style={{ fontSize: '12px', color: '#666' }}>Passed</div>
               </div>
               <div style={{ background: '#ffebee', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#c62828' }}>{examStats.failed || 0}</div>
+                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#c62828' }}>{itemStats.failed || 0}</div>
                 <div style={{ fontSize: '12px', color: '#666' }}>Failed</div>
               </div>
               <div style={{ background: '#f3e5f5', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#6a1b9a' }}>{examStats.avgMarks || 0}%</div>
+                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#6a1b9a' }}>{itemStats.avgMarks || 0}%</div>
                 <div style={{ fontSize: '12px', color: '#666' }}>Average</div>
               </div>
               <div style={{ background: '#fff3e0', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#e65100' }}>{examStats.highest || 0}</div>
+                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#e65100' }}>{itemStats.highest || 0}</div>
                 <div style={{ fontSize: '12px', color: '#666' }}>Highest</div>
               </div>
               <div style={{ background: '#e0f7fa', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#00838f' }}>{examStats.lowest || 0}</div>
+                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#00838f' }}>{itemStats.lowest || 0}</div>
                 <div style={{ fontSize: '12px', color: '#666' }}>Lowest</div>
               </div>
             </div>
 
             {/* Marks Table */}
-            {examMarks.length === 0 ? (
+            {itemMarks.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '30px', color: '#999' }}>
                 <span style={{ fontSize: '36px', display: 'block', marginBottom: '8px' }}>📭</span>
-                <p>No graded submissions found for this exam</p>
+                <p>No graded submissions found</p>
               </div>
             ) : (
               <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
@@ -766,19 +1182,17 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
                       <th style={{ padding: '8px', textAlign: 'center' }}>Marks</th>
                       <th style={{ padding: '8px', textAlign: 'center' }}>%</th>
                       <th style={{ padding: '8px', textAlign: 'center' }}>Grade</th>
-                      <th style={{ padding: '8px', textAlign: 'center' }}>GP</th>
                       <th style={{ padding: '8px', textAlign: 'center' }}>Status</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {examMarks.map((m) => (
+                    {itemMarks.map((m) => (
                       <tr key={m.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
                         <td style={{ padding: '8px' }}>{m.students?.student_id || 'N/A'}</td>
                         <td style={{ padding: '8px' }}>{m.students?.full_name || 'Unknown'}</td>
                         <td style={{ padding: '8px', textAlign: 'center' }}>{m.marks_obtained || 0}</td>
                         <td style={{ padding: '8px', textAlign: 'center' }}>{m.percentage || 0}%</td>
                         <td style={{ padding: '8px', textAlign: 'center', fontWeight: 'bold', color: m.grade === 'F' ? '#c62828' : '#2e7d32' }}>{m.grade || '-'}</td>
-                        <td style={{ padding: '8px', textAlign: 'center' }}>{m.grade_points || 0}</td>
                         <td style={{ padding: '8px', textAlign: 'center' }}>
                           {m.is_passed ? (
                             <span style={{ color: '#2e7d32' }}>✅ Pass</span>

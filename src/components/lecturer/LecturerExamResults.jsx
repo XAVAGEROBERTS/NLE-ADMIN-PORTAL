@@ -1,4 +1,4 @@
-// lecturer/LecturerExamResults.jsx - COMPLETE WITH APPROVAL RESUBMIT
+// lecturer/LecturerExamResults.jsx - COMPLETE WITH SEPARATE APPROVAL TABLES
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from '../../services/supabase';
 
@@ -73,6 +73,20 @@ const LecturerExamResults = ({ profile, courses, showToast }) => {
     return { percentage, grade, gradePoints, isPassed };
   };
 
+  // Helper: which approval table + foreign key to use
+  const getApprovalConfig = () => {
+    if (itemType === 'exams') {
+      return {
+        table: 'exam_results_approvals',
+        fkColumn: 'exam_id'
+      };
+    }
+    return {
+      table: 'assignment_results_approvals',
+      fkColumn: 'assignment_id'
+    };
+  };
+
   // ===== FETCH ITEMS (EXAMS & ASSIGNMENTS) =====
   const fetchItems = useCallback(async () => {
     if (!lecturerId || !courses || courses.length === 0) {
@@ -114,18 +128,19 @@ const LecturerExamResults = ({ profile, courses, showToast }) => {
         data = assignments || [];
       }
 
-      // Get approval status
+      // Get approval status from the CORRECT table
+      const { table, fkColumn } = getApprovalConfig();
       const itemIds = data?.map(e => e.id) || [];
       let approvalMap = {};
       
       if (itemIds.length > 0) {
         const { data: approvals } = await supabase
-          .from('exam_results_approvals')
-          .select('id, exam_id, status, hod_notes, dean_notes, rejection_reason')
-          .in('exam_id', itemIds);
+          .from(table)
+          .select(`id, ${fkColumn}, status, hod_notes, dean_notes, rejection_reason`)
+          .in(fkColumn, itemIds);
 
         approvals?.forEach(a => {
-          approvalMap[a.exam_id] = a;
+          approvalMap[a[fkColumn]] = a;
         });
       }
 
@@ -483,120 +498,84 @@ const LecturerExamResults = ({ profile, courses, showToast }) => {
   };
 
   // ===== SUBMIT FOR APPROVAL =====
-// ===== SUBMIT FOR APPROVAL - FIXED WITH BETTER ERROR HANDLING =====
-const handleSubmitForApproval = async () => {
-  if (!selectedItem) {
-    showToast('No item selected', 'error');
-    return;
-  }
-
-  const gradedCount = Object.values(marks).filter(m => m.is_graded).length;
-  
-  if (gradedCount === 0) {
-    showToast('⚠️ Please grade at least one student before submitting for approval.', 'error');
-    return;
-  }
-
-  setSubmitting(true);
-  try {
-    const totalStudents = students.length;
-    const gradedStudents = Object.values(marks).filter(m => m.is_graded);
-    const totalMarks = gradedStudents.reduce((sum, s) => sum + parseFloat(s.marks || 0), 0);
-    const averageScore = gradedStudents.length > 0 ? totalMarks / gradedStudents.length : 0;
-
-    // Log what we're about to insert
-    console.log('📤 Attempting to submit to exam_results_approvals...');
-    console.log('📊 Data:', {
-      exam_id: selectedItem.id,
-      course_id: selectedItem.course_id,
-      department_code: selectedItem.courses?.department_code || '',
-      total_students: totalStudents,
-      graded_students: gradedStudents.length,
-      ungraded_students: totalStudents - gradedStudents.length,
-      average_score: averageScore,
-      status: 'submitted',
-      submitted_by: lecturerId,
-      submitted_at: new Date().toISOString(),
-    });
-
-    // Try to check if table exists first
-    const { data: tableCheck, error: tableError } = await supabase
-      .from('exam_results_approvals')
-      .select('id')
-      .limit(1);
-
-    if (tableError) {
-      console.error('❌ Table check failed:', tableError);
-      showToast('Database table error: ' + tableError.message, 'error');
-      setSubmitting(false);
+  const handleSubmitForApproval = async () => {
+    if (!selectedItem) {
+      showToast('No item selected', 'error');
       return;
     }
 
-    // Build minimal approval data - only essential fields
-    const approvalData = {
-      exam_id: selectedItem.id,
-      course_id: selectedItem.course_id || null,
-      department_code: selectedItem.courses?.department_code || '',
-      status: 'submitted',
-      submitted_by: lecturerId,
-      submitted_at: new Date().toISOString(),
-    };
+    const gradedCount = Object.values(marks).filter(m => m.is_graded).length;
+    
+    if (gradedCount === 0) {
+      showToast('⚠️ Please grade at least one student before submitting for approval.', 'error');
+      return;
+    }
 
-    // Try to add optional fields only if they might exist
+    setSubmitting(true);
     try {
-      approvalData.total_students = totalStudents;
-      approvalData.graded_students = gradedStudents.length;
-      approvalData.ungraded_students = totalStudents - gradedStudents.length;
-      approvalData.average_score = averageScore;
-      approvalData.academic_year = '2024/2025';
-      approvalData.semester = 1;
-      approvalData.updated_at = new Date().toISOString();
-    } catch (e) {
-      console.warn('⚠️ Could not add optional fields:', e);
-    }
+      const totalStudents = students.length;
+      const gradedStudents = Object.values(marks).filter(m => m.is_graded);
+      const totalMarks = gradedStudents.reduce((sum, s) => sum + parseFloat(s.marks || 0), 0);
+      const averageScore = gradedStudents.length > 0 ? totalMarks / gradedStudents.length : 0;
 
-    let result;
-    if (selectedItem.approval?.id) {
-      // Update existing record
-      console.log('🔄 Updating existing approval record:', selectedItem.approval.id);
-      result = await supabase
-        .from('exam_results_approvals')
-        .update(approvalData)
-        .eq('id', selectedItem.approval.id)
-        .select();
-    } else {
-      // Insert new record
-      console.log('➕ Inserting new approval record');
-      result = await supabase
-        .from('exam_results_approvals')
-        .insert([approvalData])
-        .select();
-    }
+      const { table, fkColumn } = getApprovalConfig();
 
-    if (result.error) {
-      console.error('❌ Error submitting:', result.error);
-      console.error('❌ Error details:', {
-        message: result.error.message,
-        details: result.error.details,
-        hint: result.error.hint,
-        code: result.error.code
-      });
-      showToast('Error submitting: ' + result.error.message, 'error');
+      console.log(`📤 Submitting to ${table}...`);
+
+      // Build approval data with the correct foreign key
+      const approvalData = {
+        [fkColumn]: selectedItem.id,          // exam_id OR assignment_id
+        course_id: selectedItem.course_id || null,
+        department_code: selectedItem.courses?.department_code || '',
+        status: 'submitted',
+        submitted_by: lecturerId,
+        submitted_at: new Date().toISOString(),
+        total_students: totalStudents,
+        graded_students: gradedStudents.length,
+        ungraded_students: totalStudents - gradedStudents.length,
+        average_score: averageScore,
+        academic_year: '2024/2025',
+        semester: 1,
+        updated_at: new Date().toISOString()
+      };
+
+      let result;
+      if (selectedItem.approval?.id) {
+        // Update existing record
+        console.log('🔄 Updating existing approval record:', selectedItem.approval.id);
+        result = await supabase
+          .from(table)
+          .update(approvalData)
+          .eq('id', selectedItem.approval.id)
+          .select();
+      } else {
+        // Insert new record
+        console.log('➕ Inserting new approval record');
+        result = await supabase
+          .from(table)
+          .insert([approvalData])
+          .select();
+      }
+
+      if (result.error) {
+        console.error('❌ Error submitting:', result.error);
+        showToast('Error submitting: ' + result.error.message, 'error');
+        setSubmitting(false);
+        return;
+      }
+
+      console.log('✅ Successfully submitted:', result.data);
+      showToast(`✅ Results submitted for HOD approval! (${gradedStudents.length} students graded)`, 'success');
+      handleCloseModal();
+      await fetchItems();
+    } catch (err) {
+      console.error('❌ Error submitting:', err);
+      showToast('Error submitting: ' + err.message, 'error');
+    } finally {
       setSubmitting(false);
-      return;
     }
+  };
 
-    console.log('✅ Successfully submitted:', result.data);
-    showToast(`✅ Results submitted for HOD approval! (${gradedStudents.length} students graded)`, 'success');
-    handleCloseModal();
-    await fetchItems();
-  } catch (err) {
-    console.error('❌ Error submitting:', err);
-    showToast('Error submitting: ' + err.message, 'error');
-  } finally {
-    setSubmitting(false);
-  }
-};
   // ===== RESUBMIT FOR APPROVAL =====
   const handleResubmitForApproval = async () => {
     if (!selectedItem) return;
@@ -610,8 +589,10 @@ const handleSubmitForApproval = async () => {
       const totalMarks = gradedStudents.reduce((sum, s) => sum + parseFloat(s.marks || 0), 0);
       const averageScore = gradedStudents.length > 0 ? totalMarks / gradedStudents.length : 0;
 
+      const { table, fkColumn } = getApprovalConfig();
+
       const approvalData = {
-        exam_id: selectedItem.id,
+        [fkColumn]: selectedItem.id,
         course_id: selectedItem.course_id,
         department_code: selectedItem.courses?.department_code || '',
         academic_year: '2024/2025',
@@ -628,15 +609,13 @@ const handleSubmitForApproval = async () => {
 
       let result;
       if (selectedItem.approval?.id) {
-        // Update existing record
         result = await supabase
-          .from('exam_results_approvals')
+          .from(table)
           .update(approvalData)
           .eq('id', selectedItem.approval.id);
       } else {
-        // Insert new record
         result = await supabase
-          .from('exam_results_approvals')
+          .from(table)
           .insert([approvalData]);
       }
 
@@ -647,7 +626,7 @@ const handleSubmitForApproval = async () => {
         return;
       }
 
-      console.log('✅ Successfully resubmitted:', result.data);
+      console.log('✅ Successfully resubmitted');
       showToast('✅ Results resubmitted for approval!', 'success');
       handleCloseModal();
       await fetchItems();
@@ -667,13 +646,17 @@ const handleSubmitForApproval = async () => {
 
     setSubmitting(true);
     try {
-      await supabase
-        .from('exam_results_approvals')
+      const { table, fkColumn } = getApprovalConfig();
+
+      const { error } = await supabase
+        .from(table)
         .update({
           status: 'draft',
           updated_at: new Date().toISOString()
         })
-        .eq('exam_id', selectedItem.id);
+        .eq(fkColumn, selectedItem.id);
+
+      if (error) throw error;
 
       showToast('📝 Submission withdrawn', 'success');
       handleCloseModal();
@@ -1217,7 +1200,7 @@ const handleSubmitForApproval = async () => {
                 </button>
               )}
 
-              {/* Resubmit for Approval button - Shows when rejected or already submitted */}
+              {/* Resubmit for Approval button */}
               {(approvalStatus?.status === 'rejected' || approvalStatus?.status === 'submitted') && (
                 <button
                   onClick={handleResubmitForApproval}
