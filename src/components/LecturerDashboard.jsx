@@ -1,4 +1,4 @@
-// LecturerDashboard.jsx - Complete with Timetable Tab
+// LecturerDashboard.jsx - Complete with Timetable Tab and Course Source Fix
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext';
@@ -15,6 +15,7 @@ import LecturerNotesManager from './lecturer/LecturerNotesManager';
 import LecturerSettings from './lecturer/LecturerSettings';
 import LecturerGradingManager from './lecturer/LecturerGradingManager';
 import LecturerTimetable from './lecturer/LecturerTimetable';
+import LecturerLeaveRequests from './lecturer/LecturerLeaveRequests';
 
 const LecturerDashboard = () => {
   const navigate = useNavigate();
@@ -426,13 +427,13 @@ const LecturerDashboard = () => {
     }, 5000);
   };
 
-  // ==================== COURSE FETCHING WITH ALLOCATIONS ====================
+  // ==================== COURSE FETCHING WITH ALLOCATIONS (FIXED) ====================
   const fetchCourses = useCallback(async () => {
     if (!lecturerId) return;
 
     setLoading(prev => ({ ...prev, courses: true }));
     try {
-      // 1. Get directly assigned courses (from courses table)
+      // 1. Get directly assigned courses (from courses table - Admin/Dean direct assignment)
       let query = supabase
         .from("courses")
         .select("*")
@@ -448,7 +449,7 @@ const LecturerDashboard = () => {
       const { data: directCourses, error: directError } = await query;
       if (directError) throw directError;
 
-      // 2. Get approved allocations (from course_allocations table)
+      // 2. Get approved allocations (from course_allocations table - HOD/Dean workflow)
       const { data: approvedAllocations, error: allocError } = await supabase
         .from('course_allocations')
         .select(`
@@ -499,26 +500,27 @@ const LecturerDashboard = () => {
       const allCourseIds = new Set();
       const combinedCourses = [];
 
-      // Add direct courses first (these are officially assigned)
+      // Add direct courses (Admin/Dean assigned via lecturer_id in courses table)
       (directCourses || []).forEach(c => {
         if (!allCourseIds.has(c.id)) {
           allCourseIds.add(c.id);
           combinedCourses.push({ 
             ...c, 
-            source: 'direct',
-            source_id: null
+            source: 'direct',      // ← ADD THIS for direct courses
+            source_id: null,
+            allocated_at: null
           });
         }
       });
 
-      // Add approved allocated courses
+      // Add approved allocated courses (HOD requested, approved by Dean)
       (approvedAllocations || []).forEach(a => {
         const c = a.courses;
         if (c && !allCourseIds.has(c.id)) {
           allCourseIds.add(c.id);
           combinedCourses.push({ 
             ...c, 
-            source: 'allocation',
+            source: 'allocation',   // ← This identifies allocated courses
             source_id: a.id,
             allocated_at: a.created_at
           });
@@ -826,7 +828,7 @@ const LecturerDashboard = () => {
     </div>
   );
 
-  // ==================== RENDER COURSES GRID WITH SOURCE INDICATORS ====================
+  // ==================== RENDER COURSES GRID WITH SOURCE INDICATORS (FIXED) ====================
   const renderCoursesGrid = () => (
     <div className="lecturer-courses-grid">
       {loading.courses ? (
@@ -854,6 +856,7 @@ const LecturerDashboard = () => {
                 <span className="lecturer-dept-badge" style={{ background: '#e3f2fd', color: '#1565c0' }}>
                   {course.department_code || course.department || "N/A"}
                 </span>
+                {/* ONLY show "Allocated" badge for course_allocations */}
                 {course.source === 'allocation' && (
                   <span className="lecturer-course-source" style={{ 
                     background: '#e8f5e9', 
@@ -878,7 +881,8 @@ const LecturerDashboard = () => {
               <span>{course.credits} Credits</span>
               <span>{course.program}</span>
             </div>
-            {course.source === 'allocation' && (
+            {/* ONLY show approval date for allocated courses */}
+            {course.source === 'allocation' && course.allocated_at && (
               <div style={{ 
                 marginTop: '10px', 
                 padding: '6px 12px', 
@@ -1183,6 +1187,10 @@ const LecturerDashboard = () => {
         <button className={`lecturer-nav-item ${activeTab === "notes-upload" ? "active" : ""}`} onClick={() => setActiveTab("notes-upload")}>📚 Upload Materials</button>
         <button className={`lecturer-nav-item ${activeTab === "grading" ? "active" : ""}`} onClick={() => setActiveTab("grading")}>📊 Grading</button>
         <button className={`lecturer-nav-item ${activeTab === "timetable" ? "active" : ""}`} onClick={() => setActiveTab("timetable")}>📅 Timetable</button>
+        <button className={`lecturer-nav-item ${activeTab === "leave" ? "active" : ""}`} 
+        onClick={() => setActiveTab("leave")}>
+  📝 Leave
+</button>
         <button className={`lecturer-nav-item ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}>⚙️ Settings</button>
         {contacts.length > 0 && (
           <button className="lecturer-nav-item lecturer-nav-chat" onClick={openChatModal}>
@@ -1328,7 +1336,8 @@ const LecturerDashboard = () => {
                 programsLoading={programsLoading}
                 showToast={showToast}
               />
-            )}
+              )}
+
             {activeTab === "students" && (
               <div className="lecturer-tab-content">
                 <div className="lecturer-tab-header">
@@ -1371,7 +1380,13 @@ const LecturerDashboard = () => {
               </div>
             )}
             {activeTab === "notes-upload" && <LecturerNotesManager profile={profile} courses={courses} showToast={showToast} />}
-            {activeTab === "timetable" && (
+                          {activeTab === "leave" && (
+  <LecturerLeaveRequests 
+    profile={profile} 
+    showToast={showToast} 
+  />
+)}
+              {activeTab === "timetable" && (
               <LecturerTimetable 
                 profile={profile} 
                 courses={courses} 

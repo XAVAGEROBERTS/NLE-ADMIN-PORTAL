@@ -1,4 +1,4 @@
-// DeanDashboard.jsx - COMPLETE HARDENED VERSION WITH NOTIFICATION FIXES
+// DeanDashboard.jsx - FINAL VERSION WITH WORKING LEAVE NOTIFICATIONS
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext';
@@ -72,6 +72,7 @@ const DeanDashboard = () => {
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const notificationSubscriptionRef = useRef(null);
+  const leaveSubscriptionRef = useRef(null);
 
   // Stable derived
   const facultyId = profile?.faculty_id || profile?.id || profile?.table_id || null;
@@ -137,8 +138,9 @@ const DeanDashboard = () => {
     try {
       const [a, l, ap, b] = await Promise.all([
         supabase.from('course_allocations').select('id', { count: 'exact', head: true }).in('department_code', deptCodes).eq('status', 'pending'),
-        supabase.from('lecturer_leave_requests').select('id', { count: 'exact', head: true }).in('department_code', deptCodes).in('status', ['pending', 'pending_dean']),
-        supabase.from('student_complaints').select('id', { count: 'exact', head: true }).in('department_code', deptCodes).in('status', ['pending', 'pending_dean']),
+        // Correct status for Dean
+        supabase.from('lecturer_leave_requests').select('id', { count: 'exact', head: true }).in('department_code', deptCodes).eq('status', 'approved_by_hod'),
+        supabase.from('student_complaints').select('id', { count: 'exact', head: true }).in('department_code', deptCodes).in('status', ['pending', 'in-progress']),
         supabase.from('budget_requests').select('id', { count: 'exact', head: true }).in('department_code', deptCodes).eq('faculty_status', 'pending_dean'),
       ]);
       setStats((prev) => ({
@@ -150,6 +152,90 @@ const DeanDashboard = () => {
       }));
     } catch {}
   }, []);
+
+  // ========== PENDING LEAVE REQUESTS (NOTIFICATIONS) ==========
+  const fetchPendingLeaveRequests = useCallback(async () => {
+    if (!facultyId) return;
+
+    try {
+      // Get department codes belonging to this faculty
+      const { data: depts } = await supabase
+        .from('departments')
+        .select('department_code')
+        .eq('faculty_id', facultyId);
+
+      const deptCodes = (depts || []).map((d) => d.department_code).filter(Boolean);
+      if (deptCodes.length === 0) return;
+
+      // Only requests that HOD has already approved → waiting for Dean
+      const { data, error } = await supabase
+        .from('lecturer_leave_requests')
+        .select(`
+          id,
+          lecturer_id,
+          lecturer_name,
+          lecturer_email,
+          department_code,
+          leave_type,
+          start_date,
+          end_date,
+          days,
+          reason,
+          status,
+          created_at
+        `)
+        .in('department_code', deptCodes)
+        .eq('status', 'approved_by_hod')          // ← THE CORRECT STATUS
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Leave fetch error:', error);
+        return;
+      }
+
+      // Convert to notification objects
+      const leaveNotifications = (data || []).map((request) => ({
+        id: `leave-${request.id}`,
+        type: 'leave_pending',
+        title: `📋 Leave Request Awaiting Approval`,
+        message: `${request.lecturer_name || 'A lecturer'} requested ${request.days} day(s) of ${request.leave_type} leave`,
+        is_read: false,
+        created_at: request.created_at,
+        sender_email: request.lecturer_email,
+        sender_name: request.lecturer_name,
+        sender_role: 'lecturer',
+        metadata: {
+          leave_id: request.id,
+          department_code: request.department_code,
+          days: request.days,
+          leave_type: request.leave_type,
+          status: request.status,
+        },
+      }));
+
+      // Merge with chat notifications (preserve already-read leave notifications)
+      setNotifications((prev) => {
+        const chatNotifs = prev.filter((n) => !n.id?.startsWith('leave-'));
+        const existingLeaveMap = {};
+        prev
+          .filter((n) => n.id?.startsWith('leave-'))
+          .forEach((n) => {
+            existingLeaveMap[n.id] = n.is_read;
+          });
+
+        const mergedLeave = leaveNotifications.map((n) => ({
+          ...n,
+          is_read: existingLeaveMap[n.id] !== undefined ? existingLeaveMap[n.id] : false,
+        }));
+
+        return [...chatNotifs, ...mergedLeave].sort(
+          (a, b) => new Date(b.created_at) - new Date(a.created_at)
+        );
+      });
+    } catch (err) {
+      console.error('Error fetching pending leave requests:', err);
+    }
+  }, [facultyId]);
 
   const fetchDeanData = useCallback(async (isInitial = false) => {
     if (!facultyId) return;
@@ -204,6 +290,7 @@ const DeanDashboard = () => {
       }));
 
       await fetchAdmins();
+      await fetchPendingLeaveRequests();
 
       if (deanEmail) {
         const { data: role } = await supabase
@@ -218,29 +305,92 @@ const DeanDashboard = () => {
     } finally {
       if (isInitial) setLoading(false);
     }
-  }, [facultyId, deanEmail, fetchDepartments, fetchHODs, fetchAdmins, fetchPendingCounts]);
+  }, [facultyId, deanEmail, fetchDepartments, fetchHODs, fetchAdmins, fetchPendingCounts, fetchPendingLeaveRequests]);
 
-  // ========== NOTIFICATIONS ==========
+  // ========== CHAT NOTIFICATIONS ==========
   const fetchNotifications = useCallback(async () => {
     if (!deanEmail) return;
     try {
       const { data } = await supabase
-        .from('chat_messages').select('*').eq('receiver_email', deanEmail)
-        .order('created_at', { ascending: false }).limit(50);
-      setNotifications(data || []);
-      setUnreadCount((data || []).filter((n) => !n.is_read).length);
-    } catch {}
+        .from('chat_messages')
+        .select('*')
+        .eq('receiver_email', deanEmail)
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      const chatNotifications = (data || []).map((msg) => ({
+        id: `chat-${msg.id}`,
+        type: 'message',
+        title: `💬 Message from ${msg.sender_name || msg.sender_role || 'Someone'}`,
+        message: msg.message,
+        is_read: msg.is_read || false,
+        created_at: msg.created_at,
+        sender_email: msg.sender_email,
+        sender_name: msg.sender_name,
+        sender_role: msg.sender_role,
+        metadata: { chat_id: msg.id },
+      }));
+
+      setNotifications((prev) => {
+        const leaveNotifs = prev.filter((n) => n.id?.startsWith('leave-'));
+        return [...leaveNotifs, ...chatNotifications].sort(
+          (a, b) => new Date(b.created_at) - new Date(a.created_at)
+        );
+      });
+    } catch (err) {
+      console.error(err);
+    }
   }, [deanEmail]);
 
-  // ========== SETUP NOTIFICATION SUBSCRIPTION ==========
+  // Calculate unread count
+  useEffect(() => {
+    const unread = notifications.filter((n) => n.is_read === false).length;
+    setUnreadCount(unread);
+  }, [notifications]);
+
+  // Mark single as read
+  const markNotificationRead = useCallback(async (id) => {
+    try {
+      if (id?.startsWith('chat-')) {
+        const chatId = id.replace('chat-', '');
+        await supabase.from('chat_messages').update({ is_read: true }).eq('id', chatId);
+      }
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === id ? { ...n, is_read: true } : n))
+      );
+    } catch (err) {
+      console.error(err);
+    }
+  }, []);
+
+  // Mark all as read
+  const markAllNotificationsRead = useCallback(async () => {
+    try {
+      await supabase
+        .from('chat_messages')
+        .update({ is_read: true })
+        .eq('receiver_email', deanEmail)
+        .eq('is_read', false);
+
+      setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+    } catch (err) {
+      console.error(err);
+    }
+  }, [deanEmail]);
+
+  // ========== SUBSCRIPTIONS ==========
   const setupNotificationSubscription = useCallback(() => {
     if (notificationSubscriptionRef.current) {
       notificationSubscriptionRef.current.unsubscribe();
     }
+    if (leaveSubscriptionRef.current) {
+      leaveSubscriptionRef.current.unsubscribe();
+    }
 
-    if (!deanEmail) return;
+    if (!deanEmail || !facultyId) return;
 
-    const subscription = supabase
+    // Chat
+    notificationSubscriptionRef.current = supabase
       .channel('dean-notifications')
       .on(
         'postgres_changes',
@@ -250,14 +400,24 @@ const DeanDashboard = () => {
           table: 'chat_messages',
           filter: `receiver_email=eq.${deanEmail}`,
         },
-        () => {
-          fetchNotifications();
-        }
+        () => fetchNotifications()
       )
       .subscribe();
 
-    notificationSubscriptionRef.current = subscription;
-  }, [deanEmail, fetchNotifications]);
+    // Leave requests
+    leaveSubscriptionRef.current = supabase
+      .channel('dean-leave-notifications')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'lecturer_leave_requests',
+        },
+        () => fetchPendingLeaveRequests()
+      )
+      .subscribe();
+  }, [deanEmail, facultyId, fetchNotifications, fetchPendingLeaveRequests]);
 
   // ========== CHAT ==========
   const fetchChatMessages = useCallback(async (userEmail) => {
@@ -339,26 +499,28 @@ const DeanDashboard = () => {
   // ========== EFFECTS ==========
   useEffect(() => {
     if (!facultyId) return;
+
     fetchDeanData(true);
     fetchNotifications();
+    fetchPendingLeaveRequests();
     setupNotificationSubscription();
 
     return () => {
-      if (notificationSubscriptionRef.current) {
-        notificationSubscriptionRef.current.unsubscribe();
-      }
+      if (notificationSubscriptionRef.current) notificationSubscriptionRef.current.unsubscribe();
+      if (leaveSubscriptionRef.current) leaveSubscriptionRef.current.unsubscribe();
     };
-  }, [facultyId, fetchDeanData, fetchNotifications, setupNotificationSubscription]);
+  }, [facultyId, fetchDeanData, fetchNotifications, fetchPendingLeaveRequests, setupNotificationSubscription]);
 
-  // Soft refresh every 3 min
+  // Soft refresh every 3 minutes
   useEffect(() => {
     if (!facultyId) return;
     const id = setInterval(() => {
       fetchDeanData(false);
       fetchNotifications();
+      fetchPendingLeaveRequests();
     }, 180000);
     return () => clearInterval(id);
-  }, [facultyId, fetchDeanData, fetchNotifications]);
+  }, [facultyId, fetchDeanData, fetchNotifications, fetchPendingLeaveRequests]);
 
   // ========== MEMOIZED PROPS ==========
   const commonProps = useMemo(() => ({
@@ -433,11 +595,11 @@ const DeanDashboard = () => {
             <span className="dean-admin-badge">A</span>
           </button>
 
-          {/* ===== NOTIFICATIONS - FIXED ===== */}
-          <div className="dean-notification-wrapper">
-            <button 
-              className="dean-notification-btn" 
-              onClick={() => setShowNotifications(v => !v)}
+          {/* ===== NOTIFICATIONS ===== */}
+          <div className="dean-notification-wrapper" style={{ position: 'relative' }}>
+            <button
+              className="dean-notification-btn"
+              onClick={() => setShowNotifications((v) => !v)}
             >
               🔔
               {unreadCount > 0 && (
@@ -451,16 +613,17 @@ const DeanDashboard = () => {
               <DeanNotifications
                 notifications={notifications}
                 unreadCount={unreadCount}
-                onMarkRead={async (id) => {
-                  await supabase.from('chat_messages').update({ is_read: true }).eq('id', id);
-                  fetchNotifications();
-                }}
-                onMarkAllRead={async () => {
-                  await supabase.from('chat_messages').update({ is_read: true }).eq('receiver_email', deanEmail).eq('is_read', false);
-                  fetchNotifications();
-                }}
+                onMarkRead={markNotificationRead}
+                onMarkAllRead={markAllNotificationsRead}
                 onNotificationClick={(notif) => {
                   setShowNotifications(false);
+                  markNotificationRead(notif.id);
+
+                  if (notif.id?.startsWith('leave-') || notif.type === 'leave_pending') {
+                    setActiveTab('leave-approvals');
+                    return;
+                  }
+
                   const user = {
                     email: notif.sender_email,
                     role: notif.sender_role || 'user',
@@ -479,10 +642,10 @@ const DeanDashboard = () => {
           <div className="dean-user-info">
             <div className="dean-avatar" onClick={() => setActiveTab('settings')}>
               {(profilePicUrl || profile?.profile_picture_url) ? (
-                <img 
-                  src={`${profilePicUrl || profile.profile_picture_url}?t=${profileVersion}`} 
-                  alt="" 
-                  className="dean-avatar-img" 
+                <img
+                  src={`${profilePicUrl || profile.profile_picture_url}?t=${profileVersion}`}
+                  alt=""
+                  className="dean-avatar-img"
                 />
               ) : (
                 <span>{deanName[0]?.toUpperCase() || 'D'}</span>
@@ -493,15 +656,17 @@ const DeanDashboard = () => {
               <span className="dean-user-role">Dean</span>
             </div>
           </div>
-          <button className="dean-logout-btn" onClick={() => { signOut(); navigate('/login'); }}>Sign Out</button>
+          <button className="dean-logout-btn" onClick={() => { signOut(); navigate('/login'); }}>
+            Sign Out
+          </button>
         </div>
       </header>
 
       <nav className="dean-nav">
         {tabs.map((t) => (
-          <button 
-            key={t.id} 
-            className={`dean-nav-btn ${activeTab === t.id ? 'active' : ''}`} 
+          <button
+            key={t.id}
+            className={`dean-nav-btn ${activeTab === t.id ? 'active' : ''}`}
             onClick={() => setActiveTab(t.id)}
           >
             {t.label}

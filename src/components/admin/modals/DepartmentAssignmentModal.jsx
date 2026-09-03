@@ -8,6 +8,8 @@ const DepartmentAssignmentModal = ({ lecturer, onClose, onAssign }) => {
   const [selectedDepartments, setSelectedDepartments] = useState([]);
   const [availableDepartments, setAvailableDepartments] = useState([]);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [primaryDepartment, setPrimaryDepartment] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -32,6 +34,22 @@ const DepartmentAssignmentModal = ({ lecturer, onClose, onAssign }) => {
       console.log('Current department codes:', currentCodes);
       setSelectedDepartments(currentCodes);
       setDepartments(currentDepts || []);
+
+      // Get primary department from lecturers table
+      const { data: lecturerData, error: lecturerError } = await supabase
+        .from('lecturers')
+        .select('primary_department_code')
+        .eq('id', lecturer.id)
+        .single();
+
+      if (lecturerError && lecturerError.code !== 'PGRST116') {
+        console.error('Error fetching lecturer primary dept:', lecturerError);
+      }
+
+      if (lecturerData) {
+        setPrimaryDepartment(lecturerData.primary_department_code);
+        console.log('Primary department from DB:', lecturerData.primary_department_code);
+      }
 
       // Get all unique departments from courses for available options
       const { data: allDepts, error: courseError } = await supabase
@@ -64,14 +82,30 @@ const DepartmentAssignmentModal = ({ lecturer, onClose, onAssign }) => {
   const handleDepartmentToggle = (deptCode) => {
     setSelectedDepartments(prev => {
       if (prev.includes(deptCode)) {
+        // If removing the primary department, clear it
+        if (primaryDepartment === deptCode) {
+          setPrimaryDepartment(null);
+        }
         return prev.filter(code => code !== deptCode);
       } else {
+        // If adding first department, make it primary automatically
+        if (prev.length === 0) {
+          setPrimaryDepartment(deptCode);
+        }
         return [...prev, deptCode];
       }
     });
   };
 
-  const handleDeleteDepartment = async (departmentId) => {
+  const handleSetPrimary = (deptCode) => {
+    if (!selectedDepartments.includes(deptCode)) {
+      alert('Please assign this department first before setting it as primary.');
+      return;
+    }
+    setPrimaryDepartment(deptCode);
+  };
+
+  const handleDeleteDepartment = async (departmentId, departmentCode) => {
     if (!window.confirm('Are you sure you want to remove this department assignment?')) {
       return;
     }
@@ -80,6 +114,11 @@ const DepartmentAssignmentModal = ({ lecturer, onClose, onAssign }) => {
       setIsDeleting(true);
       console.log('Deleting department assignment ID:', departmentId);
       
+      // If deleting the primary department, clear it
+      if (primaryDepartment === departmentCode) {
+        setPrimaryDepartment(null);
+      }
+
       const { error } = await supabase
         .from('lecturer_departments')
         .delete()
@@ -105,8 +144,26 @@ const DepartmentAssignmentModal = ({ lecturer, onClose, onAssign }) => {
   };
 
   const handleAssignDepartments = async () => {
+    if (selectedDepartments.length === 0) {
+      alert('Please select at least one department.');
+      return;
+    }
+
+    if (!primaryDepartment) {
+      alert('Please select a primary department.');
+      return;
+    }
+
+    if (!selectedDepartments.includes(primaryDepartment)) {
+      alert('Primary department must be one of the assigned departments.');
+      return;
+    }
+
+    setSaving(true);
+    
     try {
       console.log('Assigning departments:', selectedDepartments);
+      console.log('Primary department:', primaryDepartment);
       
       // Get current assignments to see what needs to be added/removed
       const currentCodes = departments.map(dept => dept.department_code);
@@ -130,15 +187,18 @@ const DepartmentAssignmentModal = ({ lecturer, onClose, onAssign }) => {
 
       // Add new departments
       if (toAdd.length > 0) {
+        const adminId = JSON.parse(localStorage.getItem('adminProfile'))?.id || null;
+        
         const assignments = toAdd.map(deptCode => {
           const dept = availableDepartments.find(d => d.code === deptCode);
           return {
             lecturer_id: lecturer.id,
             department_code: deptCode,
             department_name: dept?.name || deptCode,
-            assigned_by: (JSON.parse(localStorage.getItem('adminProfile'))?.id || null),
+            assigned_by: adminId,
             is_active: true,
-            assigned_at: new Date().toISOString()
+            assigned_at: new Date().toISOString(),
+            is_primary: deptCode === primaryDepartment // Mark if this is primary
           };
         });
 
@@ -150,13 +210,56 @@ const DepartmentAssignmentModal = ({ lecturer, onClose, onAssign }) => {
         console.log('Added departments:', toAdd);
       }
 
-      alert('Department assignments updated successfully!');
+      // Update primary department in lecturers table
+      if (primaryDepartment) {
+        const { error: updateError } = await supabase
+          .from('lecturers')
+          .update({ 
+            primary_department_code: primaryDepartment,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', lecturer.id);
+
+        if (updateError) {
+          console.error('Error updating primary department:', updateError);
+          // Don't throw here, just warn
+        } else {
+          console.log('Primary department updated to:', primaryDepartment);
+        }
+      }
+
+      // Also update is_primary flag in lecturer_departments table
+      const { error: flagError } = await supabase
+        .from('lecturer_departments')
+        .update({ is_primary: false })
+        .eq('lecturer_id', lecturer.id);
+
+      if (flagError) {
+        console.error('Error resetting primary flags:', flagError);
+      }
+
+      // Set the new primary
+      if (primaryDepartment) {
+        const { error: setPrimaryError } = await supabase
+          .from('lecturer_departments')
+          .update({ is_primary: true })
+          .eq('lecturer_id', lecturer.id)
+          .eq('department_code', primaryDepartment);
+
+        if (setPrimaryError) {
+          console.error('Error setting primary flag:', setPrimaryError);
+        }
+      }
+
+      alert('✅ Department assignments updated successfully!');
       onAssign();
       fetchData(); // Refresh to show changes
       
     } catch (error) {
       console.error('Error assigning departments:', error);
       alert('Error assigning departments. Please try again.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -172,16 +275,29 @@ const DepartmentAssignmentModal = ({ lecturer, onClose, onAssign }) => {
       return;
     }
 
+    // Add to available departments
+    const newDept = { code: deptCode, name: deptName };
+    setAvailableDepartments(prev => [...prev, newDept]);
+    
+    // Auto-select and make primary if no departments
+    setSelectedDepartments(prev => [...prev, deptCode]);
+    if (selectedDepartments.length === 0) {
+      setPrimaryDepartment(deptCode);
+    }
+
     try {
+      const adminId = JSON.parse(localStorage.getItem('adminProfile'))?.id || null;
+      
       const { error } = await supabase
         .from('lecturer_departments')
         .insert({
           lecturer_id: lecturer.id,
           department_code: deptCode,
           department_name: deptName,
-          assigned_by: (JSON.parse(localStorage.getItem('adminProfile'))?.id || null),
+          assigned_by: adminId,
           is_active: true,
-          assigned_at: new Date().toISOString()
+          assigned_at: new Date().toISOString(),
+          is_primary: selectedDepartments.length === 0 // Primary if first
         });
 
       if (error) throw error;
@@ -210,28 +326,101 @@ const DepartmentAssignmentModal = ({ lecturer, onClose, onAssign }) => {
 
   return (
     <div className="modal-overlay">
-      <div className="modal">
+      <div className="modal" style={{ maxWidth: '700px' }}>
         <h3>📁 Department Assignment: {lecturer.full_name}</h3>
         <p className="lecturer-id">Lecturer ID: {lecturer.lecturer_id}</p>
         
+        {/* Primary Department Info */}
+        <div className="primary-dept-info" style={{ 
+          background: '#e3f2fd', 
+          padding: '10px 15px', 
+          borderRadius: '6px',
+          marginBottom: '16px',
+          border: '1px solid #90caf9'
+        }}>
+          <strong>⭐ Primary Department:</strong>{' '}
+          {primaryDepartment ? (
+            <span style={{ color: '#1565c0', fontWeight: 'bold' }}>
+              {departments.find(d => d.department_code === primaryDepartment)?.department_name || primaryDepartment}
+              {' ('}{primaryDepartment}{')'}
+            </span>
+          ) : (
+            <span style={{ color: '#f44336' }}>Not set - Please select a primary department</span>
+          )}
+          <span style={{ fontSize: '12px', color: '#666', marginLeft: '10px' }}>
+            (Leave requests will go to the primary department)
+          </span>
+        </div>
+
         <div className="current-departments-section mt-20">
           <h4>📋 Currently Assigned Departments:</h4>
           {departments.length > 0 ? (
             <div className="departments-list">
               {departments.map((dept) => (
-                <div key={dept.id} className="department-item">
-                  <span className="department-info">
-                    <strong>{dept.department_code}</strong> - {dept.department_name}
-                    {!dept.is_active && ' (Inactive)'}
-                  </span>
-                  <button
-                    className="delete-department-btn"
-                    onClick={() => handleDeleteDepartment(dept.id)}
-                    disabled={isDeleting}
-                    title="Remove department assignment"
-                  >
-                    🗑️ Remove
-                  </button>
+                <div key={dept.id} className="department-item" style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '8px 12px',
+                  background: dept.department_code === primaryDepartment ? '#e8f5e9' : '#f5f5f5',
+                  borderRadius: '6px',
+                  marginBottom: '6px',
+                  border: dept.department_code === primaryDepartment ? '2px solid #4caf50' : '1px solid #e0e0e0'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span className="department-info">
+                      <strong>{dept.department_code}</strong> - {dept.department_name}
+                      {!dept.is_active && ' (Inactive)'}
+                    </span>
+                    {dept.department_code === primaryDepartment && (
+                      <span style={{ 
+                        background: '#4caf50', 
+                        color: 'white', 
+                        padding: '2px 8px', 
+                        borderRadius: '12px',
+                        fontSize: '11px',
+                        fontWeight: 'bold'
+                      }}>
+                        ⭐ Primary
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    {dept.department_code !== primaryDepartment && departments.length > 1 && (
+                      <button
+                        className="set-primary-btn"
+                        onClick={() => handleSetPrimary(dept.department_code)}
+                        style={{
+                          padding: '4px 12px',
+                          background: '#1976d2',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer',
+                          fontSize: '12px'
+                        }}
+                      >
+                        Set as Primary
+                      </button>
+                    )}
+                    <button
+                      className="delete-department-btn"
+                      onClick={() => handleDeleteDepartment(dept.id, dept.department_code)}
+                      disabled={isDeleting}
+                      title="Remove department assignment"
+                      style={{
+                        padding: '4px 12px',
+                        background: '#dc3545',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '12px'
+                      }}
+                    >
+                      🗑️ Remove
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -242,36 +431,93 @@ const DepartmentAssignmentModal = ({ lecturer, onClose, onAssign }) => {
 
         <div className="assign-departments-section mt-20">
           <h4>➕ Assign New Departments:</h4>
-          <div className="available-departments-list">
+          <p style={{ fontSize: '13px', color: '#666', marginBottom: '10px' }}>
+            Check departments to assign. The first department selected will be the primary.
+          </p>
+          <div className="available-departments-list" style={{ 
+            maxHeight: '200px', 
+            overflowY: 'auto',
+            border: '1px solid #e0e0e0',
+            borderRadius: '6px',
+            padding: '8px'
+          }}>
             {availableDepartments.length > 0 ? (
-              availableDepartments.map(dept => (
-                <div key={dept.code} className="department-option">
-                  <label className="department-checkbox">
-                    <input
-                      type="checkbox"
-                      checked={selectedDepartments.includes(dept.code)}
-                      onChange={() => handleDepartmentToggle(dept.code)}
-                      disabled={departments.some(d => d.department_code === dept.code)}
-                    />
-                    <span className="dept-code">{dept.code}</span>
-                    <span className="dept-name">{dept.name}</span>
-                    {departments.some(d => d.department_code === dept.code) && 
-                      <span className="already-assigned">(Already assigned)</span>
-                    }
-                  </label>
-                </div>
-              ))
+              availableDepartments.map(dept => {
+                const isAssigned = departments.some(d => d.department_code === dept.code);
+                const isSelected = selectedDepartments.includes(dept.code);
+                const isPrimary = primaryDepartment === dept.code;
+                
+                return (
+                  <div key={dept.code} className="department-option" style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '6px 8px',
+                    background: isPrimary ? '#e8f5e9' : 'transparent',
+                    borderRadius: '4px',
+                    marginBottom: '2px'
+                  }}>
+                    <label className="department-checkbox" style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      cursor: isAssigned ? 'not-allowed' : 'pointer',
+                      flex: 1
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleDepartmentToggle(dept.code)}
+                        disabled={isAssigned}
+                      />
+                      <span className="dept-code" style={{ fontWeight: 'bold' }}>{dept.code}</span>
+                      <span className="dept-name" style={{ color: '#555' }}>{dept.name}</span>
+                      {isAssigned && (
+                        <span className="already-assigned" style={{ color: '#999', fontSize: '12px' }}>
+                          (Already assigned)
+                        </span>
+                      )}
+                      {isPrimary && (
+                        <span style={{ 
+                          background: '#4caf50', 
+                          color: 'white', 
+                          padding: '1px 8px', 
+                          borderRadius: '12px',
+                          fontSize: '10px',
+                          fontWeight: 'bold',
+                          marginLeft: 'auto'
+                        }}>
+                          ⭐ Primary
+                        </span>
+                      )}
+                    </label>
+                  </div>
+                );
+              })
             ) : (
               <p className="text-muted">No available departments found</p>
             )}
           </div>
         </div>
 
-        <div className="modal-actions mt-20">
+        <div className="modal-actions mt-20" style={{
+          display: 'flex',
+          justifyContent: 'flex-end',
+          gap: '10px',
+          marginTop: '20px',
+          paddingTop: '16px',
+          borderTop: '1px solid #e0e0e0'
+        }}>
           <button 
             className="cancel-button"
             onClick={onClose}
-            disabled={isDeleting}
+            disabled={isDeleting || saving}
+            style={{
+              padding: '8px 20px',
+              background: '#e0e0e0',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer'
+            }}
           >
             Cancel
           </button>
@@ -279,17 +525,33 @@ const DepartmentAssignmentModal = ({ lecturer, onClose, onAssign }) => {
           <button 
             className="action-btn dept"
             onClick={handleManualAddDepartment}
-            disabled={isDeleting}
+            disabled={isDeleting || saving}
+            style={{
+              padding: '8px 20px',
+              background: '#ff9800',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer'
+            }}
           >
-            ➕ Add Custom Department
+            ➕ Add Custom
           </button>
           
           <button 
             className="confirm-button"
             onClick={handleAssignDepartments}
-            disabled={isDeleting || selectedDepartments.length === 0}
+            disabled={isDeleting || saving || selectedDepartments.length === 0 || !primaryDepartment}
+            style={{
+              padding: '8px 20px',
+              background: (isDeleting || saving || selectedDepartments.length === 0 || !primaryDepartment) ? '#ccc' : '#4caf50',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: (isDeleting || saving || selectedDepartments.length === 0 || !primaryDepartment) ? 'not-allowed' : 'pointer'
+            }}
           >
-            💾 Save Assignments
+            {saving ? '💾 Saving...' : '💾 Save Assignments'}
           </button>
         </div>
       </div>

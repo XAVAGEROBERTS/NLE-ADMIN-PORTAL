@@ -1,4 +1,4 @@
-// dean/DeanCourseAllocations.jsx - FULLY FIXED
+// dean/DeanCourseAllocations.jsx - UPDATED (removes courses table update)
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../../services/supabase';
 
@@ -46,18 +46,9 @@ const DeanCourseAllocations = ({ facultyId, departments, fetchDeanData, setStats
     fetchAllocations();
   }, [fetchAllocations]);
 
-  // ✅ FIXED: Using correct column names
+  // ✅ FIXED: REMOVED courses table update
   const handleApprove = async (id) => {
     try {
-      const { data: allocation, error: fetchError } = await supabase
-        .from('course_allocations')
-        .select('course_id, lecturer_id')
-        .eq('id', id)
-        .single();
-
-      if (fetchError) throw fetchError;
-
-      // ✅ CORRECT COLUMN NAMES - NO dean_ prefix
       const { error: updateError } = await supabase
         .from('course_allocations')
         .update({
@@ -71,10 +62,11 @@ const DeanCourseAllocations = ({ facultyId, departments, fetchDeanData, setStats
 
       if (updateError) throw updateError;
 
-      await supabase
-        .from('courses')
-        .update({ lecturer_id: allocation.lecturer_id })
-        .eq('id', allocation.course_id);
+      // ❌ REMOVED: Do NOT update courses table
+      // await supabase
+      //   .from('courses')
+      //   .update({ lecturer_id: allocation.lecturer_id })
+      //   .eq('id', allocation.course_id);
 
       alert('✅ Allocation approved successfully!');
       setShowModal(false);

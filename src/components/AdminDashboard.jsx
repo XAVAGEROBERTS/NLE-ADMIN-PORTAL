@@ -857,59 +857,75 @@ const AdminDashboard = () => {
       throw error;
     }
   };
+// In AdminDashboard.jsx - Updated fetchLecturers
+const fetchLecturers = async () => {
+  console.log("  👨‍🏫 [fetchLecturers] Starting...");
+  try {
+    let query = supabase
+      .from("lecturers")
+      .select("*")
+      .limit(100)
+      .order("created_at", { ascending: false });
 
-  const fetchLecturers = async () => {
-    try {
-      let query = supabase
-        .from("lecturers")
-        .select("*")
-        .limit(100)
-        .order("created_at", { ascending: false });
-
-      if (searchTerm) {
-        query = query.or(
-          `full_name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,lecturer_id.ilike.%${searchTerm}%`
-        );
-      }
-
-      const { data, error } = await query;
-      
-      if (error) throw error;
-
-      if (!data || data.length === 0) {
-        setLecturers([]);
-        return;
-      }
-      
-      const lecturersWithDepts = await Promise.all(
-        data.map(async (lecturer) => {
-          const { data: deptData, error: deptError } = await supabase
-            .from("lecturer_departments")
-            .select("department_code, department_name")
-            .eq("lecturer_id", lecturer.id)
-            .eq("is_active", true);
-
-          if (deptError) {
-            return {
-              ...lecturer,
-              lecturer_departments: []
-            };
-          }
-
-          return {
-            ...lecturer,
-            lecturer_departments: deptData || []
-          };
-        })
+    if (searchTerm) {
+      query = query.or(
+        `full_name.ilike.%${searchTerm}%,email.ilike.%${searchTerm}%,lecturer_id.ilike.%${searchTerm}%`
       );
+    }
 
-      setLecturers(lecturersWithDepts);
-    } catch (error) {
-      console.error("Error fetching lecturers:", error);
+    const { data, error } = await query;
+    
+    if (error) {
+      console.error("  ❌ [fetchLecturers] Error:", error);
       throw error;
     }
-  };
 
+    if (!data || data.length === 0) {
+      console.log("  👨‍🏫 [fetchLecturers] No lecturers found");
+      setLecturers([]);
+      return;
+    }
+
+    // ✅ ADD: Get course counts from course_allocations for each lecturer
+    const lecturersWithCounts = await Promise.all(
+      data.map(async (lecturer) => {
+        // Get department assignments
+        const { data: deptData, error: deptError } = await supabase
+          .from("lecturer_departments")
+          .select("department_code, department_name")
+          .eq("lecturer_id", lecturer.id)
+          .eq("is_active", true);
+
+        if (deptError) {
+          console.warn(`  ⚠️ [fetchLecturers] Dept fetch error for ${lecturer.id}:`, deptError);
+        }
+
+        // ✅ NEW: Get course count from course_allocations (NOT courses table)
+        const { count: courseCount, error: courseError } = await supabase
+          .from("course_allocations")
+          .select("id", { count: 'exact', head: true })
+          .eq("lecturer_id", lecturer.id)
+          .eq("status", "approved");
+
+        if (courseError) {
+          console.warn(`  ⚠️ [fetchLecturers] Course count error for ${lecturer.id}:`, courseError);
+        }
+
+        return {
+          ...lecturer,
+          lecturer_departments: deptData || [],
+          course_count: courseCount || 0, // ✅ Add course count from allocations
+        };
+      })
+    );
+
+    console.log(`  ✅ [fetchLecturers] Complete, ${lecturersWithCounts.length} lecturers`);
+    setLecturers(lecturersWithCounts);
+  } catch (error) {
+    console.error("  ❌ [fetchLecturers] Error:", error);
+    throw error;
+  }
+};
   const fetchDeans = async () => {
     try {
       setLoadingDeans(true);

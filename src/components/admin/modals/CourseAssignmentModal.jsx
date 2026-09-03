@@ -1,7 +1,7 @@
-// src/components/admin/modals/CourseAssignmentModal.jsx - FIXED
+// admin/CourseAssignmentModal.jsx - COMPLETE FIX
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../../services/supabase';
-import '../AdminDashboardStyles.css';
+import './CourseAssignmentModal.css';
 
 const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
   const [availableCourses, setAvailableCourses] = useState([]);
@@ -9,189 +9,134 @@ const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
   const [loading, setLoading] = useState(true);
   const [selectedCourse, setSelectedCourse] = useState('');
   const [selectedForUnassign, setSelectedForUnassign] = useState([]);
-  const [academicYear, setAcademicYear] = useState(new Date().getFullYear() + '/' + (new Date().getFullYear() + 1));
-  const [semester, setSemester] = useState(1);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
+    const fetchData = async () => {
+      try {
+        setLoading(true);
+
+        console.log('🔍 Fetching data for lecturer:', lecturer.id, lecturer.full_name);
+
+        // 1. Get all courses
+        const { data: coursesData, error: coursesError } = await supabase
+          .from('courses')
+          .select('id, course_code, course_name, department_code, is_active')
+          .order('course_code', { ascending: true });
+
+        if (coursesError) throw coursesError;
+
+        // 2. ✅ FIXED: Get approved allocations from course_allocations ONLY
+        const { data: allocations, error: allocError } = await supabase
+          .from('course_allocations')
+          .select('course_id, status, created_at, approved_at')
+          .eq('lecturer_id', lecturer.id)
+          .eq('status', 'approved');
+
+        if (allocError) throw allocError;
+
+        console.log('📋 Allocations found:', allocations);
+
+        // 3. ✅ FIXED: Use allocations to determine assigned courses (NOT courses.lecturer_id)
+        const assignedIds = new Set((allocations || []).map(a => a.course_id));
+
+        console.log('📚 Assigned course IDs from allocations:', Array.from(assignedIds));
+
+        // 4. Filter courses based on allocations
+        const assigned = coursesData.filter(c => assignedIds.has(c.id));
+        const available = coursesData.filter(c => !assignedIds.has(c.id));
+
+        console.log('✅ Assigned courses:', assigned.map(c => c.course_code));
+        console.log('✅ Available courses:', available.map(c => c.course_code));
+
+        setAssignedCourses(assigned);
+        setAvailableCourses(available);
+        setSelectedForUnassign([]);
+      } catch (err) {
+        console.error("Error loading courses:", err);
+        alert("Error loading courses: " + err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+
     if (lecturer?.id) {
       fetchData();
     }
   }, [lecturer?.id]);
 
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-
-      // Get all active courses
-      const { data: coursesData, error: coursesError } = await supabase
-        .from('courses')
-        .select('id, course_code, course_name, department_code, year, semester, is_active')
-        .eq('is_active', true)
-        .order('course_code');
-
-      if (coursesError) throw coursesError;
-
-      // Get current allocations for this lecturer
-      const { data: allocationsData, error: allocError } = await supabase
-        .from('course_allocations')
-        .select(`
-          id,
-          course_id,
-          academic_year,
-          semester,
-          status,
-          notes,
-          created_at,
-          courses:course_id (
-            id,
-            course_code,
-            course_name,
-            department_code
-          )
-        `)
-        .eq('lecturer_id', lecturer.id)
-        .in('status', ['approved', 'pending']);
-
-      if (allocError) throw allocError;
-
-      // Get course IDs that are already allocated
-      const allocatedCourseIds = (allocationsData || [])
-        .filter(a => a.status === 'approved' || a.status === 'pending')
-        .map(a => a.course_id);
-
-      // Separate assigned and available courses
-      const assigned = coursesData.filter(c => allocatedCourseIds.includes(c.id));
-      const available = coursesData.filter(c => !allocatedCourseIds.includes(c.id));
-
-      // Merge allocation info with assigned courses
-      const assignedWithAlloc = assigned.map(course => {
-        const allocation = allocationsData.find(a => a.course_id === course.id);
-        return {
-          ...course,
-          allocation_id: allocation?.id,
-          allocation_status: allocation?.status,
-          allocation_notes: allocation?.notes,
-          allocation_academic_year: allocation?.academic_year,
-          allocation_semester: allocation?.semester,
-        };
-      });
-
-      setAssignedCourses(assignedWithAlloc);
-      setAvailableCourses(available);
-      setSelectedForUnassign([]);
-
-    } catch (err) {
-      console.error("Error loading courses:", err);
-      alert("Error loading courses: " + err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleAssignCourse = async () => {
-    if (!selectedCourse) return alert('Select a course');
-    if (!academicYear.trim()) {
-      alert('Please enter Academic Year');
+    if (!selectedCourse) {
+      alert('Please select a course');
       return;
     }
 
-    setSubmitting(true);
-
     try {
-      // Find the selected course to get its department_code
+      setSubmitting(true);
+
       const selectedCourseData = availableCourses.find(c => c.id === selectedCourse);
-      
       if (!selectedCourseData) {
-        throw new Error('Course not found');
+        alert('Selected course not found');
+        return;
       }
 
-      // Get the lecturer's department if not available on the course
-      let departmentCode = selectedCourseData.department_code;
-      
-      // If course doesn't have department_code, try to get from lecturer's departments
-      if (!departmentCode) {
-        const { data: lecturerDepts } = await supabase
-          .from('lecturer_departments')
-          .select('department_code')
-          .eq('lecturer_id', lecturer.id)
-          .eq('is_active', true)
-          .limit(1);
-          
-        if (lecturerDepts && lecturerDepts.length > 0) {
-          departmentCode = lecturerDepts[0].department_code;
-        }
-      }
-
-      // If still no department_code, try to get from lecturer's primary department
-      if (!departmentCode && lecturer.department) {
-        departmentCode = lecturer.department;
-      }
-
-      // If still no department_code, use a default or prompt
-      if (!departmentCode) {
-        const dept = prompt('Please enter the department code for this course (e.g., SCT, ENG, BUS):');
-        if (!dept) {
-          setSubmitting(false);
-          return;
-        }
-        departmentCode = dept.trim().toUpperCase();
-      }
-
-      // ✅ FIXED: Include ALL required fields
-      const allocationData = {
-        course_id: selectedCourse,
-        lecturer_id: lecturer.id,
-        department_code: departmentCode,  // ✅ REQUIRED - NOT NULL
-        academic_year: academicYear,
-        semester: parseInt(semester),
-        status: 'approved',  // Admin approval is automatic
-        requested_by: 'admin',
-        requested_at: new Date().toISOString(),
-        approved_by: 'admin',
-        approved_at: new Date().toISOString(),
-        notes: 'Assigned by System Admin',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      };
-
-      const { data: allocData, error: allocError } = await supabase
+      // Check if allocation already exists
+      const { data: existing, error: checkError } = await supabase
         .from('course_allocations')
-        .insert([allocationData])
-        .select()
-        .single();
+        .select('id, status')
+        .eq('course_id', selectedCourse)
+        .eq('lecturer_id', lecturer.id)
+        .maybeSingle();
 
-      if (allocError) {
-        console.error('Allocation error:', allocError);
-        throw new Error(allocError.message);
+      if (checkError) throw checkError;
+
+      if (existing) {
+        // Update existing to approved
+        const { error: updateError } = await supabase
+          .from('course_allocations')
+          .update({ 
+            status: 'approved',
+            approved_at: new Date().toISOString(),
+            approved_by: 'admin',
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', existing.id);
+
+        if (updateError) throw updateError;
+      } else {
+        // Create new allocation - ONLY in course_allocations table
+        const { error: insertError } = await supabase
+          .from('course_allocations')
+          .insert([{
+            course_id: selectedCourse,
+            lecturer_id: lecturer.id,
+            department_code: selectedCourseData.department_code || null,
+            status: 'approved',
+            requested_by: 'admin',
+            approved_by: 'admin',
+            approved_at: new Date().toISOString(),
+            requested_at: new Date().toISOString(),
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }]);
+
+        if (insertError) throw insertError;
       }
 
-      alert('✅ Course assigned successfully!');
+      // ⚠️ IMPORTANT: DO NOT update courses.lecturer_id
+      // The courses table should NOT be updated here
 
-      // Update the courses table for backward compatibility
-      await supabase
-        .from('courses')
-        .update({ lecturer_id: lecturer.id })
-        .eq('id', selectedCourse);
+      alert('✅ Course allocated successfully!');
 
-      // Update UI
-      const assignedWithAlloc = {
-        ...selectedCourseData,
-        allocation_id: allocData.id,
-        allocation_status: allocData.status,
-        allocation_notes: allocData.notes,
-        allocation_academic_year: allocData.academic_year,
-        allocation_semester: allocData.semester,
-      };
-
-      setAssignedCourses(prev => [...prev, assignedWithAlloc]);
+      // Update local state
+      const course = availableCourses.find(c => c.id === selectedCourse);
+      setAssignedCourses(prev => [...prev, course]);
       setAvailableCourses(prev => prev.filter(c => c.id !== selectedCourse));
       setSelectedCourse('');
       onAssign();
-
     } catch (err) {
-      console.error('Assignment error:', err);
-      alert('Error assigning course: ' + err.message);
+      alert('Error: ' + err.message);
+      console.error('Assign error:', err);
     } finally {
       setSubmitting(false);
     }
@@ -214,154 +159,60 @@ const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
   };
 
   const handleBulkUnassign = async () => {
-    if (selectedForUnassign.length === 0) return alert('Select at least one course');
+    if (selectedForUnassign.length === 0) {
+      alert('Select at least one course to unassign');
+      return;
+    }
+
     if (!window.confirm(`Unassign ${selectedForUnassign.length} selected course(s)?`)) return;
 
-    setSubmitting(true);
-
     try {
-      const coursesToUnassign = assignedCourses.filter(c => selectedForUnassign.includes(c.id));
-      const allocationIds = coursesToUnassign.map(c => c.allocation_id).filter(Boolean);
+      setSubmitting(true);
 
-      if (allocationIds.length === 0) {
-        alert('No allocation records found to delete');
-        return;
-      }
-
-      // Delete course allocations
-      const { error: deleteError } = await supabase
+      // Update allocations to 'pending' (soft delete)
+      const { error } = await supabase
         .from('course_allocations')
-        .delete()
-        .in('id', allocationIds);
+        .update({ 
+          status: 'pending',
+          approved_at: null,
+          approved_by: null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('lecturer_id', lecturer.id)
+        .in('course_id', selectedForUnassign);
 
-      if (deleteError) throw deleteError;
+      if (error) throw error;
 
-      // Update courses table to remove lecturer_id
-      const { error: updateError } = await supabase
-        .from('courses')
-        .update({ lecturer_id: null })
-        .in('id', selectedForUnassign);
+      alert(`${selectedForUnassign.length} course(s) unassigned successfully!`);
 
-      if (updateError) throw updateError;
-
-      alert(`✅ ${selectedForUnassign.length} course(s) unassigned successfully!`);
-
-      const unassignedCourses = assignedCourses.filter(c => selectedForUnassign.includes(c.id));
+      // Update local state
       setAssignedCourses(prev => prev.filter(c => !selectedForUnassign.includes(c.id)));
-      setAvailableCourses(prev => [...prev, ...unassignedCourses.map(c => ({ ...c, allocation_id: null }))]);
+      const unassignedCourses = assignedCourses.filter(c => selectedForUnassign.includes(c.id));
+      setAvailableCourses(prev => [...prev, ...unassignedCourses]);
       setSelectedForUnassign([]);
       onAssign();
-
     } catch (err) {
-      console.error('Unassignment error:', err);
-      alert('Error unassigning courses: ' + err.message);
+      alert('Error: ' + err.message);
+      console.error('Unassign error:', err);
     } finally {
       setSubmitting(false);
     }
-  };
-
-  const handleUnassignSingle = async (courseId) => {
-    const course = assignedCourses.find(c => c.id === courseId);
-    if (!course) return;
-
-    if (!window.confirm(`Unassign ${course.course_code} from ${lecturer.full_name}?`)) return;
-
-    setSubmitting(true);
-
-    try {
-      if (course.allocation_id) {
-        const { error: deleteError } = await supabase
-          .from('course_allocations')
-          .delete()
-          .eq('id', course.allocation_id);
-
-        if (deleteError) throw deleteError;
-      }
-
-      await supabase        .from('courses')
-        .update({ lecturer_id: null })
-        .eq('id', courseId);
-
-      alert(`✅ ${course.course_code} unassigned successfully!`);
-
-      setAssignedCourses(prev => prev.filter(c => c.id !== courseId));
-      setAvailableCourses(prev => [...prev, { ...course, allocation_id: null }]);
-      onAssign();
-
-    } catch (err) {
-      console.error('Unassignment error:', err);
-      alert('Error unassigning course: ' + err.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const renderAssignedCourseRow = (course) => {
-    const statusColors = {
-      approved: '#28a745',
-      pending: '#ffc107',
-      rejected: '#dc3545',
-    };
-
-    return (
-      <tr key={course.id}>
-        <td>
-          <input
-            type="checkbox"
-            checked={selectedForUnassign.includes(course.id)}
-            onChange={() => toggleSelectForUnassign(course.id)}
-            disabled={submitting}
-          />
-        </td>
-        <td>
-          <strong>{course.course_code}</strong>
-        </td>
-        <td>{course.course_name}</td>
-        <td>
-          <span className="dept-badge">{course.department_code || 'N/A'}</span>
-        </td>
-        <td>
-          <span style={{
-            display: 'inline-block',
-            padding: '2px 10px',
-            borderRadius: '12px',
-            fontSize: '11px',
-            fontWeight: '600',
-            backgroundColor: statusColors[course.allocation_status] || '#6c757d',
-            color: 'white'
-          }}>
-            {course.allocation_status || 'approved'}
-          </span>
-        </td>
-        <td>
-          {course.allocation_academic_year || academicYear}
-          {course.allocation_semester ? ` - Sem ${course.allocation_semester}` : ''}
-        </td>
-        <td>
-          <button
-            className="action-btn delete small"
-            onClick={() => handleUnassignSingle(course.id)}
-            disabled={submitting}
-            title="Unassign this course"
-          >
-            🗑️
-          </button>
-        </td>
-      </tr>
-    );
   };
 
   return (
-    <div className="modal-overlay" onClick={() => !submitting && onClose()}>
-      <div className="modal large-modal course-assignment-modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-overlay">
+      <div className="modal large-modal course-assignment-modal">
         <div className="modal-header">
-          <h3>📚 Course Assignment</h3>
+          <h3>📚 Assign Courses</h3>
           <button className="close-btn" onClick={onClose} disabled={submitting}>✕</button>
         </div>
-        
+
         <div className="lecturer-info">
           <span className="lecturer-name">{lecturer.full_name}</span>
-          <span className="lecturer-id-badge">{lecturer.lecturer_id || lecturer.email}</span>
+          <span className="lecturer-id-badge">{lecturer.lecturer_id}</span>
+          <span style={{ marginLeft: 'auto', fontSize: '14px', color: '#666' }}>
+            {assignedCourses.length} course(s) assigned
+          </span>
         </div>
 
         {loading ? (
@@ -371,63 +222,35 @@ const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
           </div>
         ) : (
           <div className="modal-body">
-            {/* Assign New Course Section */}
+            {/* Assign Section */}
             <div className="assign-section">
               <h4>➕ Assign New Course</h4>
               <div className="assign-form">
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Academic Year</label>
-                    <input
-                      type="text"
-                      value={academicYear}
-                      onChange={(e) => setAcademicYear(e.target.value)}
-                      placeholder="e.g. 2024/2025"
-                      className="form-input"
-                      disabled={submitting}
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Semester</label>
-                    <select
-                      value={semester}
-                      onChange={(e) => setSemester(parseInt(e.target.value))}
-                      className="form-select"
-                      disabled={submitting}
-                    >
-                      <option value={1}>Semester 1</option>
-                      <option value={2}>Semester 2</option>
-                    </select>
-                  </div>
-                </div>
-
                 <div className="form-group">
                   <label>Select Course</label>
                   <select
                     value={selectedCourse}
-                    onChange={(e) => setSelectedCourse(e.target.value)}
+                    onChange={e => setSelectedCourse(e.target.value)}
                     className="form-select"
-                    disabled={submitting}
                   >
                     <option value="">— Select course —</option>
                     {availableCourses.length === 0 ? (
-                      <option value="" disabled>No available courses</option>
+                      <option value="" disabled>All courses assigned</option>
                     ) : (
                       availableCourses.map(c => (
                         <option key={c.id} value={c.id}>
-                          {c.course_code} — {c.course_name} ({c.department_code || 'No Dept'})
+                          {c.course_code} — {c.course_name} ({c.department_code || 'N/A'})
                         </option>
                       ))
                     )}
                   </select>
                 </div>
-
                 <button
                   className="confirm-button"
                   onClick={handleAssignCourse}
                   disabled={!selectedCourse || submitting}
                 >
-                  {submitting ? 'Assigning...' : '📥 Assign Course'}
+                  {submitting ? '⏳ Assigning...' : '✅ Assign Course'}
                 </button>
               </div>
             </div>
@@ -435,14 +258,16 @@ const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
             {/* Assigned Courses Section */}
             <div className="assigned-section">
               <div className="assigned-header">
-                <h4>📋 Assigned Courses ({assignedCourses.length})</h4>
+                <h4>📚 Assigned Courses ({assignedCourses.length})</h4>
                 {assignedCourses.length > 0 && (
                   <label className="select-all-label">
                     <input
                       type="checkbox"
-                      checked={selectedForUnassign.length === assignedCourses.length && assignedCourses.length > 0}
+                      checked={
+                        selectedForUnassign.length === assignedCourses.length && 
+                        assignedCourses.length > 0
+                      }
                       onChange={selectAllForUnassign}
-                      disabled={submitting}
                     />
                     Select All
                   </label>
@@ -450,7 +275,12 @@ const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
               </div>
 
               {assignedCourses.length === 0 ? (
-                <p className="empty-text">No courses assigned to this lecturer.</p>
+                <div className="empty-text">
+                  <p>No courses assigned to this lecturer.</p>
+                  <p style={{ fontSize: '13px', color: '#999' }}>
+                    Use the form above to assign courses.
+                  </p>
+                </div>
               ) : (
                 <>
                   {selectedForUnassign.length > 0 && (
@@ -467,42 +297,34 @@ const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
                     <table className="data-table">
                       <thead>
                         <tr>
-                          <th></th>
+                          <th style={{ width: '40px' }}></th>
                           <th>Code</th>
                           <th>Name</th>
-                          <th>Department</th>
-                          <th>Status</th>
-                          <th>Academic Year</th>
-                          <th>Action</th>
+                          <th>Dept</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {assignedCourses.map(renderAssignedCourseRow)}
+                        {assignedCourses.map(c => (
+                          <tr key={c.id}>
+                            <td>
+                              <input
+                                type="checkbox"
+                                checked={selectedForUnassign.includes(c.id)}
+                                onChange={() => toggleSelectForUnassign(c.id)}
+                              />
+                            </td>
+                            <td><strong>{c.course_code}</strong></td>
+                            <td>{c.course_name}</td>
+                            <td>
+                              <span className="dept-badge">{c.department_code || 'N/A'}</span>
+                            </td>
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   </div>
                 </>
               )}
-            </div>
-
-            {/* Allocation Summary */}
-            <div className="allocation-summary">
-              <div className="summary-item">
-                <span>Total Assigned:</span>
-                <strong>{assignedCourses.length}</strong>
-              </div>
-              <div className="summary-item">
-                <span>Available Courses:</span>
-                <strong>{availableCourses.length}</strong>
-              </div>
-              <div className="summary-item">
-                <span>Academic Year:</span>
-                <strong>{academicYear}</strong>
-              </div>
-              <div className="summary-item">
-                <span>Semester:</span>
-                <strong>{semester}</strong>
-              </div>
             </div>
           </div>
         )}
@@ -511,7 +333,39 @@ const CourseAssignmentModal = ({ lecturer, onClose, onAssign }) => {
           <button className="cancel-button" onClick={onClose} disabled={submitting}>
             Close
           </button>
-          <button className="refresh-button" onClick={fetchData} disabled={loading || submitting}>
+          <button 
+            className="refresh-button" 
+            onClick={() => {
+              setLoading(true);
+              const fetchData = async () => {
+                try {
+                  const { data: coursesData } = await supabase
+                    .from('courses')
+                    .select('id, course_code, course_name, department_code, is_active')
+                    .limit(100);
+
+                  const { data: allocations } = await supabase
+                    .from('course_allocations')
+                    .select('course_id, status, created_at')
+                    .eq('lecturer_id', lecturer.id)
+                    .eq('status', 'approved');
+
+                  const assignedIds = new Set((allocations || []).map(a => a.course_id));
+                  const assigned = coursesData.filter(c => assignedIds.has(c.id));
+                  const available = coursesData.filter(c => !assignedIds.has(c.id));
+
+                  setAssignedCourses(assigned);
+                  setAvailableCourses(available);
+                  setLoading(false);
+                } catch (err) {
+                  console.error('Refresh error:', err);
+                  setLoading(false);
+                }
+              };
+              fetchData();
+            }} 
+            disabled={submitting}
+          >
             🔄 Refresh
           </button>
         </div>
