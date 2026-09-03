@@ -1,9 +1,8 @@
-// dean/DeanExamResults.jsx - COMPLETE FIXED VERSION
-// Only shows results that HOD has approved (status: approved_by_hod)
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+// HOD/HODExamResultsApproval.jsx - COMPLETE FIXED VERSION
+import React, { useState, useEffect } from 'react';
 import { supabase } from '../../services/supabase';
 
-const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) => {
+const HODExamResultsApproval = ({ departmentCode, courses, fetchHODData, setStats }) => {
   const [examResults, setExamResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState('all');
@@ -11,58 +10,27 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
   const [showModal, setShowModal] = useState(false);
   const [showMarksModal, setShowMarksModal] = useState(false);
   const [selectedExam, setSelectedExam] = useState(null);
-  const [deanNotes, setDeanNotes] = useState('');
+  const [hodNotes, setHodNotes] = useState('');
   const [processing, setProcessing] = useState(false);
   const [examMarks, setExamMarks] = useState([]);
   const [examStats, setExamStats] = useState({});
-  const [facultyDepartments, setFacultyDepartments] = useState([]);
 
-  // Get departments under this faculty
   useEffect(() => {
-    const fetchFacultyDepartments = async () => {
-      if (!facultyId) return;
-      
-      try {
-        const { data, error } = await supabase
-          .from('departments')
-          .select('department_code, department_name, id')
-          .eq('faculty_id', facultyId);
-        
-        if (error) throw error;
-        console.log('✅ Dean - Faculty departments:', data?.length || 0);
-        setFacultyDepartments(data || []);
-      } catch (err) {
-        console.error('Error fetching faculty departments:', err);
-      }
-    };
-    
-    fetchFacultyDepartments();
-  }, [facultyId]);
+    fetchExamResults();
+  }, [departmentCode]);
 
-  const deptCodes = useMemo(() => {
-    if (departments && departments.length > 0) {
-      return departments.map(d => d.department_code).filter(Boolean);
-    }
-    return facultyDepartments.map(d => d.department_code).filter(Boolean);
-  }, [departments, facultyDepartments]);
-
-  const fetchExamResults = useCallback(async () => {
-    if (deptCodes.length === 0) {
-      console.log('⚠️ Dean - No department codes available');
-      setExamResults([]);
-      return;
-    }
+  const fetchExamResults = async () => {
+    if (!departmentCode) return;
 
     setLoading(true);
     try {
-      console.log('🔍 Dean - Fetching HOD-approved exam results for departments:', deptCodes);
+      console.log('🔍 HOD - Fetching exam results for department:', departmentCode);
       
-      // ✅ ONLY fetch results that are approved_by_hod (pending Dean) or already processed
+      // SIMPLIFIED QUERY - No joins, just get the approval records
       const { data, error } = await supabase
         .from('exam_results_approvals')
         .select('*')
-        .in('department_code', deptCodes)
-        .in('status', ['approved_by_hod', 'approved_by_dean', 'rejected'])
+        .eq('department_code', departmentCode)
         .order('created_at', { ascending: false });
 
       if (error) {
@@ -70,9 +38,10 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
         throw error;
       }
 
-      console.log('📋 Dean - Raw exam results:', data?.length || 0);
+      console.log('📋 HOD - Raw exam results:', data?.length || 0);
 
       if (!data || data.length === 0) {
+        console.log('ℹ️ No exam results found');
         setExamResults([]);
         setLoading(false);
         return;
@@ -82,6 +51,9 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
       const examIds = [...new Set(data.map(r => r.exam_id).filter(Boolean))];
       const courseIds = [...new Set(data.map(r => r.course_id).filter(Boolean))];
 
+      console.log('📊 Exam IDs:', examIds);
+      console.log('📊 Course IDs:', courseIds);
+
       // Fetch exams
       let examsMap = {};
       if (examIds.length > 0) {
@@ -90,8 +62,11 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
           .select('id, title, exam_type, total_marks, start_time, end_time')
           .in('id', examIds);
         
-        if (!examsError && exams) {
+        if (examsError) {
+          console.warn('⚠️ Error fetching exams:', examsError);
+        } else if (exams) {
           exams.forEach(e => { examsMap[e.id] = e; });
+          console.log('✅ Exams fetched:', exams.length);
         }
       }
 
@@ -103,8 +78,11 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
           .select('id, course_code, course_name, credits')
           .in('id', courseIds);
         
-        if (!coursesError && coursesData) {
+        if (coursesError) {
+          console.warn('⚠️ Error fetching courses:', coursesError);
+        } else if (coursesData) {
           coursesData.forEach(c => { coursesMap[c.id] = c; });
+          console.log('✅ Courses fetched:', coursesData.length);
         }
       }
 
@@ -121,36 +99,27 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
           id: r.course_id, 
           course_code: 'N/A', 
           course_name: 'Unknown Course' 
-        }
+        },
+        lecturer: { full_name: 'Lecturer' }
       }));
 
-      console.log('✅ Dean - Processed results:', processedResults.length);
-      console.log('📊 Status breakdown:', {
-        pendingDean: processedResults.filter(r => r.status === 'approved_by_hod').length,
-        approved: processedResults.filter(r => r.status === 'approved_by_dean').length,
-        rejected: processedResults.filter(r => r.status === 'rejected').length
-      });
-      
+      console.log('✅ HOD - Processed results:', processedResults.length);
       setExamResults(processedResults);
     } catch (err) {
       console.error('❌ Error fetching exam results:', err);
     } finally {
       setLoading(false);
     }
-  }, [deptCodes]);
-
-  useEffect(() => {
-    fetchExamResults();
-  }, [fetchExamResults]);
+  };
 
   // View marks for an exam - Uses exam_submissions table
   const viewMarks = async (exam) => {
     setSelectedExam(exam);
     
     try {
-      console.log('📊 Dean - Viewing marks for exam:', exam.exam_id);
+      console.log('📊 HOD - Viewing marks for exam:', exam.exam_id);
       
-      // Fetch from exam_submissions table
+      // Fetch from exam_submissions table (same as LecturerExamResults)
       const { data: submissions, error: marksError } = await supabase
         .from('exam_submissions')
         .select(`
@@ -174,9 +143,9 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
         throw marksError;
       }
 
-      console.log('📊 Dean - Found submissions:', submissions?.length || 0);
+      console.log('📊 HOD - Found submissions:', submissions?.length || 0);
 
-      // Get student details
+      // Get student details for these submissions
       const studentIds = [...new Set((submissions || []).map(s => s.student_id).filter(Boolean))];
       let studentsMap = {};
       
@@ -237,28 +206,28 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
     }
   };
 
-  // Dean Approves (Final Approval)
+  // HOD Approves - sends to Dean
   const handleApprove = async (id) => {
     setProcessing(true);
     try {
       const { error } = await supabase
         .from('exam_results_approvals')
         .update({
-          status: 'approved_by_dean',
-          dean_approved_at: new Date().toISOString(),
-          dean_approved_by: 'dean',
-          dean_notes: deanNotes || null,
+          status: 'approved_by_hod',
+          hod_approved_at: new Date().toISOString(),
+          hod_approved_by: 'hod',
+          hod_notes: hodNotes || null,
           updated_at: new Date().toISOString()
         })
         .eq('id', id);
 
       if (error) throw error;
 
-      alert('✅ Exam results approved by Dean! Final approval complete.');
+      alert('✅ Exam results approved! Sent to Dean for final approval.');
       setShowModal(false);
-      setDeanNotes('');
+      setHodNotes('');
       await fetchExamResults();
-      if (fetchDeanData) await fetchDeanData();
+      if (fetchHODData) await fetchHODData();
     } catch (err) {
       console.error('Error approving:', err);
       alert('Error approving results: ' + err.message);
@@ -267,9 +236,9 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
     }
   };
 
-  // Dean Rejects
+  // HOD Rejects
   const handleReject = async (id) => {
-    if (!deanNotes.trim()) {
+    if (!hodNotes.trim()) {
       alert('Please provide a reason for rejection');
       return;
     }
@@ -281,8 +250,8 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
         .update({
           status: 'rejected',
           rejected_at: new Date().toISOString(),
-          rejection_reason: deanNotes,
-          dean_notes: deanNotes || null,
+          rejection_reason: hodNotes,
+          hod_notes: hodNotes || null,
           updated_at: new Date().toISOString()
         })
         .eq('id', id);
@@ -291,45 +260,12 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
 
       alert('❌ Exam results rejected');
       setShowModal(false);
-      setDeanNotes('');
+      setHodNotes('');
       await fetchExamResults();
-      if (fetchDeanData) await fetchDeanData();
+      if (fetchHODData) await fetchHODData();
     } catch (err) {
       console.error('Error rejecting:', err);
       alert('Error rejecting results: ' + err.message);
-    } finally {
-      setProcessing(false);
-    }
-  };
-
-  // Return to HOD for revision
-  const handleReturnToHOD = async (id) => {
-    if (!deanNotes.trim()) {
-      alert('Please provide feedback for the HOD');
-      return;
-    }
-
-    setProcessing(true);
-    try {
-      const { error } = await supabase
-        .from('exam_results_approvals')
-        .update({
-          status: 'submitted', // Back to HOD
-          dean_notes: deanNotes,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', id);
-
-      if (error) throw error;
-
-      alert('🔄 Results returned to HOD for revision');
-      setShowModal(false);
-      setDeanNotes('');
-      await fetchExamResults();
-      if (fetchDeanData) await fetchDeanData();
-    } catch (err) {
-      console.error('Error returning:', err);
-      alert('Error returning results: ' + err.message);
     } finally {
       setProcessing(false);
     }
@@ -344,16 +280,16 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
     return matchFilter && matchSearch;
   });
 
-  // Count only HOD-approved results for Dean's pending
-  const pendingCount = examResults.filter(r => r.status === 'approved_by_hod').length;
-  const approvedCount = examResults.filter(r => r.status === 'approved_by_dean').length;
+  const pendingCount = examResults.filter(r => r.status === 'submitted').length;
+  const hodApprovedCount = examResults.filter(r => r.status === 'approved_by_hod').length;
   const rejectedCount = examResults.filter(r => r.status === 'rejected').length;
+  const deanApprovedCount = examResults.filter(r => r.status === 'approved_by_dean').length;
 
   const getStatusLabel = (status) => {
     const labels = {
       draft: '📝 Draft',
-      submitted: '⏳ With HOD',
-      approved_by_hod: '📋 Pending Dean Approval',
+      submitted: '⏳ Submitted - Pending HOD',
+      approved_by_hod: '📋 HOD Approved (Waiting Dean)',
       approved_by_dean: '✅ Dean Approved',
       rejected: '❌ Rejected',
     };
@@ -361,15 +297,18 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
   };
 
   return (
-    <div className="dean-section">
-      <div className="dean-section-header">
-        <h2 className="dean-section-title">📝 Exam Results Approval</h2>
+    <div className="hod-section">
+      <div className="hod-section-header">
+        <h2 className="hod-section-title">📝 Exam Results Approval</h2>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           <span style={{ padding: '4px 12px', background: '#fff3e0', color: '#e65100', borderRadius: '12px', fontSize: '12px', fontWeight: '600' }}>
-            ⏳ Pending Dean: {pendingCount}
+            ⏳ Pending: {pendingCount}
+          </span>
+          <span style={{ padding: '4px 12px', background: '#e3f2fd', color: '#1565c0', borderRadius: '12px', fontSize: '12px', fontWeight: '600' }}>
+            📋 With Dean: {hodApprovedCount}
           </span>
           <span style={{ padding: '4px 12px', background: '#e8f5e9', color: '#2e7d32', borderRadius: '12px', fontSize: '12px', fontWeight: '600' }}>
-            ✅ Approved: {approvedCount}
+            ✅ Dean Approved: {deanApprovedCount}
           </span>
           <span style={{ padding: '4px 12px', background: '#ffebee', color: '#c62828', borderRadius: '12px', fontSize: '12px', fontWeight: '600' }}>
             ❌ Rejected: {rejectedCount}
@@ -391,8 +330,9 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
           style={{ padding: '8px 12px', border: '1px solid #ddd', borderRadius: '6px', background: 'white' }}
         >
           <option value="all">📋 All ({examResults.length})</option>
-          <option value="approved_by_hod">⏳ Pending Dean ({pendingCount})</option>
-          <option value="approved_by_dean">✅ Approved ({approvedCount})</option>
+          <option value="submitted">⏳ Pending HOD ({pendingCount})</option>
+          <option value="approved_by_hod">📋 With Dean ({hodApprovedCount})</option>
+          <option value="approved_by_dean">✅ Dean Approved ({deanApprovedCount})</option>
           <option value="rejected">❌ Rejected ({rejectedCount})</option>
         </select>
         <button
@@ -403,7 +343,7 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
         </button>
       </div>
 
-      <div className="dean-card">
+      <div className="hod-card">
         {loading ? (
           <div style={{ textAlign: 'center', padding: '40px' }}>
             <div className="lecturer-spinner"></div>
@@ -412,8 +352,7 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
         ) : examResults.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '40px', color: '#999' }}>
             <span style={{ fontSize: '48px', display: 'block', marginBottom: '12px' }}>📭</span>
-            <p>No exam results pending your approval</p>
-            <p style={{ fontSize: '13px', color: '#bbb' }}>Results will appear here after HOD approval</p>
+            <p>No exam results found for your department</p>
           </div>
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -473,10 +412,12 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
                       borderRadius: '12px',
                       fontSize: '12px',
                       fontWeight: '600',
-                      background: r.status === 'approved_by_hod' ? '#fff3e0' :
+                      background: r.status === 'submitted' ? '#fff3e0' :
+                                r.status === 'approved_by_hod' ? '#e3f2fd' :
                                 r.status === 'approved_by_dean' ? '#e8f5e9' :
                                 r.status === 'rejected' ? '#ffebee' : '#f5f5f5',
-                      color: r.status === 'approved_by_hod' ? '#e65100' :
+                      color: r.status === 'submitted' ? '#e65100' :
+                             r.status === 'approved_by_hod' ? '#1565c0' :
                              r.status === 'approved_by_dean' ? '#2e7d32' :
                              r.status === 'rejected' ? '#c62828' : '#666'
                     }}>
@@ -499,13 +440,13 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
                       >
                         👁️ View Marks
                       </button>
-                      {r.status === 'approved_by_hod' && (
+                      {(r.status === 'submitted') && (
                         <>
                           <button
                             onClick={() => {
                               setSelectedExam(r);
                               setShowModal(true);
-                              setDeanNotes('');
+                              setHodNotes('');
                             }}
                             style={{
                               padding: '4px 12px',
@@ -524,7 +465,7 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
                             onClick={() => {
                               setSelectedExam(r);
                               setShowModal(true);
-                              setDeanNotes('');
+                              setHodNotes('');
                             }}
                             style={{
                               padding: '4px 12px',
@@ -539,29 +480,13 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
                           >
                             ❌ Reject
                           </button>
-                          <button
-                            onClick={() => {
-                              setSelectedExam(r);
-                              setShowModal(true);
-                              setDeanNotes('');
-                            }}
-                            style={{
-                              padding: '4px 12px',
-                              background: '#ff9800',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '4px',
-                              cursor: 'pointer',
-                              fontSize: '12px',
-                              fontWeight: '600'
-                            }}
-                          >
-                            🔄 Return
-                          </button>
                         </>
                       )}
+                      {r.status === 'approved_by_hod' && (
+                        <span style={{ color: '#f57c00', fontWeight: '600' }}>⏳ Waiting for Dean</span>
+                      )}
                       {r.status === 'approved_by_dean' && (
-                        <span style={{ color: '#2e7d32', fontWeight: '600' }}>✅ Final Approved</span>
+                        <span style={{ color: '#2e7d32', fontWeight: '600' }}>✅ Dean Approved</span>
                       )}
                     </div>
                   </td>
@@ -572,7 +497,7 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
         )}
       </div>
 
-      {/* Dean Action Modal */}
+      {/* HOD Action Modal */}
       {showModal && selectedExam && (
         <div
           style={{
@@ -614,16 +539,15 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
               <p><strong>Semester:</strong> {selectedExam.semester}</p>
               <p><strong>Students:</strong> {selectedExam.total_students}</p>
               <p><strong>Average Score:</strong> {selectedExam.average_score?.toFixed(2)}%</p>
-              <p><strong>HOD Notes:</strong> {selectedExam.hod_notes || 'None'}</p>
             </div>
             <div style={{ marginBottom: '12px' }}>
               <label style={{ display: 'block', fontWeight: '600', marginBottom: '4px' }}>
-                Dean's Notes (Required for Reject/Return)
+                HOD Notes (Required for Rejection)
               </label>
               <textarea
-                value={deanNotes}
-                onChange={(e) => setDeanNotes(e.target.value)}
-                placeholder="Add your notes or feedback..."
+                value={hodNotes}
+                onChange={(e) => setHodNotes(e.target.value)}
+                placeholder="Add your notes or rejection reason..."
                 rows={4}
                 disabled={processing}
                 style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: '6px', resize: 'vertical' }}
@@ -638,30 +562,15 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
                 Cancel
               </button>
               <button
-                onClick={() => handleReturnToHOD(selectedExam.id)}
-                disabled={processing || !deanNotes.trim()}
-                style={{
-                  padding: '8px 20px',
-                  background: '#ff9800',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '6px',
-                  cursor: processing || !deanNotes.trim() ? 'not-allowed' : 'pointer',
-                  fontWeight: '600'
-                }}
-              >
-                🔄 Return to HOD
-              </button>
-              <button
                 onClick={() => handleReject(selectedExam.id)}
-                disabled={processing || !deanNotes.trim()}
+                disabled={processing || !hodNotes.trim()}
                 style={{
                   padding: '8px 20px',
                   background: '#f44336',
                   color: 'white',
                   border: 'none',
                   borderRadius: '6px',
-                  cursor: processing || !deanNotes.trim() ? 'not-allowed' : 'pointer',
+                  cursor: processing || !hodNotes.trim() ? 'not-allowed' : 'pointer',
                   fontWeight: '600'
                 }}
               >
@@ -680,7 +589,7 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
                   fontWeight: '600'
                 }}
               >
-                ✅ Final Approve
+                ✅ Approve & Send to Dean
               </button>
             </div>
           </div>
@@ -808,4 +717,4 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
   );
 };
 
-export default DeanExamResults;
+export default HODExamResultsApproval;

@@ -1,4 +1,4 @@
-// HODDashboard.jsx - FIXED NOTIFICATION COUNTER
+// HODDashboard.jsx - COMPLETE WITH EXAM RESULTS TAB
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext';
@@ -12,6 +12,7 @@ import HODLeaveRequests from './HOD/HODLeaveRequests';
 import HODComplaints from './HOD/HODComplaints';
 import HODTimetable from './HOD/HODTimetable';
 import HODExamModeration from './HOD/HODExamModeration';
+import HODExamResultsApproval from './HOD/HODExamResultsApproval';
 import HODStaffAppraisal from './HOD/HODStaffAppraisal';
 import HODBudgetRequests from './HOD/HODBudgetRequests';
 import HODAttendance from './HOD/HODAttendance';
@@ -903,6 +904,12 @@ const HODDashboard = () => {
       case 'complaints': return <HODComplaints {...commonProps} />;
       case 'timetable': return <HODTimetable {...commonProps} />;
       case 'exam-moderation': return <HODExamModeration {...commonProps} />;
+      case 'exam-results': return <HODExamResultsApproval 
+        departmentCode={departmentCode} 
+        courses={courses} 
+        fetchHODData={fetchHODData} 
+        setStats={setStats} 
+      />;
       case 'appraisal': return <HODStaffAppraisal {...commonProps} />;
       case 'budget': return <HODBudgetRequests {...commonProps} />;
       case 'attendance': return <HODAttendance {...commonProps} />;
@@ -920,6 +927,7 @@ const HODDashboard = () => {
     { id: 'complaints', label: '💬 Complaints' },
     { id: 'timetable', label: '📅 Timetable' },
     { id: 'exam-moderation', label: '📝 Exam Moderation' },
+    { id: 'exam-results', label: '📝 Exam Results Approval' },
     { id: 'appraisal', label: '⭐ Staff Appraisal' },
     { id: 'budget', label: '💰 Budget' },
     { id: 'attendance', label: '✅ Attendance' },
@@ -954,35 +962,35 @@ const HODDashboard = () => {
                 </span>
               )}
             </button>
-{showNotifications && (
-  <HODNotifications
-    notifications={notifications}
-    unreadCount={unreadCount}
-    onMarkRead={markNotificationRead}
-    onMarkAllRead={markAllNotificationsRead}
-    onClearAll={clearAllNotifications}
-    onNotificationClick={(notif) => {
-      setShowNotifications(false);
-      markNotificationRead(notif.id);
+            {showNotifications && (
+              <HODNotifications
+                notifications={notifications}
+                unreadCount={unreadCount}
+                onMarkRead={markNotificationRead}
+                onMarkAllRead={markAllNotificationsRead}
+                onClearAll={clearAllNotifications}
+                onNotificationClick={(notif) => {
+                  setShowNotifications(false);
+                  markNotificationRead(notif.id);
 
-      if (notif.id?.startsWith('leave-') || notif.type === 'leave_pending') {
-        setActiveTab('leave');
-        return;
-      }
+                  if (notif.id?.startsWith('leave-') || notif.type === 'leave_pending') {
+                    setActiveTab('leave');
+                    return;
+                  }
 
-      // Open chat for normal messages
-      openChatWithUser(
-        {
-          email: notif.sender_email,
-          name: notif.sender_name,
-          display_name: notif.sender_name,
-        },
-        notif.sender_role || 'user'
-      );
-    }}
-    onClose={() => setShowNotifications(false)}
-  />
-)}
+                  // Open chat for normal messages
+                  openChatWithUser(
+                    {
+                      email: notif.sender_email,
+                      name: notif.sender_name,
+                      display_name: notif.sender_name,
+                    },
+                    notif.sender_role || 'user'
+                  );
+                }}
+                onClose={() => setShowNotifications(false)}
+              />
+            )}
           </div>
 
           <div className="hod-user-info">

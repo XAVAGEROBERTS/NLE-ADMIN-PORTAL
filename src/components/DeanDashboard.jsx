@@ -545,7 +545,7 @@ const DeanDashboard = () => {
       case 'leave-approvals': return <DeanLeaveApprovals {...commonProps} />;
       case 'appeals': return <DeanAppeals {...commonProps}facultyId={facultyId}  />;
       case 'timetable': return <DeanTimetable {...commonProps} />;
-      case 'exam-results': return <DeanExamResults {...commonProps} />;
+      case 'exam-results': return <DeanExamResults {...commonProps} facultyId={facultyId}/>;
       case 'appraisals': return <DeanAppraisals {...commonProps} />;
       case 'budget': return <DeanBudget {...commonProps} />;
       case 'curriculum': return <DeanCurriculum {...commonProps} />;

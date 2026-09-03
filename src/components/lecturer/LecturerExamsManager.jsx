@@ -1,4 +1,4 @@
-// LecturerExamsManager.jsx - COMPLETE WITH TEXT ANSWERS MODAL
+// LecturerExamsManager.jsx - COMPLETE WITH TEXT ANSWERS MODAL (USING COURSE ALLOCATIONS)
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../services/supabase';
 
@@ -81,23 +81,134 @@ const LecturerExamsManager = ({ profile, courses, programs, programsLoading, sho
     }
   }, [profile?.id]);
 
-  // Filter courses when program changes
-  useEffect(() => {
-    if (!examTargetProgram) {
+// Filter courses when program changes - USING ALLOCATIONS (FIXED)
+useEffect(() => {
+  const fetchAllocatedCourses = async () => {
+    if (!examTargetProgram || !profile?.id) {
       setExamFilteredCourses([]);
       return;
     }
-    const selectedProg = programs.find((p) => p.id === examTargetProgram);
-    if (!selectedProg?.code) {
-      setExamFilteredCourses([]);
-      return;
-    }
-    const filtered = courses.filter(
-      (course) => course.program_code === selectedProg.code && course.is_active,
-    );
-    setExamFilteredCourses(filtered);
-  }, [examTargetProgram, programs, courses]);
 
+    try {
+      // Get the selected program
+      const selectedProg = programs.find((p) => p.id === examTargetProgram);
+      if (!selectedProg) {
+        console.error("❌ Selected program not found");
+        setExamFilteredCourses([]);
+        return;
+      }
+
+      console.log(`🔍 Fetching allocated courses for lecturer ${profile.id}`);
+      console.log(`📋 Selected program:`, selectedProg);
+
+      // First, get the course allocations
+      const { data: allocations, error: allocError } = await supabase
+        .from("course_allocations")
+        .select(`
+          id,
+          course_id,
+          academic_year,
+          semester,
+          status,
+          lecturer_id,
+          courses:course_id (
+            id,
+            course_code,
+            course_name,
+            department_code,
+            program,
+            program_code,
+            is_active,
+            credits,
+            year,
+            semester
+          )
+        `)
+        .eq("lecturer_id", profile.id)
+        .eq("status", "approved");
+
+      if (allocError) {
+        console.error("❌ Error fetching allocations:", allocError);
+        setExamFilteredCourses([]);
+        return;
+      }
+
+      if (!allocations || allocations.length === 0) {
+        console.log("⚠️ No approved allocations found");
+        setExamFilteredCourses([]);
+        return;
+      }
+
+      console.log(`📋 Found ${allocations.length} approved allocations`);
+      console.log(`📋 Allocations details:`, allocations);
+
+      // Extract all courses from allocations
+      const allAllocatedCourses = allocations
+        .map(a => a.courses)
+        .filter(course => course && course.is_active);
+
+      console.log(`📚 All active allocated courses (${allAllocatedCourses.length}):`, 
+        allAllocatedCourses.map(c => ({
+          id: c.id,
+          code: c.course_code,
+          name: c.course_name,
+          program: c.program,
+          program_code: c.program_code,
+          dept: c.department_code
+        }))
+      );
+
+      // If no program filtering is possible, show all allocated courses
+      if (!allAllocatedCourses.length) {
+        setExamFilteredCourses([]);
+        return;
+      }
+
+      // Check if courses have program information
+      const hasProgramInfo = allAllocatedCourses.some(c => c.program || c.program_code);
+      
+      if (!hasProgramInfo) {
+        console.log("ℹ️ Courses don't have program info, showing all allocated courses");
+        setExamFilteredCourses(allAllocatedCourses);
+        return;
+      }
+
+      // Try to match by program - check multiple possible fields
+      const filteredCourses = allAllocatedCourses.filter(course => {
+        // Check all possible program fields
+        const courseProgram = course.program || course.program_code || '';
+        const selectedProgramName = selectedProg.name || '';
+        const selectedProgramCode = selectedProg.code || '';
+        
+        // Case-insensitive comparison
+        const courseProgramLower = courseProgram.toLowerCase();
+        const selectedNameLower = selectedProgramName.toLowerCase();
+        const selectedCodeLower = selectedProgramCode.toLowerCase();
+        
+        return courseProgramLower === selectedNameLower || 
+               courseProgramLower === selectedCodeLower ||
+               courseProgramLower.includes(selectedCodeLower) ||
+               selectedNameLower.includes(courseProgramLower);
+      });
+
+      console.log(`🎯 Filtered to ${filteredCourses.length} courses matching program ${selectedProg.code}`);
+      
+      // If filtering resulted in no courses, show all allocated courses instead
+      if (filteredCourses.length === 0) {
+        console.log("⚠️ No courses match the selected program, showing all allocated courses");
+        setExamFilteredCourses(allAllocatedCourses);
+      } else {
+        setExamFilteredCourses(filteredCourses);
+      }
+      
+    } catch (err) {
+      console.error("❌ Error in fetchAllocatedCourses:", err);
+      setExamFilteredCourses([]);
+    }
+  };
+
+  fetchAllocatedCourses();
+}, [examTargetProgram, profile?.id, programs]);
   // ===== REAL-TIME TIME VALIDATION FOR NEW EXAM =====
   useEffect(() => {
     validateTimes(newExam.start_time, newExam.end_time, setTimeValidationError);
@@ -127,124 +238,184 @@ const LecturerExamsManager = ({ profile, courses, programs, programsLoading, sho
     }
   };
 
-const fetchExams = async () => {
-  if (!profile?.id) return;
-  
-  setLoading(true);
-  console.log("🔍 Fetching exams for lecturer:", profile.id);
-
-  try {
-    // Get courses taught by this lecturer
-    let courseIds = [];
+  // ==================== FETCH EXAMS (USING COURSE ALLOCATIONS) ====================
+  const fetchExams = async () => {
+    if (!profile?.id) {
+      console.warn("⚠️ No profile ID available");
+      return;
+    }
     
-    const { data: lecturerCourses, error: lecturerCoursesError } = await supabase
-      .from("courses")
-      .select("id")
-      .eq("lecturer_id", profile.id);
+    setLoading(true);
+    console.log("🔍 Fetching exams for lecturer:", profile.id);
 
-    if (lecturerCoursesError) {
-      console.error("Error fetching lecturer courses:", lecturerCoursesError);
-    } else if (lecturerCourses?.length > 0) {
-      courseIds = lecturerCourses.map((c) => c.id);
-      console.log(`Found ${courseIds.length} courses assigned to lecturer`);
-    }
+    try {
+      // STEP 1: Get approved course allocations for this lecturer
+      const { data: allocations, error: allocationsError } = await supabase
+        .from("course_allocations")
+        .select(`
+          id,
+          course_id,
+          status,
+          academic_year,
+          semester,
+          courses:course_id (
+            id,
+            course_code,
+            course_name,
+            department_code,
+            is_active,
+            program_code,
+            credits
+          )
+        `)
+        .eq("lecturer_id", profile.id)
+        .eq("status", "approved");
 
-    if (courseIds.length === 0) {
-      console.log("No courses found for this lecturer");
-      setExams([]);
-      setLoading(false);
-      return;
-    }
-
-    // Fetch exams with course details - REMOVE ORDER BY HERE, we'll sort manually
-    const { data: examsData, error: examsError } = await supabase
-      .from("examinations")
-      .select(`
-        *,
-        courses (
-          course_code,
-          course_name,
-          department_code
-        )
-      `)
-      .in("course_id", courseIds);
-
-    if (examsError) {
-      console.error("Error fetching exams:", examsError);
-      setExams([]);
-      setLoading(false);
-      return;
-    }
-
-    // Get submission stats for each exam
-    const examIds = (examsData || []).map((e) => e.id);
-    const { data: submissions, error: submissionsError } = await supabase
-      .from("exam_submissions")
-      .select("exam_id, status")
-      .in("exam_id", examIds);
-
-    if (submissionsError) {
-      console.warn("Error fetching submission stats:", submissionsError);
-    }
-
-    const statsMap = {};
-    examIds.forEach((id) => {
-      statsMap[id] = { submitted: 0, graded: 0, pending: 0 };
-    });
-
-    (submissions || []).forEach((sub) => {
-      const stats = statsMap[sub.exam_id];
-      if (stats) {
-        if (sub.status === "submitted" || sub.status === "graded") {
-          stats.submitted++;
-        }
-        if (sub.status === "graded") {
-          stats.graded++;
-        }
-        stats.pending = stats.submitted - stats.graded;
+      if (allocationsError) {
+        console.error("❌ Error fetching course allocations:", allocationsError);
+        setExams([]);
+        setLoading(false);
+        return;
       }
-    });
 
-    // Process exams with stats
-    const now = new Date();
-    const processedExams = (examsData || []).map((exam) => {
-      const startDate = new Date(exam.start_time);
-      const endDate = new Date(exam.end_time);
-      const isActive = now >= startDate && now <= endDate;
+      console.log(`📚 Course allocations found: ${allocations?.length || 0}`);
 
-      return {
-        ...exam,
-        exam_id: exam.id,
-        courses: exam.courses || {},
-        submitted: statsMap[exam.id]?.submitted || 0,
-        graded: statsMap[exam.id]?.graded || 0,
-        pending: statsMap[exam.id]?.pending || 0,
-        isActive: isActive,
-        _startDate: startDate,
-        _endDate: endDate,
-      };
-    });
+      if (!allocations || allocations.length === 0) {
+        console.warn("⚠️ No approved course allocations found for this lecturer");
+        setExams([]);
+        setLoading(false);
+        return;
+      }
 
-    // ⭐ CRITICAL: Sort exams by start_time - LATEST FIRST (newest on top)
-    const sortedExams = processedExams.sort((a, b) => {
-      // Active exams first (currently ongoing)
-      if (a.isActive && !b.isActive) return -1;
-      if (!a.isActive && b.isActive) return 1;
+      // Extract course IDs from allocations
+      const courseIds = allocations
+        .map(a => a.course_id)
+        .filter(id => id);
+
+      console.log(`📋 Course IDs from allocations:`, courseIds);
+
+      if (courseIds.length === 0) {
+        console.warn("⚠️ No valid course IDs found in allocations");
+        setExams([]);
+        setLoading(false);
+        return;
+      }
+
+      // STEP 2: Fetch exams for those courses
+      const { data: examsData, error: examsError } = await supabase
+        .from("examinations")
+        .select(`
+          *,
+          courses:course_id (
+            id,
+            course_code,
+            course_name,
+            department_code,
+            program_code
+          )
+        `)
+        .in("course_id", courseIds);
+
+      if (examsError) {
+        console.error("❌ Error fetching exams:", examsError);
+        setExams([]);
+        setLoading(false);
+        return;
+      }
+
+      console.log(`📝 Exams found: ${examsData?.length || 0}`);
+
+      if (!examsData || examsData.length === 0) {
+        console.log("ℹ️ No exams found for these courses");
+        setExams([]);
+        setLoading(false);
+        return;
+      }
+
+      // STEP 3: Get submission stats for each exam
+      const examIds = examsData.map((e) => e.id);
+      const { data: submissions, error: submissionsError } = await supabase
+        .from("exam_submissions")
+        .select("exam_id, status")
+        .in("exam_id", examIds);
+
+      if (submissionsError) {
+        console.warn("⚠️ Error fetching submission stats:", submissionsError);
+      }
+
+      const statsMap = {};
+      examIds.forEach((id) => {
+        statsMap[id] = { submitted: 0, graded: 0, pending: 0 };
+      });
+
+      (submissions || []).forEach((sub) => {
+        const stats = statsMap[sub.exam_id];
+        if (stats) {
+          if (sub.status === "submitted" || sub.status === "graded") {
+            stats.submitted++;
+          }
+          if (sub.status === "graded") {
+            stats.graded++;
+          }
+          stats.pending = stats.submitted - stats.graded;
+        }
+      });
+
+      // STEP 4: Process exams with stats and status
+      const now = new Date();
+      const processedExams = examsData.map((exam) => {
+        const startDate = new Date(exam.start_time);
+        const endDate = new Date(exam.end_time);
+        const isActive = now >= startDate && now <= endDate;
+
+        // Find the allocation for this course
+        const allocation = allocations.find(a => a.course_id === exam.course_id);
+
+        return {
+          ...exam,
+          courses: exam.courses || {},
+          exam_id: exam.id,
+          isActive: isActive,
+          _startDate: startDate,
+          _endDate: endDate,
+          submitted: statsMap[exam.id]?.submitted || 0,
+          graded: statsMap[exam.id]?.graded || 0,
+          pending: statsMap[exam.id]?.pending || 0,
+          // Include allocation info
+          allocation_academic_year: allocation?.academic_year,
+          allocation_semester: allocation?.semester,
+          allocation_status: allocation?.status,
+        };
+      });
+
+      // STEP 5: Sort exams - active first, then by start time (latest first)
+      const sortedExams = processedExams.sort((a, b) => {
+        // Active exams first
+        if (a.isActive && !b.isActive) return -1;
+        if (!a.isActive && b.isActive) return 1;
+        
+        // Then sort by start time - latest first
+        return new Date(b.start_time) - new Date(a.start_time);
+      });
+
+      console.log(`✅ Successfully loaded ${sortedExams.length} exams`);
+      console.log(`📊 Exam status breakdown:`, {
+        total: sortedExams.length,
+        active: sortedExams.filter(e => e.isActive).length,
+        upcoming: sortedExams.filter(e => !e.isActive && new Date(e.start_time) > now).length,
+        ended: sortedExams.filter(e => !e.isActive && new Date(e.end_time) < now).length
+      });
       
-      // Then sort by start time - latest first
-      return new Date(b.start_time) - new Date(a.start_time);
-    });
+      setExams(sortedExams);
+      
+    } catch (error) {
+      console.error("❌ Unexpected error in fetchExams:", error);
+      setExams([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    console.log(`✅ Found ${sortedExams.length} exams, sorted by latest first`);
-    setExams(sortedExams);
-    
-  } catch (error) {
-    console.error("Error in fetchExams:", error);
-    setExams([]);
-  } finally {
-    setLoading(false);
-  }
-};
   // ==================== FETCH EXAM SUBMISSIONS ====================
   
   const fetchExamSubmissions = async (examId) => {
@@ -306,7 +477,7 @@ const fetchExams = async () => {
           registration_number: "N/A",
         };
 
-        // ⭐ CRITICAL: Generate download URLs for answer files
+        // Generate download URLs for answer files
         const answerFileUrls = (sub.answer_files || [])
           .map((filePath) => {
             if (!filePath) return null;
@@ -381,7 +552,6 @@ const fetchExams = async () => {
       let bucketName = bucket || "assignments";
       let filePath = fileUrl;
 
-      // If a specific bucket was passed, use it
       if (bucket) {
         bucketName = bucket;
       } else if (fileUrl.includes("/storage/v1/object/public/")) {
@@ -448,7 +618,6 @@ const fetchExams = async () => {
       } catch (fetchError) {
         console.warn("⚠️ Fetch error, trying storage API:", fetchError.message);
         
-        // Try Supabase storage API
         try {
           const { data, error: downloadError } = await supabase.storage
             .from(bucketName)
@@ -485,7 +654,6 @@ const fetchExams = async () => {
   // ==================== TEXT ANSWERS EXPORT ====================
   
   const exportTextAnswersToWord = async () => {
-    // Filter only submissions with text answers
     const textSubmissions = examSubmissions.filter(
       (sub) => sub.answer_text && sub.answer_text.length > 0
     );
@@ -498,15 +666,12 @@ const fetchExams = async () => {
     setExportingTextAnswers(true);
 
     try {
-      // Dynamically import docx
       const { Document, Packer, Paragraph, TextRun, AlignmentType } = await import('docx');
 
-      // Build the document
       const doc = new Document({
         sections: [{
           properties: {},
           children: [
-            // Title
             new Paragraph({
               children: [
                 new TextRun({
@@ -519,8 +684,6 @@ const fetchExams = async () => {
               alignment: AlignmentType.CENTER,
               spacing: { after: 400 },
             }),
-
-            // Exam Info
             new Paragraph({
               children: [
                 new TextRun({
@@ -531,7 +694,6 @@ const fetchExams = async () => {
               ],
               spacing: { after: 200 },
             }),
-
             new Paragraph({
               children: [
                 new TextRun({
@@ -542,8 +704,6 @@ const fetchExams = async () => {
               ],
               spacing: { after: 400 },
             }),
-
-            // Separator line
             new Paragraph({
               children: [
                 new TextRun({
@@ -554,12 +714,9 @@ const fetchExams = async () => {
               ],
               spacing: { after: 400 },
             }),
-
-            // Each submission
             ...textSubmissions.flatMap((sub, index) => {
               const children = [];
 
-              // Student header
               children.push(
                 new Paragraph({
                   children: [
@@ -574,7 +731,6 @@ const fetchExams = async () => {
                 })
               );
 
-              // Student info
               children.push(
                 new Paragraph({
                   children: [
@@ -589,7 +745,6 @@ const fetchExams = async () => {
                 })
               );
 
-              // Answer text
               children.push(
                 new Paragraph({
                   children: [
@@ -604,7 +759,6 @@ const fetchExams = async () => {
                 })
               );
 
-              // Answer content with preserved formatting
               const answerLines = (sub.answer_text || "").split("\n");
               answerLines.forEach((line) => {
                 if (line.trim() === "") {
@@ -636,7 +790,6 @@ const fetchExams = async () => {
                 }
               });
 
-              // Status
               const statusText = sub.status === "graded" 
                 ? `✓ Graded (${sub.total_marks_obtained || 0} marks)` 
                 : "⏳ Pending Grading";
@@ -655,7 +808,6 @@ const fetchExams = async () => {
                 })
               );
 
-              // Separator between submissions
               if (index < textSubmissions.length - 1) {
                 children.push(
                   new Paragraph({
@@ -674,8 +826,6 @@ const fetchExams = async () => {
 
               return children;
             }),
-
-            // Footer
             new Paragraph({
               children: [
                 new TextRun({
@@ -692,10 +842,8 @@ const fetchExams = async () => {
         }],
       });
 
-      // Generate the document
       const blob = await Packer.toBlob(doc);
       
-      // Download the file
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
       link.download = `Text_Answers_${selectedExamForGrading?.title || "exam"}_${new Date().toISOString().split("T")[0]}.docx`;
@@ -807,128 +955,152 @@ const fetchExams = async () => {
     return true;
   };
 
- const handleAddExam = async () => {
-  // ===== VALIDATION =====
-  if (!examTargetProgram) {
-    setExamCohortError("Please select a Program");
-    return;
-  }
-  if (!examTargetCohort.academic_year.trim()) {
-    setExamCohortError("Please enter Academic Year (e.g. 2025/2029)");
-    return;
-  }
-  if (!newExam.course_id) {
-    showToast("Please select a Course", "error");
-    return;
-  }
-  if (!newExam.title?.trim()) {
-    showToast("Please enter an exam title", "error");
-    return;
-  }
-  if (!newExam.start_time || !newExam.end_time) {
-    showToast("Please set both start and end time", "error");
-    return;
-  }
+  // ===== HANDLE ADD EXAM =====
+  const handleAddExam = async () => {
+    // ===== VALIDATION =====
+    if (!examTargetProgram) {
+      setExamCohortError("Please select a Program");
+      return;
+    }
+    if (!examTargetCohort.academic_year.trim()) {
+      setExamCohortError("Please enter Academic Year (e.g. 2025/2029)");
+      return;
+    }
+    if (!newExam.course_id) {
+      showToast("Please select a Course", "error");
+      return;
+    }
+    if (!newExam.title?.trim()) {
+      showToast("Please enter an exam title", "error");
+      return;
+    }
+    if (!newExam.start_time || !newExam.end_time) {
+      showToast("Please set both start and end time", "error");
+      return;
+    }
 
-  // ===== VALIDATE END TIME IS AFTER START TIME =====
-  if (!validateExamTimes(newExam.start_time, newExam.end_time)) {
-    return;
-  }
+    // ===== VERIFY COURSE ALLOCATION =====
+    try {
+      const { data: allocation, error: allocationError } = await supabase
+        .from("course_allocations")
+        .select("id, status, academic_year, semester")
+        .eq("course_id", newExam.course_id)
+        .eq("lecturer_id", profile.id)
+        .eq("status", "approved")
+        .maybeSingle();
 
-  try {
-    // Upload files if needed
-    let uploadedExamFiles = [];
-    if (newExam.submission_type === "file" || newExam.submission_type === "both") {
-      if (examFiles.length > 0) {
-        uploadedExamFiles = await uploadExamFiles(examFiles);
+      if (allocationError) {
+        console.error("Error checking allocation:", allocationError);
+        showToast("Failed to verify course allocation", "error");
+        return;
       }
-    }
 
-    // Calculate duration
-    const start = new Date(newExam.start_time);
-    const end = new Date(newExam.end_time);
-    const durationMinutes = Math.round((end - start) / 60000);
+      if (!allocation) {
+        showToast("⚠️ You are not allocated to teach this course. Please contact the HOD.", "error");
+        return;
+      }
 
-    if (durationMinutes <= 0) {
-      showToast("End time must be after start time", "error");
+      console.log("✅ Verified allocation:", allocation);
+
+    } catch (err) {
+      console.error("Error in allocation verification:", err);
+      showToast("Error verifying course allocation", "error");
       return;
     }
 
-    // ===== BUILD PAYLOAD THAT MATCHES THE SCHEMA EXACTLY =====
-    const examData = {
-      // Required fields
-      course_id: newExam.course_id,
-      title: newExam.title.trim(),
-      start_time: new Date(newExam.start_time).toISOString(),
-      end_time: new Date(newExam.end_time).toISOString(),
-      duration_minutes: durationMinutes,
-      total_marks: Number(newExam.total_marks) || 100,
-
-      // Optional fields
-      description: newExam.description?.trim() || null,
-      instructions: "Complete all questions within the given time frame.",
-      exam_type: newExam.exam_type || "written",
-      submission_type: newExam.submission_type || "both",
-      status: "published",
-      venue: newExam.venue?.trim() || null,
-      location: newExam.venue?.trim() || null,          // you have both venue & location
-      passing_marks: Math.round((Number(newExam.total_marks) || 100) * 0.4),
-
-      // Targeting
-      target_academic_year: examTargetCohort.academic_year.trim(),
-      target_year_of_study: Number(examTargetCohort.year_of_study) || 1,
-      target_semester: Number(examTargetCohort.semester) || 1,
-      target_program_id: examTargetProgram,
-
-      // Files
-      exam_files: uploadedExamFiles.length > 0 ? uploadedExamFiles : [],
-    };
-
-    console.log("📤 Sending exam data:", examData);
-
-    const { data, error } = await supabase
-      .from("examinations")
-      .insert([examData])
-      .select()
-      .single();
-
-    if (error) {
-      console.error("❌ Supabase insert error:", error);
-      showToast("Error: " + (error.message || error.details || "Failed to schedule exam"), "error");
+    // ===== VALIDATE END TIME IS AFTER START TIME =====
+    if (!validateExamTimes(newExam.start_time, newExam.end_time)) {
       return;
     }
 
-    console.log("✅ Exam created successfully:", data);
-    showToast("✅ Exam scheduled successfully!", "success");
+    try {
+      // Upload files if needed
+      let uploadedExamFiles = [];
+      if (newExam.submission_type === "file" || newExam.submission_type === "both") {
+        if (examFiles.length > 0) {
+          uploadedExamFiles = await uploadExamFiles(examFiles);
+        }
+      }
 
-    // Reset form
-    setShowExamsModal(false);
-    setNewExam({
-      course_id: "",
-      title: "",
-      description: "",
-      exam_type: "written",
-      submission_type: "both",
-      start_time: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 16),
-      end_time: new Date(Date.now() + 25 * 60 * 60 * 1000).toISOString().slice(0, 16),
-      total_marks: 100,
-      venue: "",
-      status: "published",
-    });
-    setExamFiles([]);
-    setExamTargetProgram("");
-    setExamTargetCohort({ academic_year: "", year_of_study: 1, semester: 1 });
-    setExamCohortError("");
-    setTimeValidationError("");
-    
-    fetchExams();
+      // Calculate duration
+      const start = new Date(newExam.start_time);
+      const end = new Date(newExam.end_time);
+      const durationMinutes = Math.round((end - start) / 60000);
 
-  } catch (error) {
-    console.error("Error scheduling exam:", error);
-    showToast("Error: " + error.message, "error");
-  }
-};
+      if (durationMinutes <= 0) {
+        showToast("End time must be after start time", "error");
+        return;
+      }
 
+      // ===== BUILD PAYLOAD =====
+      const examData = {
+        course_id: newExam.course_id,
+        title: newExam.title.trim(),
+        start_time: new Date(newExam.start_time).toISOString(),
+        end_time: new Date(newExam.end_time).toISOString(),
+        duration_minutes: durationMinutes,
+        total_marks: Number(newExam.total_marks) || 100,
+        description: newExam.description?.trim() || null,
+        instructions: "Complete all questions within the given time frame.",
+        exam_type: newExam.exam_type || "written",
+        submission_type: newExam.submission_type || "both",
+        status: "published",
+        venue: newExam.venue?.trim() || null,
+        location: newExam.venue?.trim() || null,
+        passing_marks: Math.round((Number(newExam.total_marks) || 100) * 0.4),
+        target_academic_year: examTargetCohort.academic_year.trim(),
+        target_year_of_study: Number(examTargetCohort.year_of_study) || 1,
+        target_semester: Number(examTargetCohort.semester) || 1,
+        target_program_id: examTargetProgram,
+        exam_files: uploadedExamFiles.length > 0 ? uploadedExamFiles : [],
+      };
+
+      console.log("📤 Sending exam data:", examData);
+
+      const { data, error } = await supabase
+        .from("examinations")
+        .insert([examData])
+        .select()
+        .single();
+
+      if (error) {
+        console.error("❌ Supabase insert error:", error);
+        showToast("Error: " + (error.message || error.details || "Failed to schedule exam"), "error");
+        return;
+      }
+
+      console.log("✅ Exam created successfully:", data);
+      showToast("✅ Exam scheduled successfully!", "success");
+
+      // Reset form
+      setShowExamsModal(false);
+      setNewExam({
+        course_id: "",
+        title: "",
+        description: "",
+        exam_type: "written",
+        submission_type: "both",
+        start_time: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 16),
+        end_time: new Date(Date.now() + 25 * 60 * 60 * 1000).toISOString().slice(0, 16),
+        total_marks: 100,
+        venue: "",
+        status: "published",
+      });
+      setExamFiles([]);
+      setExamTargetProgram("");
+      setExamTargetCohort({ academic_year: "", year_of_study: 1, semester: 1 });
+      setExamCohortError("");
+      setTimeValidationError("");
+      
+      fetchExams();
+
+    } catch (error) {
+      console.error("Error scheduling exam:", error);
+      showToast("Error: " + error.message, "error");
+    }
+  };
+
+  // ===== HANDLE EDIT EXAM =====
   const handleEditExam = async () => {
     if (!editingExam) return;
     
@@ -980,8 +1152,8 @@ const fetchExams = async () => {
     }
   };
 
+  // ===== HANDLE DELETE EXAM =====
   const handleDeleteExam = async (examId) => {
-    // Allow deletion of any exam regardless of status
     const examToDelete = exams.find(e => e.id === examId);
     const status = examToDelete ? getExamStatus(examToDelete) : "unknown";
     
@@ -1727,133 +1899,133 @@ const fetchExams = async () => {
         </div>
       ) : (
         <div className="lecturer-courses-grid">
-   {exams.map((exam) => {
-  const status = getExamStatus(exam);
-  const startDate = new Date(exam.start_time);
-  const now = new Date();
-  const daysUntil = Math.ceil((startDate - now) / (1000 * 60 * 60 * 24));
-  const isPast = startDate < now;
-  
-  // Format relative time
-  let timeLabel = "";
-  if (status === "active") {
-    timeLabel = "🔴 ONGOING NOW";
-  } else if (isPast) {
-    timeLabel = `📅 ${startDate.toLocaleDateString()}`;
-  } else if (daysUntil === 0) {
-    timeLabel = "📅 TODAY";
-  } else if (daysUntil === 1) {
-    timeLabel = "📅 TOMORROW";
-  } else if (daysUntil < 7) {
-    timeLabel = `📅 In ${daysUntil} days`;
-  } else {
-    timeLabel = `📅 ${startDate.toLocaleDateString()}`;
-  }
+          {exams.map((exam) => {
+            const status = getExamStatus(exam);
+            const startDate = new Date(exam.start_time);
+            const now = new Date();
+            const daysUntil = Math.ceil((startDate - now) / (1000 * 60 * 60 * 24));
+            const isPast = startDate < now;
+            
+            // Format relative time
+            let timeLabel = "";
+            if (status === "active") {
+              timeLabel = "🔴 ONGOING NOW";
+            } else if (isPast) {
+              timeLabel = `📅 ${startDate.toLocaleDateString()}`;
+            } else if (daysUntil === 0) {
+              timeLabel = "📅 TODAY";
+            } else if (daysUntil === 1) {
+              timeLabel = "📅 TOMORROW";
+            } else if (daysUntil < 7) {
+              timeLabel = `📅 In ${daysUntil} days`;
+            } else {
+              timeLabel = `📅 ${startDate.toLocaleDateString()}`;
+            }
 
-  return (
-    <div key={exam.id} className="lecturer-course-card">
-      <div className="lecturer-course-header">
-        <div>
-          <h3>{exam.title}</h3>
-          <p style={{ fontSize: "14px", color: "#666", margin: "4px 0" }}>
-            {exam.courses?.course_code} - {exam.courses?.course_name}
-          </p>
-        </div>
-        <span className={`lecturer-status-badge ${status}`}>
-          {status.toUpperCase()}
-        </span>
-      </div>
-      
-      {/* ⭐ Time label - shows when exam is happening */}
-      <div style={{ 
-        fontSize: "13px", 
-        fontWeight: "bold",
-        color: status === "active" ? "#d32f2f" : "#1976d2",
-        margin: "4px 0 8px 0",
-        padding: "4px 12px",
-        background: status === "active" ? "#ffebee" : "#e3f2fd",
-        borderRadius: "4px",
-        display: "inline-block"
-      }}>
-        {timeLabel}
-      </div>
-      
-      <p style={{ margin: "8px 0", color: "#555" }}>{exam.description}</p>
+            return (
+              <div key={exam.id} className="lecturer-course-card">
+                <div className="lecturer-course-header">
+                  <div>
+                    <h3>{exam.title}</h3>
+                    <p style={{ fontSize: "14px", color: "#666", margin: "4px 0" }}>
+                      {exam.courses?.course_code} - {exam.courses?.course_name}
+                    </p>
+                  </div>
+                  <span className={`lecturer-status-badge ${status}`}>
+                    {status.toUpperCase()}
+                  </span>
+                </div>
+                
+                {/* Time label */}
+                <div style={{ 
+                  fontSize: "13px", 
+                  fontWeight: "bold",
+                  color: status === "active" ? "#d32f2f" : "#1976d2",
+                  margin: "4px 0 8px 0",
+                  padding: "4px 12px",
+                  background: status === "active" ? "#ffebee" : "#e3f2fd",
+                  borderRadius: "4px",
+                  display: "inline-block"
+                }}>
+                  {timeLabel}
+                </div>
+                
+                <p style={{ margin: "8px 0", color: "#555" }}>{exam.description}</p>
 
-      <div className="lecturer-course-details">
-        <span>⏰ {startDate.toLocaleTimeString()} - {new Date(exam.end_time).toLocaleTimeString()}</span>
-        <span>📊 {exam.total_marks} marks</span>
-        <span>📍 {exam.venue || "Online"}</span>
-      </div>
+                <div className="lecturer-course-details">
+                  <span>⏰ {startDate.toLocaleTimeString()} - {new Date(exam.end_time).toLocaleTimeString()}</span>
+                  <span>📊 {exam.total_marks} marks</span>
+                  <span>📍 {exam.venue || "Online"}</span>
+                </div>
 
-      <div style={{ fontSize: "13px", color: "#666", margin: "8px 0" }}>
-        <span>🎯 Y{exam.target_year_of_study || "?"} S{exam.target_semester || "?"}</span>
-        <span style={{ marginLeft: "15px" }}>
-          📝 {exam.submission_type === "text" ? "Text" : exam.submission_type === "file" ? "File" : "Both"}
-        </span>
-        {exam.exam_files?.length > 0 && (
-          <span style={{ marginLeft: "15px", color: "#1976d2" }}>
-            📎 {exam.exam_files.length} file(s)
-          </span>
-        )}
-      </div>
+                <div style={{ fontSize: "13px", color: "#666", margin: "8px 0" }}>
+                  <span>🎯 Y{exam.target_year_of_study || "?"} S{exam.target_semester || "?"}</span>
+                  <span style={{ marginLeft: "15px" }}>
+                    📝 {exam.submission_type === "text" ? "Text" : exam.submission_type === "file" ? "File" : "Both"}
+                  </span>
+                  {exam.exam_files?.length > 0 && (
+                    <span style={{ marginLeft: "15px", color: "#1976d2" }}>
+                      📎 {exam.exam_files.length} file(s)
+                    </span>
+                  )}
+                </div>
 
-      <div style={{ 
-        fontSize: "13px", 
-        margin: "8px 0", 
-        padding: "6px 12px", 
-        background: "#f8f9fa", 
-        borderRadius: "6px" 
-      }}>
-        <span>📤 Submitted: <strong>{exam.submitted || 0}</strong></span>
-        <span style={{ marginLeft: "12px" }}>✅ Graded: <strong>{exam.graded || 0}</strong></span>
-        {exam.pending > 0 && (
-          <span style={{ marginLeft: "12px", color: "#ef6c00" }}>
-            ⏳ Pending: <strong>{exam.pending}</strong>
-          </span>
-        )}
-      </div>
+                <div style={{ 
+                  fontSize: "13px", 
+                  margin: "8px 0", 
+                  padding: "6px 12px", 
+                  background: "#f8f9fa", 
+                  borderRadius: "6px" 
+                }}>
+                  <span>📤 Submitted: <strong>{exam.submitted || 0}</strong></span>
+                  <span style={{ marginLeft: "12px" }}>✅ Graded: <strong>{exam.graded || 0}</strong></span>
+                  {exam.pending > 0 && (
+                    <span style={{ marginLeft: "12px", color: "#ef6c00" }}>
+                      ⏳ Pending: <strong>{exam.pending}</strong>
+                    </span>
+                  )}
+                </div>
 
-      <div className="lecturer-course-actions">
-        {exam.submitted > 0 && (
-          <button
-            className="lecturer-course-btn"
-            onClick={() => handleViewExamSubmissions(exam)}
-            style={{ background: "#6f42c1", color: "white" }}
-          >
-            📝 Grade Submissions ({exam.submitted})
-          </button>
-        )}
-        <button
-          className="lecturer-course-btn"
-          onClick={() => {
-            setEditingExam(exam);
-            setEditExam({
-              title: exam.title || "",
-              description: exam.description || "",
-              start_time: exam.start_time || "",
-              end_time: exam.end_time || "",
-              venue: exam.venue || "",
-              status: exam.status || "published",
-              total_marks: exam.total_marks || 100,
-              exam_type: exam.exam_type || "online",
-              submission_type: exam.submission_type || "both",
-            });
-          }}
-        >
-          ✏️ Edit
-        </button>
-        <button
-          className="lecturer-course-btn"
-          onClick={() => handleDeleteExam(exam.id)}
-          style={{ background: "#dc3545", color: "white" }}
-        >
-          🗑️ Delete
-        </button>
-      </div>
-    </div>
-  );
-})}
+                <div className="lecturer-course-actions">
+                  {exam.submitted > 0 && (
+                    <button
+                      className="lecturer-course-btn"
+                      onClick={() => handleViewExamSubmissions(exam)}
+                      style={{ background: "#6f42c1", color: "white" }}
+                    >
+                      📝 Grade Submissions ({exam.submitted})
+                    </button>
+                  )}
+                  <button
+                    className="lecturer-course-btn"
+                    onClick={() => {
+                      setEditingExam(exam);
+                      setEditExam({
+                        title: exam.title || "",
+                        description: exam.description || "",
+                        start_time: exam.start_time || "",
+                        end_time: exam.end_time || "",
+                        venue: exam.venue || "",
+                        status: exam.status || "published",
+                        total_marks: exam.total_marks || 100,
+                        exam_type: exam.exam_type || "online",
+                        submission_type: exam.submission_type || "both",
+                      });
+                    }}
+                  >
+                    ✏️ Edit
+                  </button>
+                  <button
+                    className="lecturer-course-btn"
+                    onClick={() => handleDeleteExam(exam.id)}
+                    style={{ background: "#dc3545", color: "white" }}
+                  >
+                    🗑️ Delete
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -1960,7 +2132,7 @@ const fetchExams = async () => {
                 />
               </div>
 
-              {/* ===== TIME INPUTS WITH REAL-TIME VALIDATION ===== */}
+              {/* Time Inputs with Real-Time Validation */}
               <div className="lecturer-form-row">
                 <div className="lecturer-form-group">
                   <label>Start Date & Time *</label>
@@ -1988,7 +2160,7 @@ const fetchExams = async () => {
                 </div>
               </div>
 
-              {/* ===== REAL-TIME ERROR MESSAGE ===== */}
+              {/* Real-Time Error Message */}
               {timeValidationError && (
                 <div style={{
                   backgroundColor: "#f8d7da",
@@ -2176,7 +2348,7 @@ const fetchExams = async () => {
                 />
               </div>
 
-              {/* ===== EDIT TIME INPUTS WITH REAL-TIME VALIDATION ===== */}
+              {/* Edit Time Inputs with Real-Time Validation */}
               <div className="lecturer-form-row">
                 <div className="lecturer-form-group">
                   <label>Start Date & Time *</label>
@@ -2204,7 +2376,7 @@ const fetchExams = async () => {
                 </div>
               </div>
 
-              {/* ===== REAL-TIME ERROR MESSAGE FOR EDIT ===== */}
+              {/* Real-Time Error Message for Edit */}
               {editTimeValidationError && (
                 <div style={{
                   backgroundColor: "#f8d7da",

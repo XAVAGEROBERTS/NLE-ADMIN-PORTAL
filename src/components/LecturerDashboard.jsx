@@ -1,11 +1,10 @@
-// LecturerDashboard.jsx - Complete with Timetable Tab and Course Source Fix
+// LecturerDashboard.jsx - Complete with Exam Results Tab
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext';
 import { supabase } from '../services/supabase';
 import { useLecturerDepartments } from '../hooks/useLecturerDepartments';
 import './lecturer/LecturerDashboard.css';
-
 
 // Import all lecturer sub-components
 import LecturerFilesManager from './lecturer/LecturerFilesManager';
@@ -18,6 +17,7 @@ import LecturerGradingManager from './lecturer/LecturerGradingManager';
 import LecturerTimetable from './lecturer/LecturerTimetable';
 import LecturerLeaveRequests from './lecturer/LecturerLeaveRequests';
 import LecturerAttendance from './lecturer/LecturerAttendance';
+import LecturerExamResults from './lecturer/LecturerExamResults';
 
 const LecturerDashboard = () => {
   const navigate = useNavigate();
@@ -103,7 +103,6 @@ const LecturerDashboard = () => {
       const deptIds = depts?.map(d => d.id) || [];
       if (deptIds.length === 0) return;
 
-      // Fetch HODs with profile pictures
       const { data: hodRoles, error: hodError } = await supabase
         .from('user_roles')
         .select(`
@@ -121,7 +120,6 @@ const LecturerDashboard = () => {
 
       if (hodError) throw hodError;
 
-      // Fetch Admins with profile pictures
       const { data: adminRoles, error: adminError } = await supabase
         .from('user_roles')
         .select(`
@@ -174,7 +172,6 @@ const LecturerDashboard = () => {
       if (error) throw error;
       setChatMessages(data || []);
 
-      // Mark unread as read
       const unread = (data || []).filter(
         (m) => m.receiver_email === lecturerEmail && !m.is_read
       );
@@ -435,7 +432,6 @@ const LecturerDashboard = () => {
 
     setLoading(prev => ({ ...prev, courses: true }));
     try {
-      // 1. Get directly assigned courses (from courses table - Admin/Dean direct assignment)
       let query = supabase
         .from("courses")
         .select("*")
@@ -451,7 +447,6 @@ const LecturerDashboard = () => {
       const { data: directCourses, error: directError } = await query;
       if (directError) throw directError;
 
-      // 2. Get approved allocations (from course_allocations table - HOD/Dean workflow)
       const { data: approvedAllocations, error: allocError } = await supabase
         .from('course_allocations')
         .select(`
@@ -478,7 +473,6 @@ const LecturerDashboard = () => {
 
       if (allocError) throw allocError;
 
-      // 3. Get pending allocations (for display)
       const { data: pendingAllocData, error: pendingError } = await supabase
         .from('course_allocations')
         .select(`
@@ -498,38 +492,34 @@ const LecturerDashboard = () => {
       if (pendingError) throw pendingError;
       setPendingAllocations(pendingAllocData || []);
 
-      // 4. Combine courses from both sources
       const allCourseIds = new Set();
       const combinedCourses = [];
 
-      // Add direct courses (Admin/Dean assigned via lecturer_id in courses table)
       (directCourses || []).forEach(c => {
         if (!allCourseIds.has(c.id)) {
           allCourseIds.add(c.id);
           combinedCourses.push({ 
             ...c, 
-            source: 'direct',      // ← ADD THIS for direct courses
+            source: 'direct',
             source_id: null,
             allocated_at: null
           });
         }
       });
 
-      // Add approved allocated courses (HOD requested, approved by Dean)
       (approvedAllocations || []).forEach(a => {
         const c = a.courses;
         if (c && !allCourseIds.has(c.id)) {
           allCourseIds.add(c.id);
           combinedCourses.push({ 
             ...c, 
-            source: 'allocation',   // ← This identifies allocated courses
+            source: 'allocation',
             source_id: a.id,
             allocated_at: a.created_at
           });
         }
       });
 
-      // Create a map of source for each course
       const sourceMap = {};
       combinedCourses.forEach(c => {
         sourceMap[c.id] = c.source;
@@ -538,7 +528,6 @@ const LecturerDashboard = () => {
 
       setCourses(combinedCourses);
       
-      // Update stats
       setStats(prev => ({
         ...prev,
         totalCourses: combinedCourses.length,
@@ -568,7 +557,7 @@ const LecturerDashboard = () => {
       setupNotificationSubscription();
       fetchContacts();
       fetchNotifications();
-      fetchCourses(); // Fetch courses with allocations
+      fetchCourses();
     }
     return () => {
       if (subscriptionRef.current) subscriptionRef.current.unsubscribe();
@@ -830,7 +819,7 @@ const LecturerDashboard = () => {
     </div>
   );
 
-  // ==================== RENDER COURSES GRID WITH SOURCE INDICATORS (FIXED) ====================
+  // ==================== RENDER COURSES GRID ====================
   const renderCoursesGrid = () => (
     <div className="lecturer-courses-grid">
       {loading.courses ? (
@@ -858,7 +847,6 @@ const LecturerDashboard = () => {
                 <span className="lecturer-dept-badge" style={{ background: '#e3f2fd', color: '#1565c0' }}>
                   {course.department_code || course.department || "N/A"}
                 </span>
-                {/* ONLY show "Allocated" badge for course_allocations */}
                 {course.source === 'allocation' && (
                   <span className="lecturer-course-source" style={{ 
                     background: '#e8f5e9', 
@@ -883,7 +871,6 @@ const LecturerDashboard = () => {
               <span>{course.credits} Credits</span>
               <span>{course.program}</span>
             </div>
-            {/* ONLY show approval date for allocated courses */}
             {course.source === 'allocation' && course.allocated_at && (
               <div style={{ 
                 marginTop: '10px', 
@@ -1184,21 +1171,14 @@ const LecturerDashboard = () => {
         <button className={`lecturer-nav-item ${activeTab === "my-assignments" ? "active" : ""}`} onClick={() => setActiveTab("my-assignments")}>📝 My Assignments</button>
         <button className={`lecturer-nav-item ${activeTab === "lectures" ? "active" : ""}`} onClick={() => setActiveTab("lectures")}>🎓 My Lectures</button>
         <button className={`lecturer-nav-item ${activeTab === "exams" ? "active" : ""}`} onClick={() => setActiveTab("exams")}>🎯 Exams</button>
+        <button className={`lecturer-nav-item ${activeTab === "exam-results" ? "active" : ""}`} onClick={() => setActiveTab("exam-results")}>📝 Exam Results</button>
         <button className={`lecturer-nav-item ${activeTab === "students" ? "active" : ""}`} onClick={() => setActiveTab("students")}>👥 Students</button>
-        <button 
-  className={`lecturer-nav-item ${activeTab === "attendance" ? "active" : ""}`} 
-  onClick={() => setActiveTab("attendance")}
->
-  ✅ Attendance
-</button>
+        <button className={`lecturer-nav-item ${activeTab === "attendance" ? "active" : ""}`} onClick={() => setActiveTab("attendance")}>✅ Attendance</button>
         <button className={`lecturer-nav-item ${activeTab === "courses" ? "active" : ""}`} onClick={() => setActiveTab("courses")}>📖 Courses</button>
         <button className={`lecturer-nav-item ${activeTab === "notes-upload" ? "active" : ""}`} onClick={() => setActiveTab("notes-upload")}>📚 Upload Materials</button>
         <button className={`lecturer-nav-item ${activeTab === "grading" ? "active" : ""}`} onClick={() => setActiveTab("grading")}>📊 Grading</button>
         <button className={`lecturer-nav-item ${activeTab === "timetable" ? "active" : ""}`} onClick={() => setActiveTab("timetable")}>📅 Timetable</button>
-        <button className={`lecturer-nav-item ${activeTab === "leave" ? "active" : ""}`} 
-        onClick={() => setActiveTab("leave")}>
-  📝 Leave
-</button>
+        <button className={`lecturer-nav-item ${activeTab === "leave" ? "active" : ""}`} onClick={() => setActiveTab("leave")}>📝 Leave</button>
         <button className={`lecturer-nav-item ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}>⚙️ Settings</button>
         {contacts.length > 0 && (
           <button className="lecturer-nav-item lecturer-nav-chat" onClick={openChatModal}>
@@ -1230,10 +1210,8 @@ const LecturerDashboard = () => {
                   </button>
                 </div>
 
-                {/* Pending Allocations Section */}
                 {renderPendingAllocations()}
 
-                {/* Contacts Section */}
                 {contacts.length > 0 && (
                   <div className="lecturer-contacts-section" style={{ marginBottom: '24px' }}>
                     <h3 style={{ fontSize: '16px', marginBottom: '12px', color: '#1a237e' }}>Your Contacts</h3>
@@ -1344,8 +1322,14 @@ const LecturerDashboard = () => {
                 programsLoading={programsLoading}
                 showToast={showToast}
               />
-              )}
-
+            )}
+            {activeTab === "exam-results" && (
+              <LecturerExamResults
+                profile={profile}
+                courses={courses}
+                showToast={showToast}
+              />
+            )}
             {activeTab === "students" && (
               <div className="lecturer-tab-content">
                 <div className="lecturer-tab-header">
@@ -1362,14 +1346,14 @@ const LecturerDashboard = () => {
                 </div>
                 {renderStudentsTable()}
               </div>
-              )}
-                          {activeTab === "attendance" && (
-  <LecturerAttendance 
-    profile={profile} 
-    courses={courses} 
-    showToast={showToast} 
-  />
-)}
+            )}
+            {activeTab === "attendance" && (
+              <LecturerAttendance 
+                profile={profile} 
+                courses={courses} 
+                showToast={showToast} 
+              />
+            )}
             {activeTab === "courses" && (
               <div className="lecturer-tab-content">
                 <div className="lecturer-tab-header">
@@ -1395,13 +1379,13 @@ const LecturerDashboard = () => {
               </div>
             )}
             {activeTab === "notes-upload" && <LecturerNotesManager profile={profile} courses={courses} showToast={showToast} />}
-                          {activeTab === "leave" && (
-  <LecturerLeaveRequests 
-    profile={profile} 
-    showToast={showToast} 
-  />
-)}
-              {activeTab === "timetable" && (
+            {activeTab === "leave" && (
+              <LecturerLeaveRequests 
+                profile={profile} 
+                showToast={showToast} 
+              />
+            )}
+            {activeTab === "timetable" && (
               <LecturerTimetable 
                 profile={profile} 
                 courses={courses} 
@@ -1451,7 +1435,6 @@ const LecturerDashboard = () => {
 
             {!selectedContact ? (
               <div className="lecturer-hod-select-list">
-                {/* HODs Section */}
                 {contacts.filter(c => c.role === 'hod').length > 0 && (
                   <>
                     <div style={{ padding: '10px', borderBottom: '1px solid #e0e0e0' }}>
@@ -1472,7 +1455,6 @@ const LecturerDashboard = () => {
                   </>
                 )}
 
-                {/* Admins Section */}
                 {contacts.filter(c => c.role === 'admin').length > 0 && (
                   <>
                     <div style={{ padding: '10px', borderBottom: '1px solid #e0e0e0', borderTop: '1px solid #e0e0e0' }}>
