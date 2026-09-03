@@ -1,5 +1,6 @@
 // src/components/admin/SlotModal.jsx
-import React from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { supabase } from '../../../services/supabase'; // adjust path if needed
 
 const SlotModal = ({
   showSlotModal,
@@ -8,9 +9,118 @@ const SlotModal = ({
   setNewSlot,
   editingSlot,
   handleSaveSlot,
-  lecturersList,
+  lecturersList = [],          // full list (fallback)
   selectedTimetable
 }) => {
+  const [allowedLecturers, setAllowedLecturers] = useState([]);
+  const [loadingLecturers, setLoadingLecturers] = useState(false);
+  const [courseLookupMsg, setCourseLookupMsg] = useState('');
+
+  // ==================== Fetch lecturers assigned to this course ====================
+  const fetchAllowedLecturers = useCallback(async (courseCode) => {
+    if (!courseCode || courseCode.trim().length < 3) {
+      setAllowedLecturers([]);
+      setCourseLookupMsg('');
+      // Clear course_id when code is cleared
+      setNewSlot(prev => ({ ...prev, course_id: null }));
+      return;
+    }
+
+    setLoadingLecturers(true);
+    setCourseLookupMsg('Looking up course...');
+
+    try {
+      // 1. Find the course by code
+      const { data: course, error: courseError } = await supabase
+        .from('courses')
+        .select('id, course_code, course_name')
+        .eq('course_code', courseCode.trim().toUpperCase())
+        .maybeSingle();
+
+      if (courseError) throw courseError;
+
+      if (!course) {
+        setAllowedLecturers([]);
+        setCourseLookupMsg('⚠️ Course not found. Please check the course code.');
+        setNewSlot(prev => ({ ...prev, course_id: null }));
+        return;
+      }
+
+      // Auto-fill course_id and course_name (nice UX)
+      setNewSlot(prev => ({
+        ...prev,
+        course_id: course.id,
+        course_name: prev.course_name || course.course_name || '',
+      }));
+
+      // 2. Get approved allocations for this course
+      const { data: allocations, error: allocError } = await supabase
+        .from('course_allocations')
+        .select(`
+          lecturer_id,
+          status,
+          lecturers:lecturer_id (
+            id,
+            full_name
+          )
+        `)
+        .eq('course_id', course.id)
+        .eq('status', 'approved');
+
+      if (allocError) throw allocError;
+
+      const lecturers = (allocations || [])
+        .map(a => a.lecturers)
+        .filter(l => l && l.id);
+
+      setAllowedLecturers(lecturers);
+
+      if (lecturers.length === 0) {
+        setCourseLookupMsg('⚠️ No lecturer is currently assigned to this course. Assign the course first in Course Allocations.');
+      } else {
+        setCourseLookupMsg(`✅ ${lecturers.length} lecturer(s) assigned to this course`);
+      }
+
+      // If the currently selected lecturer is no longer allowed, clear it
+      setNewSlot(prev => {
+        if (prev.lecturer_id && !lecturers.some(l => l.id === prev.lecturer_id)) {
+          return { ...prev, lecturer_id: '' };
+        }
+        return prev;
+      });
+
+    } catch (err) {
+      console.error('Error looking up course/lecturers:', err);
+      setCourseLookupMsg('Error: ' + err.message);
+      setAllowedLecturers([]);
+    } finally {
+      setLoadingLecturers(false);
+    }
+  }, [setNewSlot]);
+
+  // Trigger lookup when course_code changes
+  useEffect(() => {
+    if (!showSlotModal) return;
+
+    const timer = setTimeout(() => {
+      fetchAllowedLecturers(newSlot.course_code);
+    }, 400); // small debounce
+
+    return () => clearTimeout(timer);
+  }, [newSlot.course_code, showSlotModal, fetchAllowedLecturers]);
+
+  // When modal opens for editing, also run the lookup
+  useEffect(() => {
+    if (showSlotModal && editingSlot && newSlot.course_code) {
+      fetchAllowedLecturers(newSlot.course_code);
+    }
+  }, [showSlotModal, editingSlot]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Decide which list to show in the dropdown
+  const lecturerOptions = allowedLecturers.length > 0
+    ? allowedLecturers
+    : []; // Only show assigned lecturers. Do NOT fall back to full list.
+
   return (
     <>
       <div className="modal-overlay" onClick={() => setShowSlotModal(false)}>
@@ -32,12 +142,17 @@ const SlotModal = ({
           <div className="modal-body">
             <div className="form-row">
               <div className="form-group">
-                <label className="form-label">Course Code</label>
+                <label className="form-label">Course Code *</label>
                 <input
                   type="text"
-                  value={newSlot.course_code}
-                  onChange={(e) => setNewSlot({ ...newSlot, course_code: e.target.value })}
-                  placeholder="e.g. CSC301"
+                  value={newSlot.course_code || ''}
+                  onChange={(e) =>
+                    setNewSlot({
+                      ...newSlot,
+                      course_code: e.target.value.toUpperCase(),
+                    })
+                  }
+                  placeholder="e.g. CSE1101"
                   className="form-input"
                 />
               </div>
@@ -46,36 +161,80 @@ const SlotModal = ({
                 <label className="form-label">Course Name</label>
                 <input
                   type="text"
-                  value={newSlot.course_name}
+                  value={newSlot.course_name || ''}
                   onChange={(e) => setNewSlot({ ...newSlot, course_name: e.target.value })}
-                  placeholder="e.g. Database Systems"
+                  placeholder="Auto-filled if course exists"
                   className="form-input"
                 />
               </div>
             </div>
 
+            {/* Feedback message */}
+            {courseLookupMsg && (
+              <div
+                style={{
+                  marginBottom: 16,
+                  padding: '10px 14px',
+                  borderRadius: 8,
+                  fontSize: 13,
+                  background: courseLookupMsg.startsWith('✅')
+                    ? '#e8f5e9'
+                    : courseLookupMsg.startsWith('⚠️')
+                    ? '#fff3e0'
+                    : '#ffebee',
+                  color: courseLookupMsg.startsWith('✅')
+                    ? '#2e7d32'
+                    : courseLookupMsg.startsWith('⚠️')
+                    ? '#e65100'
+                    : '#c62828',
+                }}
+              >
+                {loadingLecturers ? '🔄 Checking course...' : courseLookupMsg}
+              </div>
+            )}
+
             <div className="form-group">
-              <label className="form-label">Lecturer</label>
+              <label className="form-label">
+                Lecturer{' '}
+                {allowedLecturers.length > 0 && (
+                  <span style={{ fontWeight: 400, color: '#666' }}>
+                    (only assigned lecturers shown)
+                  </span>
+                )}
+              </label>
               <select
-                value={newSlot.lecturer_id}
+                value={newSlot.lecturer_id || ''}
                 onChange={(e) => setNewSlot({ ...newSlot, lecturer_id: e.target.value })}
                 className="form-select"
+                disabled={loadingLecturers || allowedLecturers.length === 0}
               >
-                <option value="">Not Assigned</option>
-                {lecturersList.map((lec) => (
+                <option value="">
+                  {allowedLecturers.length === 0
+                    ? 'No assigned lecturer available'
+                    : 'Select Lecturer'}
+                </option>
+                {lecturerOptions.map((lec) => (
                   <option key={lec.id} value={lec.id}>
                     {lec.full_name}
                   </option>
                 ))}
               </select>
+
+              {allowedLecturers.length === 0 && newSlot.course_code && (
+                <small style={{ color: '#e65100', marginTop: 6, display: 'block' }}>
+                  Go to <strong>Course Allocations</strong> and assign a lecturer to this course first.
+                </small>
+              )}
             </div>
 
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label">Day</label>
                 <select
-                  value={newSlot.day_of_week}
-                  onChange={(e) => setNewSlot({ ...newSlot, day_of_week: parseInt(e.target.value) })}
+                  value={newSlot.day_of_week || 1}
+                  onChange={(e) =>
+                    setNewSlot({ ...newSlot, day_of_week: parseInt(e.target.value) })
+                  }
                   className="form-select"
                 >
                   <option value={1}>Monday</option>
@@ -91,7 +250,7 @@ const SlotModal = ({
                 <label className="form-label">Start Time</label>
                 <input
                   type="time"
-                  value={newSlot.start_time}
+                  value={newSlot.start_time || ''}
                   onChange={(e) => setNewSlot({ ...newSlot, start_time: e.target.value })}
                   className="form-input"
                 />
@@ -101,7 +260,7 @@ const SlotModal = ({
                 <label className="form-label">End Time</label>
                 <input
                   type="time"
-                  value={newSlot.end_time}
+                  value={newSlot.end_time || ''}
                   onChange={(e) => setNewSlot({ ...newSlot, end_time: e.target.value })}
                   className="form-input"
                 />
@@ -113,7 +272,7 @@ const SlotModal = ({
                 <label className="form-label">Room</label>
                 <input
                   type="text"
-                  value={newSlot.room_number}
+                  value={newSlot.room_number || ''}
                   onChange={(e) => setNewSlot({ ...newSlot, room_number: e.target.value })}
                   placeholder="e.g. 101"
                   className="form-input"
@@ -124,7 +283,7 @@ const SlotModal = ({
                 <label className="form-label">Building</label>
                 <input
                   type="text"
-                  value={newSlot.building}
+                  value={newSlot.building || ''}
                   onChange={(e) => setNewSlot({ ...newSlot, building: e.target.value })}
                   placeholder="e.g. CS Building"
                   className="form-input"
@@ -134,7 +293,7 @@ const SlotModal = ({
               <div className="form-group">
                 <label className="form-label">Type</label>
                 <select
-                  value={newSlot.slot_type}
+                  value={newSlot.slot_type || 'lecture'}
                   onChange={(e) => setNewSlot({ ...newSlot, slot_type: e.target.value })}
                   className="form-select"
                 >
@@ -151,8 +310,15 @@ const SlotModal = ({
             <button className="cancel-button" onClick={() => setShowSlotModal(false)}>
               Cancel
             </button>
-            <button className="confirm-button" onClick={handleSaveSlot}>
-              {editingSlot ? "Update" : "Add"} Slot
+            <button
+              className="confirm-button"
+              onClick={handleSaveSlot}
+              disabled={
+                !newSlot.course_code ||
+                (allowedLecturers.length > 0 && !newSlot.lecturer_id) // force selection if lecturers exist
+              }
+            >
+              {editingSlot ? 'Update' : 'Add'} Slot
             </button>
           </div>
         </div>
@@ -305,6 +471,13 @@ const SlotModal = ({
           box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
         }
 
+        .form-input:disabled,
+        .form-select:disabled {
+          background: #f3f4f6;
+          cursor: not-allowed;
+          opacity: 0.7;
+        }
+
         .form-row {
           display: grid;
           grid-template-columns: 1fr 1fr 1fr;
@@ -347,9 +520,14 @@ const SlotModal = ({
           cursor: pointer;
         }
 
-        .confirm-button:hover {
+        .confirm-button:hover:not(:disabled) {
           transform: translateY(-2px);
           box-shadow: 0 10px 30px rgba(16, 185, 129, 0.3);
+        }
+
+        .confirm-button:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
         }
 
         @media (max-width: 768px) {

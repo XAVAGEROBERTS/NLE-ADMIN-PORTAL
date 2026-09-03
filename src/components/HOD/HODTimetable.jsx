@@ -1,71 +1,107 @@
 // HODTimetable.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from "../../services/supabase";
 
-const HODTimetable = ({ departmentCode, courses, lecturers }) => {
-  const [timetableSlots, setTimetableSlots] = useState([]);
+const HODTimetable = ({ departmentCode }) => {
+  const [rawTimetables, setRawTimetables] = useState([]);
   const [conflicts, setConflicts] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [selectedDay, setSelectedDay] = useState(new Date().getDay());
+  const [selectedProgram, setSelectedProgram] = useState('all');
   const [showConflictModal, setShowConflictModal] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
 
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
+  // Responsive
   useEffect(() => {
-    fetchTimetable();
-  }, [departmentCode, selectedDay]);
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
 
-  const fetchTimetable = async () => {
+  // ---------- Helpers ----------
+  const formatTime = (t) => {
+    if (!t) return '';
+    const [h, m] = String(t).split(':');
+    const hour = parseInt(h, 10);
+    const ampm = hour >= 12 ? 'PM' : 'AM';
+    const h12 = hour % 12 || 12;
+    return `${h12}:${(m || '00').padStart(2, '0')}${ampm}`;
+  };
+
+  const timeToMinutes = (t) => {
+    if (!t) return 0;
+    const [h, m] = String(t).split(':');
+    return parseInt(h, 10) * 60 + parseInt(m || '0', 10);
+  };
+
+  // ---------- Fetch ----------
+  const fetchTimetable = useCallback(async () => {
+    if (!departmentCode) {
+      setRawTimetables([]);
+      setConflicts([]);
+      return;
+    }
+
     setLoading(true);
     try {
-      // Get all program timetables for the department
-      const { data: timetables } = await supabase
+      const { data, error } = await supabase
         .from('program_timetables')
-        .select('id')
+        .select(`
+          id,
+          program_id,
+          academic_year,
+          semester,
+          year_of_study,
+          is_active,
+          department_code,
+          programs (name, code),
+          program_timetable_slots (
+            id,
+            course_code,
+            course_name,
+            lecturer_id,
+            day_of_week,
+            start_time,
+            end_time,
+            room_number,
+            building,
+            slot_type,
+            is_active,
+            lecturers (full_name)
+          )
+        `)
         .eq('department_code', departmentCode)
         .eq('is_active', true);
 
-      const timetableIds = timetables?.map(t => t.id) || [];
+      if (error) throw error;
 
-      if (timetableIds.length === 0) {
-        setTimetableSlots([]);
-        setConflicts([]);
-        setLoading(false);
-        return;
-      }
+      setRawTimetables(data || []);
 
-      // Get slots for the selected day
-      const { data: slots } = await supabase
-        .from('program_timetable_slots')
-        .select(`
-          *,
-          courses:course_id (course_code, course_name),
-          lecturers:lecturer_id (full_name, email)
-        `)
-        .in('program_timetable_id', timetableIds)
-        .eq('day_of_week', selectedDay)
-        .eq('is_active', true)
-        .order('start_time');
-
-      setTimetableSlots(slots || []);
-
-      // Check for conflicts
+      // ---------- Conflict detection ----------
       const conflictsFound = [];
       const slotMap = {};
 
-      (slots || []).forEach((slot) => {
-        const timeKey = `${slot.start_time}-${slot.end_time}`;
-        if (!slotMap[timeKey]) {
-          slotMap[timeKey] = [];
-        }
-        slotMap[timeKey].push(slot);
+      (data || []).forEach(tt => {
+        (tt.program_timetable_slots || []).forEach(slot => {
+          if (slot.is_active === false) return;
+          const key = `${slot.day_of_week}-${String(slot.start_time).slice(0,5)}-${String(slot.end_time).slice(0,5)}`;
+          if (!slotMap[key]) slotMap[key] = [];
+          slotMap[key].push({
+            ...slot,
+            program_name: tt.programs?.name,
+            program_code: tt.programs?.code,
+            year_of_study: tt.year_of_study,
+            semester: tt.semester,
+            academic_year: tt.academic_year,
+          });
+        });
       });
 
-      Object.keys(slotMap).forEach((timeKey) => {
-        if (slotMap[timeKey].length > 1) {
+      Object.keys(slotMap).forEach(key => {
+        if (slotMap[key].length > 1) {
           conflictsFound.push({
-            time: timeKey,
-            slots: slotMap[timeKey],
+            time: key,
+            slots: slotMap[key],
           });
         }
       });
@@ -76,98 +112,401 @@ const HODTimetable = ({ departmentCode, courses, lecturers }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [departmentCode]);
+
+  useEffect(() => {
+    fetchTimetable();
+  }, [fetchTimetable]);
+
+  // ---------- Program options (includes Academic Year) ----------
+  const programOptions = useMemo(() => {
+    return rawTimetables.map(tt => ({
+      id: tt.id,
+      label: `${tt.programs?.code || 'PRG'} - ${tt.programs?.name || 'Unknown'} (Y${tt.year_of_study} Sem ${tt.semester} • ${tt.academic_year})`,
+    }));
+  }, [rawTimetables]);
+
+  // ---------- Build grid data ----------
+  const gridData = useMemo(() => {
+    let filtered = rawTimetables;
+    if (selectedProgram !== 'all') {
+      filtered = rawTimetables.filter(tt => tt.id === selectedProgram);
+    }
+
+    const allSlots = [];
+    filtered.forEach(tt => {
+      (tt.program_timetable_slots || []).forEach(slot => {
+        if (slot.is_active === false) return;
+        allSlots.push({
+          ...slot,
+          program_name: tt.programs?.name,
+          program_code: tt.programs?.code,
+          year_of_study: tt.year_of_study,
+          semester: tt.semester,
+          academic_year: tt.academic_year,
+        });
+      });
+    });
+
+    if (allSlots.length === 0) {
+      return { days: [], timeColumns: [], matrix: {} };
+    }
+
+    // Unique time columns
+    const timeSet = new Map();
+    allSlots.forEach(s => {
+      const start = String(s.start_time).slice(0, 5);
+      const end = String(s.end_time).slice(0, 5);
+      const key = `${start}-${end}`;
+      if (!timeSet.has(key)) {
+        timeSet.set(key, {
+          start,
+          end,
+          label: `${formatTime(start)} - ${formatTime(end)}`,
+        });
+      }
+    });
+
+    const timeColumns = Array.from(timeSet.values()).sort(
+      (a, b) => timeToMinutes(a.start) - timeToMinutes(b.start)
+    );
+
+    // Days Mon–Sat
+    const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const allDays = dayNames.map((name, idx) => ({
+      name,
+      dayOfWeek: idx + 1,
+    }));
+
+    // Matrix
+    const matrix = {};
+    allDays.forEach(d => {
+      matrix[d.dayOfWeek] = {};
+      timeColumns.forEach(tc => {
+        matrix[d.dayOfWeek][`${tc.start}-${tc.end}`] = [];
+      });
+    });
+
+    allSlots.forEach(slot => {
+      const day = slot.day_of_week;
+      if (day < 1 || day > 6) return;
+
+      const start = String(slot.start_time).slice(0, 5);
+      const end = String(slot.end_time).slice(0, 5);
+      const key = `${start}-${end}`;
+
+      if (matrix[day] && matrix[day][key] !== undefined) {
+        matrix[day][key].push({
+          courseCode: slot.course_code || 'N/A',
+          courseName: slot.course_name || '',
+          lecturer: slot.lecturers?.full_name || 'Not Assigned',
+          room: slot.room_number
+            ? `${slot.room_number}${slot.building ? ', ' + slot.building : ''}`
+            : 'TBA',
+          slotType: slot.slot_type === 'lab' ? 'LAB' : (slot.slot_type?.toUpperCase() || ''),
+          program: slot.program_code || slot.program_name,
+          year: slot.year_of_study,
+          academicYear: slot.academic_year,
+        });
+      }
+    });
+
+    // Keep only days that have lectures
+    const days = allDays.filter(day => {
+      const daySlots = matrix[day.dayOfWeek] || {};
+      return Object.values(daySlots).some(arr => arr.length > 0);
+    });
+
+    return { days, timeColumns, matrix };
+  }, [rawTimetables, selectedProgram]);
+
+  const { days, timeColumns, matrix } = gridData;
 
   return (
-    <div className="hod-section">
-      <div className="hod-section-header">
-        <h2 className="hod-section-title">📅 Timetable Oversight</h2>
-        {conflicts.length > 0 && (
-          <button 
-            className="hod-warning-btn"
-            onClick={() => setShowConflictModal(true)}
-          >
-            ⚠️ {conflicts.length} Conflict{conflicts.length > 1 ? 's' : ''}
-          </button>
-        )}
-      </div>
+    <div className="hod-section" style={{ padding: isMobile ? '12px 8px' : 16 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <h2 style={{ margin: 0 }}>📅 Timetable Oversight</h2>
+          <div style={{ color: '#666', fontSize: 14, marginTop: 4 }}>
+            Department: <strong>{departmentCode}</strong>
+          </div>
+        </div>
 
-      <div className="hod-day-selector">
-        {days.map((day, index) => (
-          <button
-            key={index}
-            className={`hod-day-btn ${selectedDay === index ? 'active' : ''}`}
-            onClick={() => setSelectedDay(index)}
-          >
-            {day}
-          </button>
-        ))}
-      </div>
-
-      {loading ? (
-        <div className="hod-loading">Loading timetable...</div>
-      ) : (
-        <div className="hod-timetable-grid">
-          {timetableSlots.length === 0 ? (
-            <div className="hod-empty">
-              <span>📭</span>
-              <h3>No classes scheduled for {days[selectedDay]}</h3>
-            </div>
-          ) : (
-            timetableSlots.map((slot) => (
-              <div key={slot.id} className="hod-timetable-card">
-                <div className="hod-timetable-time">
-                  <span className="hod-time">{slot.start_time}</span>
-                  <span className="hod-time-arrow">→</span>
-                  <span className="hod-time">{slot.end_time}</span>
-                </div>
-                <h3>{slot.courses?.course_code}</h3>
-                <p>{slot.courses?.course_name}</p>
-                <p className="hod-timetable-lecturer">
-                  👨‍🏫 {slot.lecturers?.full_name || 'Not Assigned'}
-                </p>
-                <div className="hod-timetable-details">
-                  <span className="hod-badge">{slot.slot_type}</span>
-                  <span className="hod-badge">{slot.room_number || 'No Room'}</span>
-                </div>
-              </div>
-            ))
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          {conflicts.length > 0 && (
+            <button
+              onClick={() => setShowConflictModal(true)}
+              style={{
+                background: '#fff3e0',
+                color: '#e65100',
+                border: '1px solid #ffcc80',
+                padding: '8px 14px',
+                borderRadius: 6,
+                cursor: 'pointer',
+                fontWeight: 600,
+              }}
+            >
+              ⚠️ {conflicts.length} Conflict{conflicts.length > 1 ? 's' : ''}
+            </button>
           )}
+          <button
+            onClick={fetchTimetable}
+            style={{
+              background: '#f8f9fa',
+              border: '1px solid #dee2e6',
+              padding: '8px 14px',
+              borderRadius: 6,
+              cursor: 'pointer',
+            }}
+          >
+            🔄 Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* Program Filter (includes Academic Year) */}
+      <div style={{ marginBottom: 16 }}>
+        <select
+          value={selectedProgram}
+          onChange={(e) => setSelectedProgram(e.target.value)}
+          style={{ padding: '8px 12px', border: '1px solid #ddd', borderRadius: 6, minWidth: 320 }}
+        >
+          <option value="all">All Programs</option>
+          {programOptions.map(p => (
+            <option key={p.id} value={p.id}>{p.label}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Loading / Empty / Grid */}
+      {loading ? (
+        <div style={{ display: 'flex', justifyContent: 'center', height: 200, alignItems: 'center' }}>
+          <div className="timetable-spinner" />
+        </div>
+      ) : days.length === 0 || timeColumns.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 40, background: '#f8f9fa', borderRadius: 10 }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>📭</div>
+          <p>No timetable data found for this department.</p>
+        </div>
+      ) : (
+        <div className="table-container" style={{ overflowX: 'auto', borderRadius: 10, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 700 }}>
+            <thead>
+              <tr>
+                <th
+                  style={{
+                    background: '#1e88e5',
+                    color: 'white',
+                    padding: '12px 10px',
+                    textAlign: 'left',
+                    position: 'sticky',
+                    left: 0,
+                    zIndex: 2,
+                    minWidth: 100,
+                  }}
+                >
+                  Day
+                </th>
+                {timeColumns.map((tc) => (
+                  <th
+                    key={tc.start + tc.end}
+                    style={{
+                      background: '#1e88e5',
+                      color: 'white',
+                      padding: '12px 10px',
+                      textAlign: 'center',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {tc.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {days.map((day, dayIdx) => (
+                <tr key={day.dayOfWeek} style={{ background: dayIdx % 2 === 0 ? '#ffffff' : '#e3f2fd' }}>
+                  <td
+                    style={{
+                      padding: '14px 12px',
+                      fontWeight: 600,
+                      borderBottom: '1px solid #e0e0e0',
+                      position: 'sticky',
+                      left: 0,
+                      background: dayIdx % 2 === 0 ? '#ffffff' : '#e3f2fd',
+                      zIndex: 1,
+                    }}
+                  >
+                    {day.name}
+                  </td>
+
+                  {timeColumns.map((tc) => {
+                    const key = `${tc.start}-${tc.end}`;
+                    const lectures = matrix[day.dayOfWeek]?.[key] || [];
+
+                    return (
+                      <td
+                        key={key}
+                        style={{
+                          padding: 8,
+                          borderBottom: '1px solid #e0e0e0',
+                          verticalAlign: 'top',
+                          minWidth: 180,
+                        }}
+                      >
+                        {lectures.length === 0 ? (
+                          <div style={{ color: '#ccc', textAlign: 'center', padding: 12 }}>—</div>
+                        ) : (
+                          lectures.map((lecture, idx) => (
+                            <div
+                              key={idx}
+                              style={{
+                                background: lecture.slotType === 'LAB' ? '#fff5f5' : '#f0f7ff',
+                                borderLeft: `4px solid ${lecture.slotType === 'LAB' ? '#e74c3c' : '#3498db'}`,
+                                borderRadius: 6,
+                                padding: '10px 8px',
+                                fontSize: 13,
+                                lineHeight: 1.35,
+                                marginBottom: lectures.length > 1 ? 8 : 0,
+                              }}
+                            >
+                              <div style={{ fontWeight: 600, marginBottom: 2 }}>
+                                {lecture.courseCode}
+                                {lecture.slotType && (
+                                  <span style={{ color: '#e74c3c', marginLeft: 4, fontSize: 11 }}>
+                                    {lecture.slotType}
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ color: '#555', fontSize: 12, marginBottom: 2 }}>
+                                {lecture.courseName}
+                              </div>
+                              <div style={{ color: '#666', fontSize: 12 }}>
+                                {lecture.lecturer}
+                              </div>
+                              <div style={{ color: '#888', fontSize: 12, marginTop: 2 }}>
+                                {lecture.room}
+                              </div>
+                              <div style={{ color: '#999', fontSize: 11, marginTop: 4, borderTop: '1px dashed #eee', paddingTop: 4 }}>
+                                {lecture.program} • Y{lecture.year} • {lecture.academicYear}
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
-      {/* Conflicts Modal */}
+      {/* Conflict Modal */}
       {showConflictModal && (
-        <div className="hod-modal-overlay" onClick={() => setShowConflictModal(false)}>
-          <div className="hod-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="hod-modal-header">
-              <h3>⚠️ Timetable Conflicts</h3>
-              <button onClick={() => setShowConflictModal(false)}>✕</button>
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: 20,
+          }}
+          onClick={() => setShowConflictModal(false)}
+        >
+          <div
+            style={{
+              background: 'white',
+              borderRadius: 12,
+              maxWidth: 600,
+              width: '100%',
+              maxHeight: '85vh',
+              overflowY: 'auto',
+              padding: 24,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ margin: 0 }}>⚠️ Timetable Conflicts ({conflicts.length})</h3>
+              <button
+                onClick={() => setShowConflictModal(false)}
+                style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer' }}
+              >
+                ×
+              </button>
             </div>
-            <div className="hod-modal-body">
+
+            <div>
               {conflicts.map((conflict, idx) => (
-                <div key={idx} className="hod-conflict-item">
-                  <h4>Conflict at {conflict.time}</h4>
-                  <ul>
+                <div
+                  key={idx}
+                  style={{
+                    background: '#fff8e1',
+                    borderLeft: '4px solid #ff9800',
+                    borderRadius: 8,
+                    padding: 16,
+                    marginBottom: 16,
+                  }}
+                >
+                  <h4 style={{ margin: '0 0 12px 0', color: '#e65100' }}>
+                    Conflict at {conflict.time}
+                  </h4>
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
                     {conflict.slots.map((slot) => (
-                      <li key={slot.id}>
-                        <strong>{slot.courses?.course_code}</strong> - {slot.courses?.course_name}
+                      <li key={slot.id} style={{ marginBottom: 10 }}>
+                        <strong>{slot.course_code}</strong> – {slot.course_name}
                         <br />
-                        <small>Lecturer: {slot.lecturers?.full_name || 'Not Assigned'}</small>
-                        <br />
-                        <small>Room: {slot.room_number || 'No Room'}</small>
+                        <small>
+                          {slot.program_code || slot.program_name} • Y{slot.year_of_study} Sem {slot.semester} • {slot.academic_year}
+                          <br />
+                          Lecturer: {slot.lecturers?.full_name || 'Not Assigned'}
+                          <br />
+                          Room: {slot.room_number || 'No Room'}
+                        </small>
                       </li>
                     ))}
                   </ul>
                 </div>
               ))}
             </div>
-            <div className="hod-modal-footer">
-              <button onClick={() => setShowConflictModal(false)}>Close</button>
+
+            <div style={{ textAlign: 'right', marginTop: 16 }}>
+              <button
+                onClick={() => setShowConflictModal(false)}
+                style={{
+                  padding: '8px 20px',
+                  background: '#e0e0e0',
+                  border: 'none',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                }}
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>
       )}
+
+      <style>{`
+        .timetable-spinner {
+          width: 40px; height: 40px;
+          border: 3px solid #f3f3f3;
+          border-top: 3px solid #3498db;
+          border-radius: 50%;
+          animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+        .table-container::-webkit-scrollbar { height: 8px; }
+        .table-container::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
+      `}</style>
     </div>
   );
 };

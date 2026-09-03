@@ -6,6 +6,7 @@ import { supabase } from '../services/supabase';
 import { useLecturerDepartments } from '../hooks/useLecturerDepartments';
 import './lecturer/LecturerDashboard.css';
 
+
 // Import all lecturer sub-components
 import LecturerFilesManager from './lecturer/LecturerFilesManager';
 import LecturerAssignmentsManager from './lecturer/LecturerAssignmentsManager';
@@ -16,6 +17,7 @@ import LecturerSettings from './lecturer/LecturerSettings';
 import LecturerGradingManager from './lecturer/LecturerGradingManager';
 import LecturerTimetable from './lecturer/LecturerTimetable';
 import LecturerLeaveRequests from './lecturer/LecturerLeaveRequests';
+import LecturerAttendance from './lecturer/LecturerAttendance';
 
 const LecturerDashboard = () => {
   const navigate = useNavigate();
@@ -1183,6 +1185,12 @@ const LecturerDashboard = () => {
         <button className={`lecturer-nav-item ${activeTab === "lectures" ? "active" : ""}`} onClick={() => setActiveTab("lectures")}>🎓 My Lectures</button>
         <button className={`lecturer-nav-item ${activeTab === "exams" ? "active" : ""}`} onClick={() => setActiveTab("exams")}>🎯 Exams</button>
         <button className={`lecturer-nav-item ${activeTab === "students" ? "active" : ""}`} onClick={() => setActiveTab("students")}>👥 Students</button>
+        <button 
+  className={`lecturer-nav-item ${activeTab === "attendance" ? "active" : ""}`} 
+  onClick={() => setActiveTab("attendance")}
+>
+  ✅ Attendance
+</button>
         <button className={`lecturer-nav-item ${activeTab === "courses" ? "active" : ""}`} onClick={() => setActiveTab("courses")}>📖 Courses</button>
         <button className={`lecturer-nav-item ${activeTab === "notes-upload" ? "active" : ""}`} onClick={() => setActiveTab("notes-upload")}>📚 Upload Materials</button>
         <button className={`lecturer-nav-item ${activeTab === "grading" ? "active" : ""}`} onClick={() => setActiveTab("grading")}>📊 Grading</button>
@@ -1354,7 +1362,14 @@ const LecturerDashboard = () => {
                 </div>
                 {renderStudentsTable()}
               </div>
-            )}
+              )}
+                          {activeTab === "attendance" && (
+  <LecturerAttendance 
+    profile={profile} 
+    courses={courses} 
+    showToast={showToast} 
+  />
+)}
             {activeTab === "courses" && (
               <div className="lecturer-tab-content">
                 <div className="lecturer-tab-header">

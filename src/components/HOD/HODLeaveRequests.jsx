@@ -1,4 +1,4 @@
-// HODLeaveRequests.jsx - COMPLETE WITH DEAN APPROVAL FLOW
+// HODLeaveRequests.jsx - FIXED FILTERS
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase } from "../../services/supabase";
 
@@ -240,17 +240,37 @@ const HODLeaveRequests = ({ departmentCode, fetchHODData, setStats }) => {
     }
   };
 
+  // ✅ FIXED FILTERS - Match actual status values
   const filteredRequests = leaveRequests.filter((r) => {
-    const matchFilter = filter === 'all' || r.status === filter;
+    // Filter by status
+    let matchFilter = true;
+    if (filter === 'pending') {
+      matchFilter = r.status === 'pending' || r.status === 'pending_hod';
+    } else if (filter === 'approved_by_hod') {
+      matchFilter = r.status === 'approved_by_hod';
+    } else if (filter === 'approved') {
+      matchFilter = r.status === 'approved_by_dean' || r.status === 'approved';
+    } else if (filter === 'rejected') {
+      matchFilter = r.status === 'rejected_by_hod' || r.status === 'rejected_by_dean' || r.status === 'rejected';
+    } else {
+      matchFilter = true; // 'all'
+    }
+
+    // Search by name, reason, or type
     const matchSearch = 
       r.lecturer?.full_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       r.reason?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       r.leave_type?.toLowerCase().includes(searchTerm.toLowerCase());
+
     return matchFilter && matchSearch;
   });
 
+  // Counts for badges
   const pendingCount = leaveRequests.filter(r => r.status === 'pending' || r.status === 'pending_hod').length;
   const hodApprovedCount = leaveRequests.filter(r => r.status === 'approved_by_hod').length;
+  const approvedCount = leaveRequests.filter(r => r.status === 'approved_by_dean' || r.status === 'approved').length;
+  const rejectedCount = leaveRequests.filter(r => r.status === 'rejected_by_hod' || r.status === 'rejected_by_dean' || r.status === 'rejected').length;
+  const cancelledCount = leaveRequests.filter(r => r.status === 'cancelled').length;
 
   const statusColors = {
     pending: 'hod-status-pending',
@@ -266,7 +286,7 @@ const HODLeaveRequests = ({ departmentCode, fetchHODData, setStats }) => {
 
   const getStatusLabel = (status) => {
     const labels = {
-      pending: '⏳ Pending',
+      pending: '⏳ Pending HOD',
       pending_hod: '⏳ Pending HOD',
       approved_by_hod: '📋 Approved by HOD (Pending Dean)',
       approved_by_dean: '✅ Approved by Dean',
@@ -284,9 +304,11 @@ const HODLeaveRequests = ({ departmentCode, fetchHODData, setStats }) => {
     <div className="hod-section">
       <div className="hod-section-header">
         <h2 className="hod-section-title">📝 Leave Requests</h2>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <span className="hod-badge hod-badge-pending">{pendingCount} Pending</span>
-          <span className="hod-badge hod-badge-approved">{hodApprovedCount} With Dean</span>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <span className="hod-badge hod-badge-pending">⏳ Pending: {pendingCount}</span>
+          <span className="hod-badge hod-badge-approved">📋 With Dean: {hodApprovedCount}</span>
+          <span className="hod-badge hod-badge-approved">✅ Approved: {approvedCount}</span>
+          <span className="hod-badge hod-badge-rejected">❌ Rejected: {rejectedCount}</span>
         </div>
       </div>
 
@@ -297,44 +319,61 @@ const HODLeaveRequests = ({ departmentCode, fetchHODData, setStats }) => {
         </div>
       )}
 
-      <div className="hod-filters">
-        <input type="text" placeholder="Search by lecturer or reason..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="hod-search-input" />
-        <select value={filter} onChange={(e) => setFilter(e.target.value)} className="hod-filter-select">
-          <option value="all">All ({leaveRequests.length})</option>
-          <option value="pending">Pending ({pendingCount})</option>
-          <option value="approved_by_hod">With Dean ({hodApprovedCount})</option>
-          <option value="approved">Approved</option>
-          <option value="rejected_by_hod">Rejected</option>
+      <div className="hod-filters" style={{ display: 'flex', gap: '10px', marginBottom: '16px', flexWrap: 'wrap' }}>
+        <input 
+          type="text" 
+          placeholder="Search by lecturer, reason, or type..." 
+          value={searchTerm} 
+          onChange={(e) => setSearchTerm(e.target.value)} 
+          className="hod-search-input" 
+          style={{ flex: 1, minWidth: '200px', padding: '8px 12px', border: '1px solid #ddd', borderRadius: '6px' }}
+        />
+        <select 
+          value={filter} 
+          onChange={(e) => setFilter(e.target.value)} 
+          className="hod-filter-select"
+          style={{ padding: '8px 12px', border: '1px solid #ddd', borderRadius: '6px', background: 'white' }}
+        >
+          <option value="all">📋 All ({leaveRequests.length})</option>
+          <option value="pending">⏳ Pending ({pendingCount})</option>
+          <option value="approved_by_hod">📋 With Dean ({hodApprovedCount})</option>
+          <option value="approved">✅ Approved ({approvedCount})</option>
+          <option value="rejected">❌ Rejected ({rejectedCount})</option>
         </select>
-        <button onClick={() => { fetchCalledRef.current = false; fetchLeaveRequests(); }} className="hod-refresh-btn" style={{ padding: '8px 16px', background: '#1976d2', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: '600' }}>
+        <button 
+          onClick={() => { fetchCalledRef.current = false; fetchLeaveRequests(); }} 
+          className="hod-refresh-btn" 
+          style={{ padding: '8px 16px', background: '#1976d2', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: '600' }}
+        >
           🔄 Refresh
         </button>
       </div>
 
       <div className="hod-card">
         {loading ? (
-          <div className="hod-loading">Loading leave requests...</div>
+          <div className="hod-loading" style={{ textAlign: 'center', padding: '40px' }}>Loading leave requests...</div>
         ) : filteredRequests.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '40px', color: '#666' }}>
             <span style={{ fontSize: '48px', display: 'block', marginBottom: '12px' }}>📋</span>
-            <p>No leave requests found</p>
+            <p>{searchTerm ? 'No matching leave requests found' : 'No leave requests found'}</p>
           </div>
         ) : (
-          <table className="hod-table">
+          <table className="hod-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
-              <tr>
-                <th>Lecturer</th>
-                <th>Type</th>
-                <th>Date Range</th>
-                <th>Reason</th>
-                <th>Status</th>
-                <th>Actions</th>
+              <tr style={{ background: '#f5f5f5' }}>
+                <th style={{ padding: '10px', textAlign: 'left' }}>Lecturer</th>
+                <th style={{ padding: '10px', textAlign: 'left' }}>Department</th>
+                <th style={{ padding: '10px', textAlign: 'left' }}>Type</th>
+                <th style={{ padding: '10px', textAlign: 'left' }}>Date Range</th>
+                <th style={{ padding: '10px', textAlign: 'left' }}>Days</th>
+                <th style={{ padding: '10px', textAlign: 'left' }}>Status</th>
+                <th style={{ padding: '10px', textAlign: 'left' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {filteredRequests.map((r) => (
-                <tr key={r.id}>
-                  <td>
+                <tr key={r.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                  <td style={{ padding: '10px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       {r.lecturer?.profile_picture_url ? (
                         <img src={r.lecturer.profile_picture_url} alt={r.lecturer?.full_name} style={{ width: '32px', height: '32px', borderRadius: '50%', objectFit: 'cover' }} />
@@ -346,29 +385,66 @@ const HODLeaveRequests = ({ departmentCode, fetchHODData, setStats }) => {
                       <div>
                         <strong>{r.lecturer?.full_name || 'Unknown'}</strong>
                         <br />
-                        <small>{r.lecturer?.email || 'No email'}</small>
+                        <small style={{ color: '#666' }}>{r.lecturer?.email || 'No email'}</small>
                       </div>
                     </div>
                   </td>
-                  <td><span style={{ textTransform: 'capitalize' }}>{r.leave_type?.replace('_', ' ') || 'N/A'}</span></td>
-                  <td>
-                    {r.start_date ? new Date(r.start_date).toLocaleDateString() : 'N/A'} → {r.end_date ? new Date(r.end_date).toLocaleDateString() : 'N/A'}
-                    <br />
-                    <small>{r.days || 0} days</small>
+                  <td style={{ padding: '10px' }}>
+                    <span style={{ 
+                      background: '#e3f2fd', 
+                      color: '#1565c0', 
+                      padding: '2px 10px', 
+                      borderRadius: '12px',
+                      fontSize: '12px',
+                      fontWeight: '600'
+                    }}>
+                      {r.department_code || 'N/A'}
+                    </span>
                   </td>
-                  <td><div style={{ maxWidth: '150px', wordBreak: 'break-word' }}>{r.reason || 'No reason provided'}</div></td>
-                  <td>
-                    <span className={`hod-status ${statusColors[r.status] || ''}`}>
+                  <td style={{ padding: '10px', textTransform: 'capitalize' }}>
+                    {r.leave_type?.replace('_', ' ') || 'N/A'}
+                  </td>
+                  <td style={{ padding: '10px' }}>
+                    {r.start_date ? new Date(r.start_date).toLocaleDateString() : 'N/A'}
+                    <br />
+                    <small style={{ color: '#666' }}>to {r.end_date ? new Date(r.end_date).toLocaleDateString() : 'N/A'}</small>
+                  </td>
+                  <td style={{ padding: '10px' }}>
+                    <strong>{r.days || 0}</strong> days
+                  </td>
+                  <td style={{ padding: '10px' }}>
+                    <span className={`hod-status ${statusColors[r.status] || ''}`} style={{
+                      padding: '4px 12px',
+                      borderRadius: '12px',
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      background: r.status === 'pending' || r.status === 'pending_hod' ? '#fff3e0' :
+                                r.status === 'approved_by_hod' ? '#fff8e1' :
+                                r.status === 'approved_by_dean' || r.status === 'approved' ? '#e8f5e9' :
+                                r.status === 'rejected_by_hod' || r.status === 'rejected_by_dean' || r.status === 'rejected' ? '#ffebee' : '#f5f5f5',
+                      color: r.status === 'pending' || r.status === 'pending_hod' ? '#e65100' :
+                            r.status === 'approved_by_hod' ? '#f57c00' :
+                            r.status === 'approved_by_dean' || r.status === 'approved' ? '#2e7d32' :
+                            r.status === 'rejected_by_hod' || r.status === 'rejected_by_dean' || r.status === 'rejected' ? '#c62828' : '#666'
+                    }}>
                       {getStatusLabel(r.status)}
                     </span>
                   </td>
-                  <td>
+                  <td style={{ padding: '10px' }}>
                     {(r.status === 'pending' || r.status === 'pending_hod') && (
-                      <div className="hod-action-buttons">
-                        <button className="hod-approve-btn" onClick={() => { setSelectedLeave(r); setShowModal(true); setHodNotes(''); setRejectionReason(''); }}>
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                        <button 
+                          className="hod-approve-btn" 
+                          onClick={() => { setSelectedLeave(r); setShowModal(true); setHodNotes(''); setRejectionReason(''); }}
+                          style={{ padding: '4px 12px', background: '#4caf50', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+                        >
                           ✅ Approve
                         </button>
-                        <button className="hod-reject-btn" onClick={() => { setSelectedLeave(r); setShowModal(true); }}>
+                        <button 
+                          className="hod-reject-btn" 
+                          onClick={() => { setSelectedLeave(r); setShowModal(true); }}
+                          style={{ padding: '4px 12px', background: '#f44336', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+                        >
                           ❌ Reject
                         </button>
                       </div>
@@ -380,7 +456,7 @@ const HODLeaveRequests = ({ departmentCode, fetchHODData, setStats }) => {
                       <span style={{ color: '#2e7d32', fontWeight: '600' }}>✅ Approved</span>
                     )}
                     {(r.status === 'rejected_by_hod' || r.status === 'rejected_by_dean' || r.status === 'rejected') && (
-                      <span style={{ color: '#d32f2f', fontWeight: '600' }}>❌ Rejected</span>
+                      <span style={{ color: '#c62828', fontWeight: '600' }}>❌ Rejected</span>
                     )}
                     {r.status === 'cancelled' && (
                       <span style={{ color: '#666', fontWeight: '600' }}>🔄 Cancelled</span>
@@ -395,39 +471,54 @@ const HODLeaveRequests = ({ departmentCode, fetchHODData, setStats }) => {
 
       {/* HOD Action Modal */}
       {showModal && selectedLeave && (
-        <div className="hod-modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="hod-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="hod-modal-header">
-              <h3>📝 Review Leave Request</h3>
-              <button onClick={() => setShowModal(false)}>✕</button>
+        <div className="hod-modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }} onClick={() => setShowModal(false)}>
+          <div className="hod-modal" style={{ background: 'white', borderRadius: '12px', maxWidth: '550px', width: '100%', padding: '24px', maxHeight: '90vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+            <div className="hod-modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ margin: 0 }}>📝 Review Leave Request</h3>
+              <button onClick={() => setShowModal(false)} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer' }}>✕</button>
             </div>
             <div className="hod-modal-body">
               <div style={{ marginBottom: '16px' }}>
                 <p><strong>Lecturer:</strong> {selectedLeave.lecturer?.full_name}</p>
+                <p><strong>Department:</strong> {selectedLeave.department_code}</p>
                 <p><strong>Type:</strong> {selectedLeave.leave_type}</p>
                 <p><strong>Dates:</strong> {new Date(selectedLeave.start_date).toLocaleDateString()} - {new Date(selectedLeave.end_date).toLocaleDateString()}</p>
                 <p><strong>Days:</strong> {selectedLeave.days}</p>
                 <p><strong>Reason:</strong> {selectedLeave.reason}</p>
               </div>
               
-              <div className="hod-form-group">
-                <label>HOD Notes (Optional)</label>
-                <textarea value={hodNotes} onChange={(e) => setHodNotes(e.target.value)} className="hod-textarea" placeholder="Add your notes..." rows={2} />
+              <div className="hod-form-group" style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'block', fontWeight: '600', marginBottom: '4px' }}>HOD Notes (Optional)</label>
+                <textarea 
+                  value={hodNotes} 
+                  onChange={(e) => setHodNotes(e.target.value)} 
+                  className="hod-textarea" 
+                  placeholder="Add your notes..." 
+                  rows={2}
+                  style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '6px' }}
+                />
               </div>
 
               {selectedLeave.status === 'pending' && (
-                <div className="hod-form-group">
-                  <label>Rejection Reason (Required for rejection)</label>
-                  <textarea value={rejectionReason} onChange={(e) => setRejectionReason(e.target.value)} className="hod-textarea" placeholder="Provide reason if rejecting..." rows={3} />
+                <div className="hod-form-group" style={{ marginBottom: '12px' }}>
+                  <label style={{ display: 'block', fontWeight: '600', marginBottom: '4px' }}>Rejection Reason (Required for rejection)</label>
+                  <textarea 
+                    value={rejectionReason} 
+                    onChange={(e) => setRejectionReason(e.target.value)} 
+                    className="hod-textarea" 
+                    placeholder="Provide reason if rejecting..." 
+                    rows={3}
+                    style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '6px' }}
+                  />
                 </div>
               )}
             </div>
-            <div className="hod-modal-footer">
-              <button onClick={() => setShowModal(false)}>Cancel</button>
+            <div className="hod-modal-footer" style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #e0e0e0' }}>
+              <button onClick={() => setShowModal(false)} style={{ padding: '8px 20px', background: '#e0e0e0', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>Cancel</button>
               {selectedLeave.status === 'pending' && (
                 <>
-                  <button className="hod-reject-btn" onClick={handleHODReject}>❌ Reject</button>
-                  <button className="hod-approve-btn" onClick={() => handleHODApprove(selectedLeave.id)}>✅ Approve</button>
+                  <button className="hod-reject-btn" onClick={handleHODReject} style={{ padding: '8px 20px', background: '#f44336', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>❌ Reject</button>
+                  <button className="hod-approve-btn" onClick={() => handleHODApprove(selectedLeave.id)} style={{ padding: '8px 20px', background: '#4caf50', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>✅ Approve</button>
                 </>
               )}
             </div>

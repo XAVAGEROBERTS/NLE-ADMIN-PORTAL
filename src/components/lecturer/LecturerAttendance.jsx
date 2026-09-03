@@ -1,12 +1,12 @@
-// HODAttendance.jsx
+// lecturer/LecturerAttendance.jsx
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../../services/supabase';
 
-const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }) => {
+const LecturerAttendance = ({ profile, courses, showToast }) => {
   // ===== MODE =====
   const [mode, setMode] = useState('record'); // 'record' | 'history'
 
-  // ===== RECORD STATE =====
+  // ===== RECORD ATTENDANCE STATE =====
   const [todayLectures, setTodayLectures] = useState([]);
   const [selectedLecture, setSelectedLecture] = useState(null);
   const [enrolledStudents, setEnrolledStudents] = useState([]);
@@ -15,6 +15,10 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
   const [saving, setSaving] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+
+  // ===== ASSIGNED COURSES (from course_allocations) =====
+  const [assignedCourseIds, setAssignedCourseIds] = useState([]);
+  const [assignedCourses, setAssignedCourses] = useState([]); // full course objects
 
   // ===== HISTORY STATE =====
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -27,32 +31,82 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
   const [selectedSession, setSelectedSession] = useState(null);
   const [sessionStudents, setSessionStudents] = useState([]);
 
-  // ==================== RECORD: Fetch lectures for selected date ====================
+  const lecturerId = profile?.id;
+
+  // ==================== FETCH APPROVED COURSE ALLOCATIONS ====================
+  const fetchAssignedCourses = useCallback(async () => {
+    if (!lecturerId) return [];
+
+    try {
+      const { data: allocated, error } = await supabase
+        .from('course_allocations')
+        .select(`
+          course_id,
+          status,
+          courses:course_id (
+            id,
+            course_code,
+            course_name,
+            department_code,
+            is_active
+          )
+        `)
+        .eq('lecturer_id', lecturerId)
+        .eq('status', 'approved');
+
+      if (error) throw error;
+
+      if (!allocated || allocated.length === 0) {
+        setAssignedCourseIds([]);
+        setAssignedCourses([]);
+        return [];
+      }
+
+      const courseIds = allocated.map(a => a.course_id).filter(Boolean);
+      const courseObjs = allocated
+        .map(a => a.courses)
+        .filter(c => c && c.id);
+
+      setAssignedCourseIds(courseIds);
+      setAssignedCourses(courseObjs);
+      return courseIds;
+    } catch (err) {
+      console.error('Error fetching assigned courses:', err);
+      showToast?.('Error loading assigned courses: ' + err.message, 'error');
+      setAssignedCourseIds([]);
+      setAssignedCourses([]);
+      return [];
+    }
+  }, [lecturerId, showToast]);
+
+  // Load assigned courses on mount / profile change
+  useEffect(() => {
+    if (lecturerId) {
+      fetchAssignedCourses();
+    }
+  }, [lecturerId, fetchAssignedCourses]);
+
+  // ===== RECORD: Fetch lectures for selected date (ONLY assigned courses) =====
   const fetchLectures = useCallback(async () => {
-    if (!departmentCode) return;
+    if (!lecturerId) return;
     setLoading(true);
 
     try {
-      const dayOfWeek = new Date(selectedDate).getDay(); // 0=Sun ... 6=Sat
-      const dbDayOfWeek = dayOfWeek === 0 ? 7 : dayOfWeek; // convert to 1=Mon ... 7=Sun
+      // Always get fresh assigned course IDs
+      const courseIds = await fetchAssignedCourses();
 
-      // 1. Get active timetables for this department
-      const { data: timetables, error: ttError } = await supabase
-        .from('program_timetables')
-        .select('id')
-        .eq('department_code', departmentCode)
-        .eq('is_active', true);
-
-      if (ttError) throw ttError;
-
-      const timetableIds = (timetables || []).map(t => t.id);
-      if (timetableIds.length === 0) {
+      if (courseIds.length === 0) {
         setTodayLectures([]);
         setLoading(false);
         return;
       }
 
-      // 2. Get slots for that day
+      const dayOfWeek = new Date(selectedDate).getDay(); // 0=Sun ... 6=Sat
+      // Note: your timetable uses 1=Mon ... 7=Sun. Adjust if needed.
+      // If your day_of_week is 1-7 (Mon-Sun), convert:
+      const dbDayOfWeek = dayOfWeek === 0 ? 7 : dayOfWeek;
+
+      // 1. Timetable slots for assigned courses on this day
       const { data: slots, error: slotsError } = await supabase
         .from('program_timetable_slots')
         .select(`
@@ -66,50 +120,62 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
           room_number,
           building,
           slot_type,
-          lecturer_id
+          lecturer_id,
+          program_timetable_id,
+          program_timetables (
+            department_code,
+            academic_year,
+            semester,
+            year_of_study
+          )
         `)
-        .in('program_timetable_id', timetableIds)
+        .in('course_id', courseIds)                 // ← CRITICAL: only assigned courses
         .eq('day_of_week', dbDayOfWeek)
         .eq('is_active', true)
         .order('start_time');
 
       if (slotsError) throw slotsError;
 
-      // 3. Filter to department courses (by code or id)
-      const deptCourseCodes = new Set(courses.map(c => c.course_code));
-      const deptCourseIds = new Set(courses.map(c => c.id));
+      // 2. Manually created lectures (also restricted to assigned courses)
+      const { data: createdLectures, error: lecturesError } = await supabase
+        .from('lectures')
+        .select(`
+          id,
+          title,
+          course_id,
+          scheduled_date,
+          start_time,
+          end_time,
+          courses (course_code, course_name)
+        `)
+        .eq('lecturer_id', lecturerId)
+        .eq('scheduled_date', selectedDate)
+        .in('course_id', courseIds);                // ← CRITICAL
 
-      let filtered = (slots || []).filter(s => {
-        if (s.course_id && deptCourseIds.has(s.course_id)) return true;
-        if (s.course_code && deptCourseCodes.has(s.course_code)) return true;
-        return false;
-      });
+      if (lecturesError) throw lecturesError;
 
-      // 4. Enrich with lecturer names + proper course name
-      const lecturerIds = [...new Set(filtered.map(s => s.lecturer_id).filter(Boolean))];
-      let lecturerMap = {};
-      if (lecturerIds.length > 0) {
-        const { data: lects } = await supabase
-          .from('lecturers')
-          .select('id, full_name')
-          .in('id', lecturerIds);
-        lects?.forEach(l => (lecturerMap[l.id] = l.full_name));
-      }
+      const timetableSlots = (slots || []).map(s => ({
+        ...s,
+        source: 'timetable',
+        displayName: s.course_code,
+        courseName: s.course_name,
+        lecture_id: null,
+      }));
 
-      const enriched = filtered.map(slot => {
-        const course = courses.find(
-          c => c.id === slot.course_id || c.course_code === slot.course_code
-        );
-        return {
-          ...slot,
-          course_id: slot.course_id || course?.id,
-          course_name: course?.course_name || slot.course_name || slot.course_code,
-          lecturer_name: lecturerMap[slot.lecturer_id] || 'Not Assigned',
-          displayName: slot.course_code,
-        };
-      });
+      const manualLectures = (createdLectures || []).map(l => ({
+        id: l.id,
+        course_code: l.courses?.course_code,
+        course_name: l.courses?.course_name,
+        start_time: l.start_time,
+        end_time: l.end_time,
+        source: 'manual',
+        lecture_id: l.id,
+        course_id: l.course_id,
+        displayName: l.courses?.course_code || l.title,
+        courseName: l.courses?.course_name || l.title,
+      }));
 
-      setTodayLectures(enriched);
+      setTodayLectures([...timetableSlots, ...manualLectures]);
     } catch (err) {
       console.error(err);
       showToast?.('Error loading lectures: ' + err.message, 'error');
@@ -117,34 +183,31 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
     } finally {
       setLoading(false);
     }
-  }, [departmentCode, courses, selectedDate, showToast]);
+  }, [lecturerId, selectedDate, fetchAssignedCourses, showToast]);
 
   useEffect(() => {
     if (mode === 'record') fetchLectures();
   }, [fetchLectures, mode]);
 
-  // ==================== RECORD: Open modal ====================
+  // ===== RECORD: Open attendance modal =====
   const openAttendance = async (slot) => {
     try {
       let courseId = slot.course_id;
 
+      // Fallback lookup only if course_id is missing (should be rare now)
       if (!courseId && slot.course_code) {
-        const found = courses.find(c => c.course_code === slot.course_code);
+        const found = assignedCourses.find(c => c.course_code === slot.course_code);
         courseId = found?.id;
       }
 
       if (!courseId) {
-        // last resort lookup
-        const { data: courseData } = await supabase
-          .from('courses')
-          .select('id')
-          .eq('course_code', slot.course_code)
-          .maybeSingle();
-        courseId = courseData?.id;
+        alert('Could not find the course for this lecture');
+        return;
       }
 
-      if (!courseId) {
-        alert('Could not find the course for this lecture');
+      // Extra safety: only allow if the course is assigned to this lecturer
+      if (!assignedCourseIds.includes(courseId)) {
+        alert('You are not assigned to this course');
         return;
       }
 
@@ -194,9 +257,16 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
     }
   };
 
-  // ==================== RECORD: Save ====================
+  // ===== RECORD: Save =====
   const handleSave = async () => {
     if (!selectedLecture?.course_id) return;
+
+    // Final safety check
+    if (!assignedCourseIds.includes(selectedLecture.course_id)) {
+      alert('You are not assigned to this course');
+      return;
+    }
+
     setSaving(true);
 
     try {
@@ -218,10 +288,12 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
         const record = {
           student_id: student.id,
           course_id: selectedLecture.course_id,
+          lecture_id: selectedLecture.lecture_id || null,
           date: selectedDate,
           status,
           check_in_time: now,
           day_of_week: new Date(selectedDate).getDay(),
+          recorded_by: lecturerId,
           updated_at: new Date().toISOString(),
         };
 
@@ -238,7 +310,6 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
       showToast?.(`Attendance saved! ${created} new • ${updated} updated`, 'success');
       setShowModal(false);
       setSelectedLecture(null);
-      if (fetchHODData) await fetchHODData();
     } catch (err) {
       alert('Failed to save: ' + err.message);
     } finally {
@@ -246,16 +317,16 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
     }
   };
 
-  // ==================== HISTORY: Fetch ====================
+  // ===== HISTORY: Fetch (ONLY assigned courses) =====
   const fetchHistory = useCallback(async () => {
-    if (!departmentCode || courses.length === 0) {
-      setHistoryRecords([]);
-      return;
-    }
+    if (!lecturerId) return;
     setHistoryLoading(true);
 
     try {
-      const courseIds = courses.map(c => c.id).filter(Boolean);
+      const courseIds = assignedCourseIds.length > 0
+        ? assignedCourseIds
+        : await fetchAssignedCourses();
+
       if (courseIds.length === 0) {
         setHistoryRecords([]);
         setHistoryLoading(false);
@@ -274,15 +345,20 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
           students (id, full_name, student_id),
           courses (id, course_code, course_name)
         `)
-        .in('course_id', courseIds)
+        .in('course_id', courseIds)                 // ← ONLY assigned courses
         .order('date', { ascending: false });
 
-      if (historyCourseId) query = query.eq('course_id', historyCourseId);
+      if (historyCourseId) {
+        // Extra safety: only allow filtering by an assigned course
+        if (courseIds.includes(historyCourseId)) {
+          query = query.eq('course_id', historyCourseId);
+        }
+      }
       if (historyFrom) query = query.gte('date', historyFrom);
       if (historyTo) query = query.lte('date', historyTo);
       if (historyStatus !== 'all') query = query.eq('status', historyStatus);
 
-      const { data, error } = await query.limit(3000);
+      const { data, error } = await query.limit(2000);
       if (error) throw error;
 
       let records = data || [];
@@ -306,13 +382,14 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
       setHistoryLoading(false);
     }
   }, [
-    departmentCode,
-    courses,
+    lecturerId,
+    assignedCourseIds,
     historyCourseId,
     historyFrom,
     historyTo,
     historyStatus,
     historySearch,
+    fetchAssignedCourses,
     showToast,
   ]);
 
@@ -320,8 +397,14 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
     if (mode === 'history') fetchHistory();
   }, [mode, fetchHistory]);
 
-  // ==================== HISTORY: Session detail ====================
+  // ===== HISTORY: Open session detail =====
   const openSessionDetail = async (date, courseId) => {
+    // Safety
+    if (!assignedCourseIds.includes(courseId)) {
+      alert('You are not assigned to this course');
+      return;
+    }
+
     try {
       const { data, error } = await supabase
         .from('attendance_records')
@@ -343,16 +426,19 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
     }
   };
 
-  // ==================== STATS & SESSIONS ====================
+  // ===== HISTORY: Summary stats =====
   const stats = React.useMemo(() => {
     const total = historyRecords.length;
     const present = historyRecords.filter(r => r.status === 'present').length;
     const absent = historyRecords.filter(r => r.status === 'absent').length;
     const late = historyRecords.filter(r => r.status === 'late').length;
+    const excused = historyRecords.filter(r => r.status === 'excused').length;
+    const medical = historyRecords.filter(r => r.status === 'medical').length;
     const rate = total > 0 ? Math.round(((present + late) / total) * 100) : 0;
-    return { total, present, absent, late, rate };
+    return { total, present, absent, late, excused, medical, rate };
   }, [historyRecords]);
 
+  // Group records by date + course
   const sessions = React.useMemo(() => {
     const map = {};
     historyRecords.forEach(r => {
@@ -372,10 +458,10 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
   }, [historyRecords]);
 
   return (
-    <div className="hod-section">
+    <div className="lecturer-tab-content">
       {/* Header + Mode Tabs */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 20 }}>
-        <h2 className="hod-section-title" style={{ margin: 0 }}>✅ Attendance</h2>
+      <div className="lecturer-tab-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+        <h2>✅ Attendance</h2>
         <div style={{ display: 'flex', gap: 8 }}>
           <button
             onClick={() => setMode('record')}
@@ -418,30 +504,48 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
               onChange={(e) => setSelectedDate(e.target.value)}
               style={{ padding: '8px 12px', border: '1px solid #ddd', borderRadius: 6 }}
             />
-            <button onClick={fetchLectures} className="hod-refresh-btn">
+            <button onClick={fetchLectures} className="lecturer-refresh-btn">
               🔄 Refresh
             </button>
+            {assignedCourseIds.length > 0 && (
+              <span style={{ color: '#666', fontSize: 14 }}>
+                {assignedCourseIds.length} course(s) assigned
+              </span>
+            )}
           </div>
 
           {loading ? (
-            <div className="hod-loading">Loading lectures...</div>
-          ) : todayLectures.length === 0 ? (
-            <div className="hod-empty">
+            <div className="lecturer-loading-content">
+              <div className="lecturer-spinner"></div>
+              <p>Loading your lectures...</p>
+            </div>
+          ) : assignedCourseIds.length === 0 ? (
+            <div className="lecturer-empty-state">
               <span style={{ fontSize: 48 }}>📭</span>
-              <h3>No Lectures Found</h3>
-              <p>No lectures scheduled for {new Date(selectedDate).toLocaleDateString()} in your department</p>
+              <h3>No assigned courses</h3>
+              <p>You have no approved course allocations. Contact your HOD.</p>
+            </div>
+          ) : todayLectures.length === 0 ? (
+            <div className="lecturer-empty-state">
+              <span style={{ fontSize: 48 }}>📭</span>
+              <h3>No lectures found</h3>
+              <p>No lectures scheduled for {new Date(selectedDate).toLocaleDateString()} among your assigned courses.</p>
             </div>
           ) : (
-            <div className="hod-lectures-grid">
+            <div className="lecturer-courses-grid">
               {todayLectures.map((slot) => (
-                <div key={slot.id || `${slot.course_code}-${slot.start_time}`} className="hod-lecture-card">
-                  <h3>{slot.displayName || slot.course_code}</h3>
-                  <p>{slot.course_name}</p>
-                  <p>👨‍🏫 {slot.lecturer_name}</p>
+                <div key={slot.id || `${slot.course_id}-${slot.start_time}`} className="lecturer-course-card">
+                  <div className="lecturer-course-header">
+                    <h3>{slot.displayName || slot.course_code}</h3>
+                    <span className="lecturer-course-status active">
+                      {slot.slot_type || 'Lecture'}
+                    </span>
+                  </div>
+                  <h4>{slot.courseName || slot.course_name}</h4>
                   <p>🕐 {slot.start_time} – {slot.end_time}</p>
                   {slot.room_number && <p>📍 {slot.room_number}</p>}
                   <button
-                    className="hod-record-btn"
+                    className="lecturer-primary-btn"
                     onClick={() => openAttendance(slot)}
                     style={{ marginTop: 12, width: '100%' }}
                   >
@@ -467,8 +571,8 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
               onChange={(e) => setHistoryCourseId(e.target.value)}
               style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid #ddd', minWidth: 180 }}
             >
-              <option value="">All Department Courses</option>
-              {courses.map(c => (
+              <option value="">All My Courses</option>
+              {assignedCourses.map(c => (
                 <option key={c.id} value={c.id}>
                   {c.course_code} – {c.course_name}
                 </option>
@@ -520,7 +624,7 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
             </button>
           </div>
 
-          {/* Stats */}
+          {/* Stats Cards */}
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 20 }}>
             <div style={{ flex: 1, minWidth: 120, padding: 16, background: '#e3f2fd', borderRadius: 8, textAlign: 'center' }}>
               <div style={{ fontSize: 24, fontWeight: 700 }}>{stats.total}</div>
@@ -545,16 +649,19 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
           </div>
 
           {historyLoading ? (
-            <div className="hod-loading">Loading history...</div>
+            <div className="lecturer-loading-content">
+              <div className="lecturer-spinner"></div>
+              <p>Loading history...</p>
+            </div>
           ) : sessions.length === 0 ? (
-            <div className="hod-empty">
+            <div className="lecturer-empty-state">
               <span style={{ fontSize: 48 }}>📭</span>
               <h3>No attendance records found</h3>
               <p>Try adjusting the filters</p>
             </div>
           ) : (
             <div style={{ overflowX: 'auto' }}>
-              <table className="hod-table" style={{ width: '100%', borderCollapse: 'collapse', background: 'white' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', background: 'white' }}>
                 <thead>
                   <tr style={{ background: '#f5f5f5' }}>
                     <th style={{ padding: 12, textAlign: 'left' }}>Date</th>
@@ -610,142 +717,182 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
 
       {/* ===== RECORD MODAL ===== */}
       {showModal && selectedLecture && (
-        <div className="hod-modal-overlay" onClick={() => setShowModal(false)}>
-          <div className="hod-modal hod-modal-large" onClick={(e) => e.stopPropagation()}>
-            <div className="hod-modal-header">
-              <h3>📝 Attendance – {selectedLecture.displayName || selectedLecture.course_code}</h3>
-              <button onClick={() => setShowModal(false)}>✕</button>
+        <div
+          className="lecturer-modal-overlay"
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 9999, padding: 20
+          }}
+          onClick={() => setShowModal(false)}
+        >
+          <div
+            style={{
+              background: 'white', borderRadius: 12, maxWidth: 700, width: '100%',
+              maxHeight: '90vh', overflowY: 'auto', padding: 24
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ margin: 0 }}>
+                📝 Attendance – {selectedLecture.displayName || selectedLecture.course_code}
+              </h3>
+              <button onClick={() => setShowModal(false)} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer' }}>×</button>
             </div>
 
-            <div className="hod-modal-body">
-              <p style={{ color: '#666', marginBottom: 16 }}>
-                Date: <strong>{new Date(selectedDate).toLocaleDateString()}</strong> •
-                Time: {selectedLecture.start_time} – {selectedLecture.end_time} •
-                Lecturer: {selectedLecture.lecturer_name}
-              </p>
+            <p style={{ color: '#666', marginBottom: 16 }}>
+              Date: <strong>{new Date(selectedDate).toLocaleDateString()}</strong> •
+              Time: {selectedLecture.start_time} – {selectedLecture.end_time}
+            </p>
 
-              <div className="hod-attendance-actions">
-                <button
-                  className="hod-btn-all-present"
-                  onClick={() => {
-                    const s = {};
-                    enrolledStudents.forEach(x => (s[x.id] = 'present'));
-                    setAttendanceStatus(s);
-                  }}
-                >
-                  ✅ All Present
-                </button>
-                <button
-                  className="hod-btn-all-absent"
-                  onClick={() => {
-                    const s = {};
-                    enrolledStudents.forEach(x => (s[x.id] = 'absent'));
-                    setAttendanceStatus(s);
-                  }}
-                >
-                  ❌ All Absent
-                </button>
-                <span className="hod-attendance-count">
-                  {enrolledStudents.length} students
-                </span>
-              </div>
-
-              {enrolledStudents.length === 0 ? (
-                <div className="hod-empty">
-                  <span>📭</span>
-                  <h3>No Students Enrolled</h3>
-                  <p>No students are enrolled in this course</p>
-                </div>
-              ) : (
-                <div className="hod-attendance-table-wrapper">
-                  <table className="hod-table">
-                    <thead>
-                      <tr>
-                        <th>ID</th>
-                        <th>Name</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {enrolledStudents.map((s) => (
-                        <tr key={s.id}>
-                          <td>{s.student_id}</td>
-                          <td>{s.full_name}</td>
-                          <td>
-                            <select
-                              value={attendanceStatus[s.id] || 'present'}
-                              onChange={(e) =>
-                                setAttendanceStatus({ ...attendanceStatus, [s.id]: e.target.value })
-                              }
-                              className="hod-attendance-select"
-                            >
-                              <option value="present">✅ Present</option>
-                              <option value="absent">❌ Absent</option>
-                              <option value="late">🕒 Late</option>
-                              <option value="excused">📝 Excused</option>
-                              <option value="medical">🏥 Medical</option>
-                            </select>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-
-            <div className="hod-modal-footer">
-              <button onClick={() => setShowModal(false)}>Cancel</button>
+            <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
               <button
-                className="hod-save-btn"
+                onClick={() => {
+                  const s = {};
+                  enrolledStudents.forEach(x => (s[x.id] = 'present'));
+                  setAttendanceStatus(s);
+                }}
+                style={{ padding: '6px 14px', background: '#4caf50', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+              >
+                ✅ All Present
+              </button>
+              <button
+                onClick={() => {
+                  const s = {};
+                  enrolledStudents.forEach(x => (s[x.id] = 'absent'));
+                  setAttendanceStatus(s);
+                }}
+                style={{ padding: '6px 14px', background: '#f44336', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+              >
+                ❌ All Absent
+              </button>
+              <span style={{ marginLeft: 'auto', alignSelf: 'center', color: '#666' }}>
+                {enrolledStudents.length} students
+              </span>
+            </div>
+
+            {enrolledStudents.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>
+                <p>No students enrolled in this course</p>
+              </div>
+            ) : (
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#f5f5f5' }}>
+                    <th style={{ padding: 10, textAlign: 'left' }}>Student ID</th>
+                    <th style={{ padding: 10, textAlign: 'left' }}>Name</th>
+                    <th style={{ padding: 10, textAlign: 'left' }}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {enrolledStudents.map(s => (
+                    <tr key={s.id} style={{ borderBottom: '1px solid #eee' }}>
+                      <td style={{ padding: 10 }}>{s.student_id}</td>
+                      <td style={{ padding: 10 }}>{s.full_name}</td>
+                      <td style={{ padding: 10 }}>
+                        <select
+                          value={attendanceStatus[s.id] || 'present'}
+                          onChange={(e) =>
+                            setAttendanceStatus({ ...attendanceStatus, [s.id]: e.target.value })
+                          }
+                          style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #ddd' }}
+                        >
+                          <option value="present">✅ Present</option>
+                          <option value="absent">❌ Absent</option>
+                          <option value="late">🕒 Late</option>
+                          <option value="excused">📝 Excused</option>
+                          <option value="medical">🏥 Medical</option>
+                        </select>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20, borderTop: '1px solid #eee', paddingTop: 16 }}>
+              <button onClick={() => setShowModal(false)} style={{ padding: '8px 18px', background: '#e0e0e0', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                Cancel
+              </button>
+              <button
                 onClick={handleSave}
                 disabled={saving || enrolledStudents.length === 0}
+                style={{
+                  padding: '8px 18px',
+                  background: '#1976d2',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: 6,
+                  cursor: saving ? 'not-allowed' : 'pointer',
+                  fontWeight: 600,
+                  opacity: saving || enrolledStudents.length === 0 ? 0.6 : 1
+                }}
               >
-                {saving ? 'Saving...' : '💾 Save Attendance'}
+                {saving ? 'Saving…' : '💾 Save Attendance'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ===== SESSION DETAIL MODAL ===== */}
+      {/* ===== SESSION DETAIL MODAL (History) ===== */}
       {selectedSession && (
-        <div className="hod-modal-overlay" onClick={() => setSelectedSession(null)}>
-          <div className="hod-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 600 }}>
-            <div className="hod-modal-header">
-              <h3>📋 Session – {new Date(selectedSession.date).toLocaleDateString()}</h3>
-              <button onClick={() => setSelectedSession(null)}>✕</button>
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 9999, padding: 20
+          }}
+          onClick={() => setSelectedSession(null)}
+        >
+          <div
+            style={{
+              background: 'white', borderRadius: 12, maxWidth: 600, width: '100%',
+              maxHeight: '85vh', overflowY: 'auto', padding: 24
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ margin: 0 }}>
+                📋 Session – {new Date(selectedSession.date).toLocaleDateString()}
+              </h3>
+              <button onClick={() => setSelectedSession(null)} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer' }}>×</button>
             </div>
-            <div className="hod-modal-body">
-              <table className="hod-table" style={{ width: '100%' }}>
-                <thead>
-                  <tr>
-                    <th>Student ID</th>
-                    <th>Name</th>
-                    <th>Status</th>
-                    <th>Time</th>
+
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ background: '#f5f5f5' }}>
+                  <th style={{ padding: 10, textAlign: 'left' }}>Student ID</th>
+                  <th style={{ padding: 10, textAlign: 'left' }}>Name</th>
+                  <th style={{ padding: 10, textAlign: 'left' }}>Status</th>
+                  <th style={{ padding: 10, textAlign: 'left' }}>Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sessionStudents.map(r => (
+                  <tr key={r.id} style={{ borderBottom: '1px solid #eee' }}>
+                    <td style={{ padding: 10 }}>{r.students?.student_id}</td>
+                    <td style={{ padding: 10 }}>{r.students?.full_name}</td>
+                    <td style={{ padding: 10 }}>
+                      {r.status === 'present' && '✅ Present'}
+                      {r.status === 'absent' && '❌ Absent'}
+                      {r.status === 'late' && '🕒 Late'}
+                      {r.status === 'excused' && '📝 Excused'}
+                      {r.status === 'medical' && '🏥 Medical'}
+                    </td>
+                    <td style={{ padding: 10 }}>{r.check_in_time || '—'}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {sessionStudents.map(r => (
-                    <tr key={r.id}>
-                      <td>{r.students?.student_id}</td>
-                      <td>{r.students?.full_name}</td>
-                      <td>
-                        {r.status === 'present' && '✅ Present'}
-                        {r.status === 'absent' && '❌ Absent'}
-                        {r.status === 'late' && '🕒 Late'}
-                        {r.status === 'excused' && '📝 Excused'}
-                        {r.status === 'medical' && '🏥 Medical'}
-                      </td>
-                      <td>{r.check_in_time || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="hod-modal-footer">
-              <button onClick={() => setSelectedSession(null)}>Close</button>
+                ))}
+              </tbody>
+            </table>
+
+            <div style={{ marginTop: 16, textAlign: 'right' }}>
+              <button
+                onClick={() => setSelectedSession(null)}
+                style={{ padding: '8px 18px', background: '#e0e0e0', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>
@@ -754,4 +901,4 @@ const HODAttendance = ({ departmentCode, courses = [], showToast, fetchHODData }
   );
 };
 
-export default HODAttendance;
+export default LecturerAttendance;
