@@ -1,6 +1,98 @@
 // dean/DeanExamResults.jsx - SEPARATE SECTIONS FOR EXAMS AND ASSIGNMENTS
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../../services/supabase';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+
+const exportMarksToPDF = (selectedItem, itemMarks, itemStats, role = 'Dean') => {
+  if (!selectedItem || !itemMarks?.length) {
+    alert('No data to export');
+    return;
+  }
+
+  const doc = new jsPDF('l', 'mm', 'a4'); // landscape
+  const courseCode = selectedItem.courses?.course_code || 'N/A';
+  const courseName = selectedItem.courses?.course_name || '';
+  const title = selectedItem.examinations?.title || selectedItem.assignments?.title || 'Results';
+  const type = selectedItem.result_type === 'exam' ? 'Exam' : 'Assignment';
+  const dept = selectedItem.department_code || '';
+
+  // Header
+  doc.setFontSize(16);
+  doc.setFont('helvetica', 'bold');
+  doc.text(`${type} Results - ${courseCode}`, 14, 15);
+
+  doc.setFontSize(10);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`${courseName}`, 14, 22);
+  doc.text(`Title: ${title}`, 14, 28);
+  doc.text(`Department: ${dept}  |  Exported by: ${role}  |  ${new Date().toLocaleString()}`, 14, 34);
+
+  // Stats line
+  doc.setFontSize(9);
+  doc.text(
+    `Total Enrolled: ${itemStats.total || 0}   |   Graded: ${itemStats.graded || 0}   |   Submitted: ${itemStats.submitted || 0}   |   Not Submitted: ${itemStats.notSubmitted || 0}   |   Passed: ${itemStats.passed || 0}   |   Failed: ${itemStats.failed || 0}`,
+    14,
+    42
+  );
+
+  // Table data
+  const tableBody = itemMarks.map((m, idx) => [
+    idx + 1,
+    m.students?.student_id || 'N/A',
+    m.students?.full_name || 'Unknown',
+    m.marks_obtained !== null && m.marks_obtained !== undefined ? m.marks_obtained : '—',
+    m.percentage !== null && m.percentage !== undefined ? `${m.percentage}%` : '—',
+    m.grade || '—',
+    m.display_status === 'graded' ? 'Graded' :
+    m.display_status === 'submitted' || m.display_status === 'started' ? 'Submitted' :
+    m.display_status === 'absent' ? 'Absent' : 'Not Submitted'
+  ]);
+
+  autoTable(doc, {
+    startY: 48,
+    head: [['#', 'Student ID', 'Name', 'Marks', '%', 'Grade', 'Status']],
+    body: tableBody,
+    styles: { fontSize: 8, cellPadding: 2 },
+    headStyles: { fillColor: [25, 118, 210], textColor: 255, fontStyle: 'bold' },
+    alternateRowStyles: { fillColor: [245, 245, 245] },
+    columnStyles: {
+      0: { cellWidth: 12 },
+      1: { cellWidth: 30 },
+      2: { cellWidth: 55 },
+      3: { cellWidth: 20, halign: 'center' },
+      4: { cellWidth: 18, halign: 'center' },
+      5: { cellWidth: 20, halign: 'center' },
+      6: { cellWidth: 30, halign: 'center' },
+    },
+    didParseCell: (data) => {
+      // Color status column
+      if (data.section === 'body' && data.column.index === 6) {
+        const status = data.cell.raw;
+        if (status === 'Graded') data.cell.styles.textColor = [46, 125, 50];
+        else if (status === 'Submitted') data.cell.styles.textColor = [230, 81, 0];
+        else if (status === 'Absent') data.cell.styles.textColor = [194, 24, 91];
+        else data.cell.styles.textColor = [117, 117, 117];
+      }
+    }
+  });
+
+  // Footer
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(150);
+    doc.text(
+      `Page ${i} of ${pageCount}  |  Generated on ${new Date().toLocaleString()}`,
+      14,
+      doc.internal.pageSize.height - 8
+    );
+  }
+
+  const fileName = `${courseCode}_${type}_Results_${new Date().toISOString().slice(0, 10)}.pdf`;
+  doc.save(fileName);
+};
 
 const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) => {
   const [examResults, setExamResults] = useState([]);
@@ -251,115 +343,187 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
   }, [fetchAllResults]);
 
   // ===== VIEW MARKS =====
-  const viewMarks = async (item) => {
-    setSelectedItem(item);
-    setItemType(item.result_type);
+// ===== VIEW MARKS – Shows ALL enrolled students =====
+const viewMarks = async (item) => {
+  setSelectedItem(item);
+  setItemType(item.result_type);
+  
+  try {
+    console.log(`📊 Dean - Viewing ALL students for ${item.result_type}:`, item.item_id);
     
-    try {
-      console.log(`📊 Dean - Viewing marks for ${item.result_type}:`, item.item_id);
-      
-      let submissions = [];
-      let tableName = '';
-      let idField = '';
+    const courseId = item.course_id;
+    if (!courseId) {
+      alert('No course linked to this result');
+      return;
+    }
 
-      if (item.result_type === 'exam') {
-        tableName = 'exam_submissions';
-        idField = 'exam_id';
-        const { data, error } = await supabase
-          .from(tableName)
-          .select('id, student_id, total_marks_obtained, grade, grade_points, percentage, feedback, status, submitted_at, graded_at')
-          .eq(idField, item.item_id)
-          .eq('status', 'graded')
-          .order('total_marks_obtained', { ascending: false });
-        
-        if (error) throw error;
-        submissions = data || [];
-      } else {
-        tableName = 'assignment_submissions';
-        idField = 'assignment_id';
-        const { data, error } = await supabase
-          .from(tableName)
-          .select('id, student_id, marks_obtained, feedback, status, submission_date')
-          .eq(idField, item.item_id)
-          .eq('status', 'graded')
-          .order('marks_obtained', { ascending: false });
-        
-        if (error) throw error;
-        submissions = data || [];
-      }
+    // 1. Get ALL enrolled students for this course
+    const { data: enrolled, error: enrollError } = await supabase
+      .from('student_courses')
+      .select('student_id')
+      .eq('course_id', courseId)
+      .eq('status', 'enrolled');
 
-      console.log('📊 Submissions found:', submissions.length);
+    if (enrollError) throw enrollError;
 
-      // Get student details
-      const studentIds = [...new Set(submissions.map(s => s.student_id).filter(Boolean))];
-      let studentsMap = {};
-      
-      if (studentIds.length > 0) {
-        const { data: students, error: studentsError } = await supabase
-          .from('students')
-          .select('id, full_name, student_id, email')
-          .in('id', studentIds);
-        
-        if (!studentsError && students) {
-          students.forEach(s => { studentsMap[s.id] = s; });
-        }
-      }
+    const studentIds = enrolled?.map(sc => sc.student_id) || [];
 
-      // Process marks data
-      const totalMarks = item.examinations?.total_marks || item.assignments?.total_marks || 100;
-      
-      const processedMarks = submissions.map(s => {
-        const marksObtained = s.total_marks_obtained || s.marks_obtained || 0;
-        const percentage = totalMarks > 0 ? Math.round((marksObtained / totalMarks) * 100) : 0;
-        const isPassed = percentage >= 50;
-        const grade = s.grade || (isPassed ? 'Pass' : 'Fail');
-
-        return {
-          id: s.id,
-          student_id: s.student_id,
-          students: studentsMap[s.student_id] || { 
-            full_name: 'Unknown Student', 
-            student_id: 'N/A', 
-            email: 'N/A' 
-          },
-          marks_obtained: marksObtained,
-          grade: grade,
-          grade_points: s.grade_points || 0,
-          percentage: percentage,
-          is_passed: isPassed,
-          feedback: s.feedback || '',
-          status: s.status,
-          submitted_at: s.submitted_at || s.submission_date,
-          graded_at: s.graded_at
-        };
-      });
-
-      // Calculate stats
-      const total = processedMarks.length;
-      const passed = processedMarks.filter(m => m.is_passed).length;
-      const failed = total - passed;
-      const marksArray = processedMarks.map(m => m.marks_obtained).filter(m => m !== null && m !== undefined && !isNaN(m));
-      const avgMarks = marksArray.length > 0 ? marksArray.reduce((sum, m) => sum + m, 0) / marksArray.length : 0;
-      const highest = marksArray.length > 0 ? Math.max(...marksArray) : 0;
-      const lowest = marksArray.length > 0 ? Math.min(...marksArray) : 0;
-
-      setItemMarks(processedMarks);
+    if (studentIds.length === 0) {
+      setItemMarks([]);
       setItemStats({
-        total,
-        passed,
-        failed,
-        avgMarks: avgMarks.toFixed(2),
-        highest,
-        lowest,
-        averageScore: item.average_score
+        total: 0, graded: 0, submitted: 0, notSubmitted: 0,
+        passed: 0, failed: 0, avgMarks: 0, highest: 0, lowest: 0
       });
       setShowMarksModal(true);
-    } catch (err) {
-      console.error('❌ Error fetching marks:', err);
-      alert('Error loading marks: ' + err.message);
+      return;
     }
-  };
 
+    // 2. Get student details
+    const { data: studentsData, error: studentsError } = await supabase
+      .from('students')
+      .select('id, full_name, student_id, email')
+      .in('id', studentIds);
+
+    if (studentsError) throw studentsError;
+
+    const studentsMap = {};
+    (studentsData || []).forEach(s => { studentsMap[s.id] = s; });
+
+    // 3. Get ALL submissions (any status)
+    let submissions = [];
+    if (item.result_type === 'exam') {
+      const { data, error } = await supabase
+        .from('exam_submissions')
+        .select('id, student_id, total_marks_obtained, grade, grade_points, percentage, feedback, status, submitted_at, graded_at')
+        .eq('exam_id', item.item_id);
+      
+      if (error) throw error;
+      submissions = data || [];
+    } else {
+      const { data, error } = await supabase
+        .from('assignment_submissions')
+        .select('id, student_id, marks_obtained, feedback, status, submission_date, graded_at')
+        .eq('assignment_id', item.item_id);
+      
+      if (error) throw error;
+      submissions = data || [];
+    }
+
+    // Build map by student_id
+    const submissionMap = {};
+    submissions.forEach(s => {
+      submissionMap[s.student_id] = s;
+    });
+
+    const totalMarks = item.examinations?.total_marks || item.assignments?.total_marks || 100;
+
+    // 4. Merge every enrolled student
+    const processedMarks = studentIds.map(studentId => {
+      const student = studentsMap[studentId] || {
+        full_name: 'Unknown Student',
+        student_id: 'N/A',
+        email: 'N/A'
+      };
+      const sub = submissionMap[studentId];
+
+      if (!sub) {
+        return {
+          id: null,
+          student_id: studentId,
+          students: student,
+          marks_obtained: null,
+          grade: null,
+          grade_points: null,
+          percentage: null,
+          is_passed: false,
+          feedback: '',
+          status: 'not_submitted',
+          display_status: 'not_submitted',
+          submitted_at: null,
+          graded_at: null
+        };
+      }
+
+      const marksObtained = sub.total_marks_obtained ?? sub.marks_obtained ?? null;
+      const isGraded = sub.status === 'graded' && marksObtained !== null;
+      const percentage = isGraded && totalMarks > 0
+        ? Math.round((marksObtained / totalMarks) * 100)
+        : (sub.percentage ?? null);
+      const isPassed = isGraded ? percentage >= 50 : false;
+
+      let displayStatus = 'not_submitted';
+      if (sub.status === 'graded') displayStatus = 'graded';
+      else if (sub.status === 'submitted' || sub.status === 'started') displayStatus = 'submitted';
+      else if (sub.status === 'absent') displayStatus = 'absent';
+      else if (sub.status === 'not_submitted') displayStatus = 'not_submitted';
+      else if (sub.status === 'returned') displayStatus = 'returned';
+
+      return {
+        id: sub.id,
+        student_id: studentId,
+        students: student,
+        marks_obtained: marksObtained,
+        grade: sub.grade || (isGraded ? (isPassed ? 'Pass' : 'Fail') : null),
+        grade_points: sub.grade_points || null,
+        percentage: percentage,
+        is_passed: isPassed,
+        feedback: sub.feedback || '',
+        status: sub.status,
+        display_status: displayStatus,
+        submitted_at: sub.submitted_at || sub.submission_date || null,
+        graded_at: sub.graded_at || null
+      };
+    });
+
+    // Sort: Graded → Submitted → Not Submitted
+    processedMarks.sort((a, b) => {
+      const order = { graded: 0, submitted: 1, returned: 2, absent: 3, not_submitted: 4, started: 1 };
+      return (order[a.display_status] ?? 5) - (order[b.display_status] ?? 5);
+    });
+
+    // 5. Stats (graded students count as submitted)
+    const total = processedMarks.length;
+    const graded = processedMarks.filter(m => m.display_status === 'graded').length;
+    const submitted = processedMarks.filter(m => 
+      m.display_status === 'graded' || 
+      m.display_status === 'submitted' || 
+      m.display_status === 'started' ||
+      m.display_status === 'returned'
+    ).length;
+    const notSubmitted = processedMarks.filter(m => 
+      m.display_status === 'not_submitted' || 
+      m.display_status === 'absent'
+    ).length;
+    const passed = processedMarks.filter(m => m.is_passed).length;
+    const failed = graded - passed;
+
+    const marksArray = processedMarks
+      .filter(m => m.marks_obtained !== null && m.marks_obtained !== undefined)
+      .map(m => Number(m.marks_obtained));
+    const avgMarks = marksArray.length > 0
+      ? (marksArray.reduce((sum, m) => sum + m, 0) / marksArray.length).toFixed(1)
+      : 0;
+    const highest = marksArray.length > 0 ? Math.max(...marksArray) : 0;
+    const lowest = marksArray.length > 0 ? Math.min(...marksArray) : 0;
+
+    setItemMarks(processedMarks);
+    setItemStats({
+      total,
+      graded,
+      submitted,
+      notSubmitted,
+      passed,
+      failed,
+      avgMarks,
+      highest,
+      lowest
+    });
+    setShowMarksModal(true);
+  } catch (err) {
+    console.error('❌ Error fetching marks:', err);
+    alert('Error loading marks: ' + err.message);
+  }
+};
   // ===== DEAN APPROVES =====
   const handleApprove = async (id, resultType) => {
     setProcessing(true);
@@ -1137,89 +1301,145 @@ const DeanExamResults = ({ departments, fetchDeanData, setStats, facultyId }) =>
               </h3>
               <button onClick={() => setShowMarksModal(false)} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer' }}>✕</button>
             </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #e0e0e0' }}>
+  <button
+    onClick={() => exportMarksToPDF(selectedItem, itemMarks, itemStats, 'Dean')}  
+    style={{
+      padding: '8px 20px',
+      background: '#2e7d32',
+      color: 'white',
+      border: 'none',
+      borderRadius: '6px',
+      cursor: 'pointer',
+      fontWeight: '600'
+    }}
+  >
+    📄 Export PDF
+  </button>
+  <button
+    onClick={() => setShowMarksModal(false)}
+    style={{ padding: '8px 20px', background: '#1976d2', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+  >
+    Close
+  </button>
+</div>
             
-            {/* Stats Summary */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '12px', marginBottom: '16px' }}>
-              <div style={{ background: '#e8f5e9', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#2e7d32' }}>{itemStats.total || 0}</div>
-                <div style={{ fontSize: '12px', color: '#666' }}>Graded</div>
-              </div>
-              <div style={{ background: '#e3f2fd', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#1565c0' }}>{itemStats.passed || 0}</div>
-                <div style={{ fontSize: '12px', color: '#666' }}>Passed</div>
-              </div>
-              <div style={{ background: '#ffebee', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#c62828' }}>{itemStats.failed || 0}</div>
-                <div style={{ fontSize: '12px', color: '#666' }}>Failed</div>
-              </div>
-              <div style={{ background: '#f3e5f5', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#6a1b9a' }}>{itemStats.avgMarks || 0}%</div>
-                <div style={{ fontSize: '12px', color: '#666' }}>Average</div>
-              </div>
-              <div style={{ background: '#fff3e0', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#e65100' }}>{itemStats.highest || 0}</div>
-                <div style={{ fontSize: '12px', color: '#666' }}>Highest</div>
-              </div>
-              <div style={{ background: '#e0f7fa', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#00838f' }}>{itemStats.lowest || 0}</div>
-                <div style={{ fontSize: '12px', color: '#666' }}>Lowest</div>
-              </div>
-            </div>
+{/* Stats Summary */}
+<div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(90px, 1fr))', gap: '10px', marginBottom: '16px' }}>
+  <div style={{ background: '#e3f2fd', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+    <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#1565c0' }}>{itemStats.total || 0}</div>
+    <div style={{ fontSize: '11px', color: '#666' }}>Total Enrolled</div>
+  </div>
+  <div style={{ background: '#e8f5e9', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+    <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#2e7d32' }}>{itemStats.graded || 0}</div>
+    <div style={{ fontSize: '11px', color: '#666' }}>Graded</div>
+  </div>
+  <div style={{ background: '#fff3e0', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+    <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#e65100' }}>{itemStats.submitted || 0}</div>
+    <div style={{ fontSize: '11px', color: '#666' }}>Submitted</div>
+  </div>
+  <div style={{ background: '#f5f5f5', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+    <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#757575' }}>{itemStats.notSubmitted || 0}</div>
+    <div style={{ fontSize: '11px', color: '#666' }}>Not Submitted</div>
+  </div>
+  <div style={{ background: '#e8f5e9', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+    <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#2e7d32' }}>{itemStats.passed || 0}</div>
+    <div style={{ fontSize: '11px', color: '#666' }}>Passed</div>
+  </div>
+  <div style={{ background: '#ffebee', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
+    <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#c62828' }}>{itemStats.failed || 0}</div>
+    <div style={{ fontSize: '11px', color: '#666' }}>Failed</div>
+  </div>
+</div>
 
-            {/* Marks Table */}
-            {itemMarks.length === 0 ? (
-              <div style={{ textAlign: 'center', padding: '30px', color: '#999' }}>
-                <span style={{ fontSize: '36px', display: 'block', marginBottom: '8px' }}>📭</span>
-                <p>No graded submissions found</p>
-              </div>
-            ) : (
-              <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead style={{ position: 'sticky', top: 0, background: '#f5f5f5' }}>
-                    <tr>
-                      <th style={{ padding: '8px', textAlign: 'left' }}>Student ID</th>
-                      <th style={{ padding: '8px', textAlign: 'left' }}>Name</th>
-                      <th style={{ padding: '8px', textAlign: 'center' }}>Marks</th>
-                      <th style={{ padding: '8px', textAlign: 'center' }}>%</th>
-                      <th style={{ padding: '8px', textAlign: 'center' }}>Grade</th>
-                      <th style={{ padding: '8px', textAlign: 'center' }}>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {itemMarks.map((m) => (
-                      <tr key={m.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                        <td style={{ padding: '8px' }}>{m.students?.student_id || 'N/A'}</td>
-                        <td style={{ padding: '8px' }}>{m.students?.full_name || 'Unknown'}</td>
-                        <td style={{ padding: '8px', textAlign: 'center' }}>{m.marks_obtained || 0}</td>
-                        <td style={{ padding: '8px', textAlign: 'center' }}>{m.percentage || 0}%</td>
-                        <td style={{ padding: '8px', textAlign: 'center', fontWeight: 'bold', color: m.grade === 'F' ? '#c62828' : '#2e7d32' }}>{m.grade || '-'}</td>
-                        <td style={{ padding: '8px', textAlign: 'center' }}>
-                          {m.is_passed ? (
-                            <span style={{ color: '#2e7d32' }}>✅ Pass</span>
-                          ) : (
-                            <span style={{ color: '#c62828' }}>❌ Fail</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px', paddingTop: '16px', borderTop: '1px solid #e0e0e0' }}>
-              <button
-                onClick={() => setShowMarksModal(false)}
-                style={{ padding: '8px 20px', background: '#1976d2', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
-              >
-                Close
-              </button>
-            </div>
+{/* Marks Table */}
+{itemMarks.length === 0 ? (
+  <div style={{ textAlign: 'center', padding: '30px', color: '#999' }}>
+    <span style={{ fontSize: '36px', display: 'block', marginBottom: '8px' }}>📭</span>
+    <p>No enrolled students found</p>
+  </div>
+) : (
+  <div style={{ maxHeight: '420px', overflowY: 'auto' }}>
+    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <thead style={{ position: 'sticky', top: 0, background: '#f5f5f5' }}>
+        <tr>
+          <th style={{ padding: '8px', textAlign: 'left' }}>#</th>
+          <th style={{ padding: '8px', textAlign: 'left' }}>Student ID</th>
+          <th style={{ padding: '8px', textAlign: 'left' }}>Name</th>
+          <th style={{ padding: '8px', textAlign: 'center' }}>Marks</th>
+          <th style={{ padding: '8px', textAlign: 'center' }}>%</th>
+          <th style={{ padding: '8px', textAlign: 'center' }}>Grade</th>
+          <th style={{ padding: '8px', textAlign: 'center' }}>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {itemMarks.map((m, idx) => {
+          const statusStyle = {
+            graded:        { bg: '#e8f5e9', color: '#2e7d32', label: '✅ Graded' },
+            submitted:     { bg: '#fff3e0', color: '#e65100', label: '📤 Submitted' },
+            started:       { bg: '#fff3e0', color: '#e65100', label: '📤 Started' },
+            returned:      { bg: '#e3f2fd', color: '#1565c0', label: '↩️ Returned' },
+            absent:        { bg: '#fce4ec', color: '#c2185b', label: '🚫 Absent' },
+            not_submitted: { bg: '#f5f5f5', color: '#757575', label: '⬜ Not Submitted' },
+          }[m.display_status] || { bg: '#f5f5f5', color: '#757575', label: m.display_status };
+
+          return (
+            <tr
+              key={m.student_id}
+              style={{
+                borderBottom: '1px solid #f0f0f0',
+                background: m.display_status === 'graded' ? '#f9fff9' :
+                            m.display_status === 'not_submitted' || m.display_status === 'absent' ? '#fafafa' : 'white'
+              }}
+            >
+              <td style={{ padding: '8px' }}>{idx + 1}</td>
+              <td style={{ padding: '8px' }}>{m.students?.student_id || 'N/A'}</td>
+              <td style={{ padding: '8px' }}>
+                <strong>{m.students?.full_name || 'Unknown'}</strong>
+                <br />
+                <small style={{ color: '#999' }}>{m.students?.email}</small>
+              </td>
+              <td style={{ padding: '8px', textAlign: 'center' }}>
+                {m.marks_obtained !== null && m.marks_obtained !== undefined ? m.marks_obtained : '—'}
+              </td>
+              <td style={{ padding: '8px', textAlign: 'center' }}>
+                {m.percentage !== null && m.percentage !== undefined ? `${m.percentage}%` : '—'}
+              </td>
+              <td style={{
+                padding: '8px',
+                textAlign: 'center',
+                fontWeight: 'bold',
+                color: m.grade === 'F' ? '#c62828' : (m.grade ? '#2e7d32' : '#999')
+              }}>
+                {m.grade || '—'}
+              </td>
+              <td style={{ padding: '8px', textAlign: 'center' }}>
+                <span style={{
+                  padding: '2px 10px',
+                  borderRadius: '12px',
+                  fontSize: '11px',
+                  fontWeight: '600',
+                  background: statusStyle.bg,
+                  color: statusStyle.color
+                }}>
+                  {statusStyle.label}
+                </span>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  </div>
+)}
+
+          
           </div>
         </div>
       )}
     </div>
   );
 };
+
 
 export default DeanExamResults;

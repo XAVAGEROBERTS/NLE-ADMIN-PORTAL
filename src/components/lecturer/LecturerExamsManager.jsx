@@ -81,7 +81,7 @@ const LecturerExamsManager = ({ profile, courses, programs, programsLoading, sho
     }
   }, [profile?.id]);
 
-// Filter courses when program changes - USING ALLOCATIONS (FIXED)
+// Filter courses by selected program + lecturer course allocations (strict)
 useEffect(() => {
   const fetchAllocatedCourses = async () => {
     if (!examTargetProgram || !profile?.id) {
@@ -90,7 +90,6 @@ useEffect(() => {
     }
 
     try {
-      // Get the selected program
       const selectedProg = programs.find((p) => p.id === examTargetProgram);
       if (!selectedProg) {
         console.error("❌ Selected program not found");
@@ -98,10 +97,15 @@ useEffect(() => {
         return;
       }
 
-      console.log(`🔍 Fetching allocated courses for lecturer ${profile.id}`);
-      console.log(`📋 Selected program:`, selectedProg);
+      const selectedCode = (selectedProg.code || "").trim().toUpperCase();
+      const selectedName = (selectedProg.name || "").trim().toLowerCase();
 
-      // First, get the course allocations
+      console.log(`🔍 Allocations for lecturer ${profile.id}, program:`, {
+        id: selectedProg.id,
+        code: selectedCode,
+        name: selectedProg.name,
+      });
+
       const { data: allocations, error: allocError } = await supabase
         .from("course_allocations")
         .select(`
@@ -133,74 +137,56 @@ useEffect(() => {
         return;
       }
 
-      if (!allocations || allocations.length === 0) {
+      if (!allocations?.length) {
         console.log("⚠️ No approved allocations found");
         setExamFilteredCourses([]);
         return;
       }
 
-      console.log(`📋 Found ${allocations.length} approved allocations`);
-      console.log(`📋 Allocations details:`, allocations);
+      // Only active courses from allocations
+      const allocatedCourses = allocations
+        .map((a) => a.courses)
+        .filter((c) => c && c.is_active !== false);
 
-      // Extract all courses from allocations
-      const allAllocatedCourses = allocations
-        .map(a => a.courses)
-        .filter(course => course && course.is_active);
+      // Strict program match: program_code OR program name
+      const filtered = allocatedCourses.filter((course) => {
+        const courseCode = (course.program_code || "").trim().toUpperCase();
+        const courseProgram = (course.program || "").trim().toLowerCase();
 
-      console.log(`📚 All active allocated courses (${allAllocatedCourses.length}):`, 
-        allAllocatedCourses.map(c => ({
-          id: c.id,
-          code: c.course_code,
-          name: c.course_name,
-          program: c.program,
-          program_code: c.program_code,
-          dept: c.department_code
-        }))
-      );
+        const codeMatch =
+          selectedCode &&
+          courseCode &&
+          (courseCode === selectedCode ||
+            courseCode.includes(selectedCode) ||
+            selectedCode.includes(courseCode));
 
-      // If no program filtering is possible, show all allocated courses
-      if (!allAllocatedCourses.length) {
-        setExamFilteredCourses([]);
-        return;
-      }
+        const nameMatch =
+          selectedName &&
+          courseProgram &&
+          (courseProgram === selectedName ||
+            courseProgram.includes(selectedName) ||
+            selectedName.includes(courseProgram));
 
-      // Check if courses have program information
-      const hasProgramInfo = allAllocatedCourses.some(c => c.program || c.program_code);
-      
-      if (!hasProgramInfo) {
-        console.log("ℹ️ Courses don't have program info, showing all allocated courses");
-        setExamFilteredCourses(allAllocatedCourses);
-        return;
-      }
-
-      // Try to match by program - check multiple possible fields
-      const filteredCourses = allAllocatedCourses.filter(course => {
-        // Check all possible program fields
-        const courseProgram = course.program || course.program_code || '';
-        const selectedProgramName = selectedProg.name || '';
-        const selectedProgramCode = selectedProg.code || '';
-        
-        // Case-insensitive comparison
-        const courseProgramLower = courseProgram.toLowerCase();
-        const selectedNameLower = selectedProgramName.toLowerCase();
-        const selectedCodeLower = selectedProgramCode.toLowerCase();
-        
-        return courseProgramLower === selectedNameLower || 
-               courseProgramLower === selectedCodeLower ||
-               courseProgramLower.includes(selectedCodeLower) ||
-               selectedNameLower.includes(courseProgramLower);
+        return codeMatch || nameMatch;
       });
 
-      console.log(`🎯 Filtered to ${filteredCourses.length} courses matching program ${selectedProg.code}`);
-      
-      // If filtering resulted in no courses, show all allocated courses instead
-      if (filteredCourses.length === 0) {
-        console.log("⚠️ No courses match the selected program, showing all allocated courses");
-        setExamFilteredCourses(allAllocatedCourses);
-      } else {
-        setExamFilteredCourses(filteredCourses);
+      // Dedupe by course id
+      const unique = [];
+      const seen = new Set();
+      for (const c of filtered) {
+        if (!seen.has(c.id)) {
+          seen.add(c.id);
+          unique.push(c);
+        }
       }
-      
+
+      console.log(
+        `🎯 Program ${selectedCode}: ${unique.length} allocated course(s)`,
+        unique.map((c) => c.course_code)
+      );
+
+      // NO fallback to all courses — empty means none for this program
+      setExamFilteredCourses(unique);
     } catch (err) {
       console.error("❌ Error in fetchAllocatedCourses:", err);
       setExamFilteredCourses([]);
@@ -209,7 +195,7 @@ useEffect(() => {
 
   fetchAllocatedCourses();
 }, [examTargetProgram, profile?.id, programs]);
-  // ===== REAL-TIME TIME VALIDATION FOR NEW EXAM =====
+
   useEffect(() => {
     validateTimes(newExam.start_time, newExam.end_time, setTimeValidationError);
   }, [newExam.start_time, newExam.end_time]);
@@ -1154,57 +1140,49 @@ useEffect(() => {
 
   // ===== HANDLE DELETE EXAM =====
   const handleDeleteExam = async (examId) => {
-    const examToDelete = exams.find(e => e.id === examId);
-    const status = examToDelete ? getExamStatus(examToDelete) : "unknown";
-    
-    let confirmMessage = "Are you sure you want to delete this exam?";
-    if (status === "active") {
-      confirmMessage = "⚠️ This exam is currently ONGOING! Deleting it will remove all submissions. Are you sure you want to continue?";
-    } else if (status === "upcoming") {
-      confirmMessage = "⚠️ This exam is SCHEDULED. Deleting it will remove all associated data. Are you sure?";
-    }
-    
-    if (!window.confirm(confirmMessage)) return;
+    if (!examId) return;
 
     try {
-      // First check if there are submissions
-      const { data: submissions, error: subError } = await supabase
+      // Block if any submissions exist — do NOT delete submissions
+      const { count, error: countError } = await supabase
         .from("exam_submissions")
-        .select("id")
+        .select("id", { count: "exact", head: true })
         .eq("exam_id", examId);
 
-      if (subError) {
-        console.warn("Error checking submissions:", subError);
+      if (countError) {
+        console.error("Error checking submissions:", countError);
+        showToast("Could not verify submissions. Delete cancelled.", "error");
+        return;
       }
 
-      // Delete submissions first if they exist (foreign key constraint)
-      if (submissions && submissions.length > 0) {
-        console.log(`Deleting ${submissions.length} submissions for exam ${examId}`);
-        const { error: deleteSubError } = await supabase
-          .from("exam_submissions")
-          .delete()
-          .eq("exam_id", examId);
-          
-        if (deleteSubError) {
-          console.error("Error deleting submissions:", deleteSubError);
-          showToast("Failed to delete exam submissions: " + deleteSubError.message, 'error');
-          return;
-        }
+      if ((count || 0) > 0) {
+        showToast(
+          `Cannot delete this exam: ${count} submission(s) exist. Exams with results cannot be deleted.`,
+          "error"
+        );
+        return;
       }
 
-      // Delete the exam
+      if (
+        !window.confirm(
+          "Delete this exam permanently?\n\nOnly allowed because there are no submissions.\nThis cannot be undone."
+        )
+      ) {
+        return;
+      }
+
       const { error } = await supabase
         .from("examinations")
         .delete()
         .eq("id", examId);
 
       if (error) throw error;
-      
-      showToast("✅ Exam deleted successfully!", 'success');
+
+      showToast("✅ Exam deleted successfully!", "success");
       fetchExams();
     } catch (error) {
       console.error("Error deleting exam:", error);
-      showToast("Error deleting exam: " + error.message, 'error');
+      showToast("Error deleting exam: " + (error.message || String(error)), "error");
     }
   };
 
@@ -2015,13 +1993,15 @@ useEffect(() => {
                   >
                     ✏️ Edit
                   </button>
-                  <button
-                    className="lecturer-course-btn"
-                    onClick={() => handleDeleteExam(exam.id)}
-                    style={{ background: "#dc3545", color: "white" }}
-                  >
-                    🗑️ Delete
-                  </button>
+         {(!exam.submitted || exam.submitted === 0) && (
+  <button
+    className="lecturer-course-btn"
+    onClick={() => handleDeleteExam(exam.id)}
+    style={{ background: "#dc3545", color: "white" }}
+  >
+    🗑️ Delete
+  </button>
+)}
                 </div>
               </div>
             );

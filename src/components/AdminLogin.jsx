@@ -11,6 +11,7 @@ const AdminLogin = () => {
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [showDemoHint, setShowDemoHint] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
 
   // Remove default credentials from production
   useEffect(() => {
@@ -78,6 +79,11 @@ const AdminLogin = () => {
     }
   }
 
+  // Toggle password visibility
+  const togglePasswordVisibility = () => {
+    setShowPassword(!showPassword)
+  }
+
   return (
     <div style={styles.container}>
       <div style={styles.card}>
@@ -128,16 +134,31 @@ const AdminLogin = () => {
                 Forgot password?
               </a>
             </div>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter your password"
-              style={styles.input}
-              required
-              disabled={isLoading || authLoading}
-              autoComplete="current-password"
-            />
+            <div style={styles.passwordContainer}>
+              <input
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter your password"
+                style={styles.input}
+                required
+                disabled={isLoading || authLoading}
+                autoComplete="current-password"
+              />
+              <button
+                type="button"
+                onClick={togglePasswordVisibility}
+                style={styles.eyeButton}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                disabled={isLoading || authLoading}
+              >
+                {showPassword ? (
+                  <span style={styles.eyeIcon}>👁️</span>
+                ) : (
+                  <span style={styles.eyeIcon}>👁️‍🗨️</span>
+                )}
+              </button>
+            </div>
           </div>
 
           <button 
@@ -238,7 +259,8 @@ const styles = {
     marginBottom: '30px'
   },
   inputGroup: {
-    marginBottom: '25px'
+    marginBottom: '25px',
+    position: 'relative'
   },
   labelRow: {
     display: 'flex',
@@ -258,6 +280,10 @@ const styles = {
     fontWeight: '500',
     cursor: 'pointer'
   },
+  passwordContainer: {
+    position: 'relative',
+    width: '100%'
+  },
   input: {
     width: '100%',
     padding: '15px',
@@ -266,6 +292,28 @@ const styles = {
     fontSize: '16px',
     transition: 'all 0.3s',
     boxSizing: 'border-box'
+  },
+  eyeButton: {
+    position: 'absolute',
+    right: '12px',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    padding: '8px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: '4px',
+    transition: 'background-color 0.2s',
+    ':hover': {
+      backgroundColor: '#f0f0f0'
+    }
+  },
+  eyeIcon: {
+    fontSize: '20px',
+    lineHeight: 1
   },
   button: {
     width: '100%',
