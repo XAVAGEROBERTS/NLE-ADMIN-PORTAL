@@ -18,7 +18,7 @@ import LecturerTimetable from './lecturer/LecturerTimetable';
 import LecturerLeaveRequests from './lecturer/LecturerLeaveRequests';
 import LecturerAttendance from './lecturer/LecturerAttendance';
 import LecturerExamResults from './lecturer/LecturerExamResults';
-
+import LecturerSelfAppraisal from './lecturer/LecturerSelfAppraisal';
 const LecturerDashboard = () => {
   const navigate = useNavigate();
   const { profile, signOut, isLecturer, loading: authLoading } = useAdminAuth();
@@ -1166,26 +1166,27 @@ const LecturerDashboard = () => {
       </header>
 
       <nav className="lecturer-nav">
-        <button className={`lecturer-nav-item ${activeTab === "dashboard" ? "active" : ""}`} onClick={() => setActiveTab("dashboard")}>📊 Dashboard</button>
-        <button className={`lecturer-nav-item ${activeTab === "my-files" ? "active" : ""}`} onClick={() => setActiveTab("my-files")}>📁 My Files</button>
-        <button className={`lecturer-nav-item ${activeTab === "my-assignments" ? "active" : ""}`} onClick={() => setActiveTab("my-assignments")}>📝 My Assignments</button>
-        <button className={`lecturer-nav-item ${activeTab === "lectures" ? "active" : ""}`} onClick={() => setActiveTab("lectures")}>🎓 My Lectures</button>
-        <button className={`lecturer-nav-item ${activeTab === "exams" ? "active" : ""}`} onClick={() => setActiveTab("exams")}>🎯 Exams</button>
-        <button className={`lecturer-nav-item ${activeTab === "exam-results" ? "active" : ""}`} onClick={() => setActiveTab("exam-results")}>📝 Exam Results</button>
-        <button className={`lecturer-nav-item ${activeTab === "students" ? "active" : ""}`} onClick={() => setActiveTab("students")}>👥 Students</button>
-        <button className={`lecturer-nav-item ${activeTab === "attendance" ? "active" : ""}`} onClick={() => setActiveTab("attendance")}>✅ Attendance</button>
-        <button className={`lecturer-nav-item ${activeTab === "courses" ? "active" : ""}`} onClick={() => setActiveTab("courses")}>📖 Courses</button>
-        <button className={`lecturer-nav-item ${activeTab === "notes-upload" ? "active" : ""}`} onClick={() => setActiveTab("notes-upload")}>📚 Upload Materials</button>
-        <button className={`lecturer-nav-item ${activeTab === "grading" ? "active" : ""}`} onClick={() => setActiveTab("grading")}>📊 Grading</button>
-        <button className={`lecturer-nav-item ${activeTab === "timetable" ? "active" : ""}`} onClick={() => setActiveTab("timetable")}>📅 Timetable</button>
-        <button className={`lecturer-nav-item ${activeTab === "leave" ? "active" : ""}`} onClick={() => setActiveTab("leave")}>📝 Leave</button>
-        <button className={`lecturer-nav-item ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}>⚙️ Settings</button>
-        {contacts.length > 0 && (
-          <button className="lecturer-nav-item lecturer-nav-chat" onClick={openChatModal}>
-            💬 Messages {unreadCount > 0 && <span className="lecturer-nav-badge">{unreadCount}</span>}
-          </button>
-        )}
-      </nav>
+  <button className={`lecturer-nav-item ${activeTab === "dashboard" ? "active" : ""}`} onClick={() => setActiveTab("dashboard")}>📊 Dashboard</button>
+  <button className={`lecturer-nav-item ${activeTab === "my-files" ? "active" : ""}`} onClick={() => setActiveTab("my-files")}>📁 My Files</button>
+  <button className={`lecturer-nav-item ${activeTab === "my-assignments" ? "active" : ""}`} onClick={() => setActiveTab("my-assignments")}>📝 My Assignments</button>
+  <button className={`lecturer-nav-item ${activeTab === "lectures" ? "active" : ""}`} onClick={() => setActiveTab("lectures")}>🎓 My Lectures</button>
+  <button className={`lecturer-nav-item ${activeTab === "exams" ? "active" : ""}`} onClick={() => setActiveTab("exams")}>🎯 Exams</button>
+  <button className={`lecturer-nav-item ${activeTab === "exam-results" ? "active" : ""}`} onClick={() => setActiveTab("exam-results")}>📝 Exam Results</button>
+  <button className={`lecturer-nav-item ${activeTab === "students" ? "active" : ""}`} onClick={() => setActiveTab("students")}>👥 Students</button>
+  <button className={`lecturer-nav-item ${activeTab === "attendance" ? "active" : ""}`} onClick={() => setActiveTab("attendance")}>✅ Attendance</button>
+  <button className={`lecturer-nav-item ${activeTab === "courses" ? "active" : ""}`} onClick={() => setActiveTab("courses")}>📖 Courses</button>
+  <button className={`lecturer-nav-item ${activeTab === "notes-upload" ? "active" : ""}`} onClick={() => setActiveTab("notes-upload")}>📚 Upload Materials</button>
+  <button className={`lecturer-nav-item ${activeTab === "grading" ? "active" : ""}`} onClick={() => setActiveTab("grading")}>📊 Grading</button>
+  <button className={`lecturer-nav-item ${activeTab === "timetable" ? "active" : ""}`} onClick={() => setActiveTab("timetable")}>📅 Timetable</button>
+  <button className={`lecturer-nav-item ${activeTab === "leave" ? "active" : ""}`} onClick={() => setActiveTab("leave")}>📝 Leave</button>
+  <button className={`lecturer-nav-item ${activeTab === "appraisals" ? "active" : ""}`} onClick={() => setActiveTab("appraisals")}>⭐ Self Appraisal</button>  {/* NEW */}
+  <button className={`lecturer-nav-item ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}>⚙️ Settings</button>
+  {contacts.length > 0 && (
+    <button className="lecturer-nav-item lecturer-nav-chat" onClick={openChatModal}>
+      💬 Messages {unreadCount > 0 && <span className="lecturer-nav-badge">{unreadCount}</span>}
+    </button>
+  )}
+</nav>
 
       <main className="lecturer-main">
         {loading.dashboard ? (
@@ -1346,7 +1347,8 @@ const LecturerDashboard = () => {
                 </div>
                 {renderStudentsTable()}
               </div>
-            )}
+              )}
+
             {activeTab === "attendance" && (
               <LecturerAttendance 
                 profile={profile} 
@@ -1384,7 +1386,15 @@ const LecturerDashboard = () => {
                 profile={profile} 
                 showToast={showToast} 
               />
-            )}
+              )}
+              {activeTab === "appraisals" && (
+  <LecturerSelfAppraisal 
+    profile={profile} 
+    courses={courses}
+    departmentCodes={departmentCodes}
+    showToast={showToast} 
+  />
+)}
             {activeTab === "timetable" && (
               <LecturerTimetable 
                 profile={profile} 

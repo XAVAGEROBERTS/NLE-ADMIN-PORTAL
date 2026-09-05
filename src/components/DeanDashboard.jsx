@@ -19,7 +19,7 @@ import DeanQualityAssurance from './dean/DeanQualityAssurance';
 import DeanAdmissions from './dean/DeanAdmissions';
 import DeanDisciplinary from './dean/DeanDisciplinary';
 import DeanPostgraduate from './dean/DeanPostgraduate';
-import DeanBoardReports from './dean/DeanBoardReports';
+import DeanFacultyBoardReports from './dean/DeanFacultyBoardReports';
 import DeanSettings from './dean/DeanSettings';
 import DeanChat from './dean/DeanChat';
 import DeanNotifications from './dean/DeanNotifications';
@@ -549,11 +549,22 @@ const DeanDashboard = () => {
       case 'appraisals': return <DeanAppraisals {...commonProps} />;
       case 'budget': return <DeanBudget {...commonProps} />;
       case 'curriculum': return <DeanCurriculum {...commonProps} />;
-      case 'quality': return <DeanQualityAssurance {...commonProps} />;
+   case 'qa': 
+  return <DeanQualityAssurance 
+    departments={departments} 
+    fetchDeanData={fetchDeanData} 
+    setStats={setStats} 
+  />;
+
       case 'admissions': return <DeanAdmissions {...commonProps} />;
       case 'disciplinary': return <DeanDisciplinary {...commonProps} />;
       case 'postgraduate': return <DeanPostgraduate {...commonProps} />;
-      case 'reports': return <DeanBoardReports {...commonProps} />;
+   case 'reports': 
+  return <DeanFacultyBoardReports 
+    profile={profile} 
+    fetchDeanData={fetchDeanData} 
+    setStats={setStats} 
+  />;
       case 'hods': return <DeanHODs {...commonProps} />;
       case 'departments': return <DeanDepartments {...commonProps} />;
       case 'settings': return <DeanSettings {...commonProps} />;
@@ -572,7 +583,7 @@ const DeanDashboard = () => {
     { id: 'appraisals', label: '⭐ Appraisals' },
     { id: 'budget', label: '💰 Budget' },
     { id: 'curriculum', label: '📋 Curriculum' },
-    { id: 'quality', label: '✅ QA' },
+    { id: 'qa', label: '📋 QA & Accreditation' },
     { id: 'admissions', label: '🎓 Admissions' },
     { id: 'disciplinary', label: '⚖️ Disciplinary' },
     { id: 'postgraduate', label: '🎯 Postgraduate' },

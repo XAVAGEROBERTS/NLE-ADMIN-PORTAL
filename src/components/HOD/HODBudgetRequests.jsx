@@ -1,4 +1,4 @@
-// HODBudgetRequests.jsx
+// HODBudgetRequests.jsx - FIXED
 import React, { useState, useEffect } from 'react';
 import { supabase } from "../../services/supabase";
 
@@ -55,6 +55,7 @@ const HODBudgetRequests = ({ departmentCode }) => {
           department_code: departmentCode,
           amount: parseFloat(formData.amount),
           status: 'pending',
+          faculty_status: 'pending_dean', // Add this for Dean
           requested_by: 'hod',
           requested_at: new Date().toISOString(),
         }]);
@@ -78,10 +79,11 @@ const HODBudgetRequests = ({ departmentCode }) => {
 
   const filteredRequests = budgetRequests.filter((r) => {
     if (filter === 'all') return true;
-    return r.status === filter;
+    if (filter === 'pending') return r.status === 'pending' || r.faculty_status === 'pending_dean';
+    return r.status === filter || r.faculty_status === filter;
   });
 
-  const pendingCount = budgetRequests.filter(r => r.status === 'pending').length;
+  const pendingCount = budgetRequests.filter(r => r.status === 'pending' || r.faculty_status === 'pending_dean').length;
 
   const getPriorityLabel = (priority) => {
     const map = {
@@ -104,6 +106,15 @@ const HODBudgetRequests = ({ departmentCode }) => {
     return map[category] || '📋';
   };
 
+  const getStatusDisplay = (request) => {
+    // Check faculty_status first (from Dean)
+    if (request.faculty_status === 'approved_by_dean') return { label: '✅ Dean Approved', class: 'hod-status-approved' };
+    if (request.faculty_status === 'rejected_by_dean') return { label: '❌ Rejected by Dean', class: 'hod-status-rejected' };
+    if (request.status === 'funded') return { label: '💰 Funded', class: 'hod-status-approved' };
+    if (request.faculty_status === 'pending_dean' || request.status === 'pending') return { label: '⏳ Pending', class: 'hod-status-pending' };
+    return { label: request.status || 'Unknown', class: 'hod-status-pending' };
+  };
+
   return (
     <div className="hod-section">
       <div className="hod-section-header">
@@ -121,8 +132,8 @@ const HODBudgetRequests = ({ departmentCode }) => {
         >
           <option value="all">All Requests ({budgetRequests.length})</option>
           <option value="pending">Pending ({pendingCount})</option>
-          <option value="approved">Approved</option>
-          <option value="rejected">Rejected</option>
+          <option value="approved_by_dean">Dean Approved</option>
+          <option value="rejected_by_dean">Rejected</option>
           <option value="funded">Funded</option>
         </select>
       </div>
@@ -136,49 +147,47 @@ const HODBudgetRequests = ({ departmentCode }) => {
             <h3>No budget requests found</h3>
           </div>
         ) : (
-          filteredRequests.map((r) => (
-            <div key={r.id} className="hod-budget-card">
-              <div className="hod-budget-header">
-                <h3>{r.title}</h3>
-                <span className={`hod-budget-priority hod-priority-${r.priority}`}>
-                  {getPriorityLabel(r.priority)}
-                </span>
+          filteredRequests.map((r) => {
+            const statusInfo = getStatusDisplay(r);
+            return (
+              <div key={r.id} className="hod-budget-card">
+                <div className="hod-budget-header">
+                  <h3>{r.title}</h3>
+                  <span className={`hod-budget-priority hod-priority-${r.priority}`}>
+                    {getPriorityLabel(r.priority)}
+                  </span>
+                </div>
+                <div className="hod-budget-meta">
+                  <span>{getCategoryIcon(r.category)} {r.category}</span>
+                  <span className="hod-budget-amount">${r.amount.toLocaleString()}</span>
+                </div>
+                <p className="hod-budget-description">{r.description}</p>
+                {r.justification && (
+                  <p className="hod-budget-justification">
+                    <strong>Justification:</strong> {r.justification}
+                  </p>
+                )}
+                <div className="hod-budget-footer">
+                  <span className={`hod-status ${statusInfo.class}`}>
+                    {statusInfo.label}
+                  </span>
+                  <button 
+                    className="hod-detail-btn"
+                    onClick={() => {
+                      setSelectedRequest(r);
+                      setShowDetailModal(true);
+                    }}
+                  >
+                    📋 Details
+                  </button>
+                </div>
               </div>
-              <div className="hod-budget-meta">
-                <span>{getCategoryIcon(r.category)} {r.category}</span>
-                <span className="hod-budget-amount">${r.amount.toLocaleString()}</span>
-              </div>
-              <p className="hod-budget-description">{r.description}</p>
-              {r.justification && (
-                <p className="hod-budget-justification">
-                  <strong>Justification:</strong> {r.justification}
-                </p>
-              )}
-              <div className="hod-budget-footer">
-                <span className={`hod-status ${
-                  r.status === 'pending' ? 'hod-status-pending' :
-                  r.status === 'approved' ? 'hod-status-approved' :
-                  r.status === 'funded' ? 'hod-status-approved' :
-                  'hod-status-rejected'
-                }`}>
-                  {r.status}
-                </span>
-                <button 
-                  className="hod-detail-btn"
-                  onClick={() => {
-                    setSelectedRequest(r);
-                    setShowDetailModal(true);
-                  }}
-                >
-                  📋 Details
-                </button>
-              </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 
-      {/* New Request Modal */}
+      {/* New Request Modal - same as before */}
       {showModal && (
         <div className="hod-modal-overlay" onClick={() => setShowModal(false)}>
           <div className="hod-modal hod-modal-large" onClick={(e) => e.stopPropagation()}>
@@ -299,13 +308,8 @@ const HODBudgetRequests = ({ departmentCode }) => {
               <div className="hod-detail-item">
                 <label>Status</label>
                 <p>
-                  <span className={`hod-status ${
-                    selectedRequest.status === 'pending' ? 'hod-status-pending' :
-                    selectedRequest.status === 'approved' ? 'hod-status-approved' :
-                    selectedRequest.status === 'funded' ? 'hod-status-approved' :
-                    'hod-status-rejected'
-                  }`}>
-                    {selectedRequest.status}
+                  <span className={`hod-status ${getStatusDisplay(selectedRequest).class}`}>
+                    {getStatusDisplay(selectedRequest).label}
                   </span>
                 </p>
               </div>
@@ -319,10 +323,22 @@ const HODBudgetRequests = ({ departmentCode }) => {
                   <p>{selectedRequest.justification}</p>
                 </div>
               )}
+              {selectedRequest.dean_notes && (
+                <div className="hod-detail-item">
+                  <label>Dean's Notes</label>
+                  <p>{selectedRequest.dean_notes}</p>
+                </div>
+              )}
               <div className="hod-detail-item">
                 <label>Requested</label>
                 <p>{new Date(selectedRequest.created_at).toLocaleString()}</p>
               </div>
+              {selectedRequest.dean_approved_at && (
+                <div className="hod-detail-item">
+                  <label>Reviewed by Dean</label>
+                  <p>{new Date(selectedRequest.dean_approved_at).toLocaleString()}</p>
+                </div>
+              )}
             </div>
             <div className="hod-modal-footer">
               <button onClick={() => setShowDetailModal(false)}>Close</button>

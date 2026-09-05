@@ -21,8 +21,13 @@ import HODChat from './HOD/HODChat';
 import HODNotifications from './HOD/HODNotifications';
 import HOStatsCards from './HOD/HOStatsCards';
 import HODStudents from './HOD/HODStudents';
-
+import HODCurriculumManagement from './HOD/HODCurriculumManagement'; 
+import HODQualityAssurance from './HOD/HODQualityAssurance';
+import HODDisciplinaryCases from './HOD/HODDisciplinaryCases';
+import ReportViewer from './shared/ReportViewer';
+import HODModuleEvaluation from './HOD/HODModuleEvaluation';
 import './HOD/HODDashboard.css';
+
 
 const HODDashboard = () => {
   const { profile, signOut } = useAdminAuth();
@@ -662,6 +667,16 @@ const HODDashboard = () => {
     }
   }, [hodEmail, departmentCode, isMounted, cleanupSubscriptions, fetchNotifications]);
 
+  // ===== TOAST =====
+const showToast = (message, type = 'success') => {
+  // You can implement a toast notification here
+  // For now, just use alert or console.log
+  if (type === 'error') {
+    console.error(message);
+  } else {
+    console.log(message);
+  }
+};
   // ===== SHOW TOAST =====
   const showLeaveNotificationToast = (leaveData) => {
     if (!leaveData || !isMounted) return;
@@ -870,53 +885,96 @@ const HODDashboard = () => {
   }, [departmentInfo, fetchDeanInfo, isMounted]);
 
   // ==================== RENDER ====================
-  const renderContent = () => {
-    const commonProps = {
-      departmentId,
-      departmentCode,
-      departmentName,
-      hodEmail,
-      hodName,
-      courses,
-      students,
-      lecturers,
-      recentAttendance,
-      stats,
-      deanInfo,
-      admins,
-      openChatWithUser,
-      openAdminChat,
-      profile,
-      profileVersion,
-      loading,
-      searchTerm,
-      setSearchTerm,
-      fetchHODData,
-      setStats,
-    };
-
-    switch (activeTab) {
-      case 'overview': return <HODOverview {...commonProps} />;
-      case 'students': return <HODStudents {...commonProps} />;
-      case 'allocations': return <HODCourseAllocations {...commonProps} />;
-      case 'workload': return <HODWorkload {...commonProps} />;
-      case 'leave': return <HODLeaveRequests {...commonProps} />;
-      case 'complaints': return <HODComplaints {...commonProps} />;
-      case 'timetable': return <HODTimetable {...commonProps} />;
-      case 'exam-moderation': return <HODExamModeration {...commonProps} />;
-      case 'exam-results': return <HODExamResultsApproval 
-        departmentCode={departmentCode} 
-        courses={courses} 
-        fetchHODData={fetchHODData} 
-        setStats={setStats} 
-      />;
-      case 'appraisal': return <HODStaffAppraisal {...commonProps} />;
-      case 'budget': return <HODBudgetRequests {...commonProps} />;
-      case 'attendance': return <HODAttendance {...commonProps} />;
-      case 'settings': return <HODSettings {...commonProps} />;
-      default: return <HODOverview {...commonProps} />;
-    }
+const renderContent = () => {
+  const commonProps = {
+    departmentId,
+    departmentCode,
+    departmentName,
+    hodEmail,
+    hodName,
+    courses,
+    students,
+    lecturers,
+    recentAttendance,
+    stats,
+    deanInfo,
+    admins,
+    openChatWithUser,
+    openAdminChat,
+    profile,
+    profileVersion,
+    loading,
+    searchTerm,
+    setSearchTerm,
+    fetchHODData,
+    setStats,
   };
+
+  switch (activeTab) {
+    case 'overview': return <HODOverview {...commonProps} />;
+    case 'students': return <HODStudents {...commonProps} />;
+    case 'allocations': return <HODCourseAllocations {...commonProps} />;
+    case 'workload': return <HODWorkload {...commonProps} />;
+    case 'leave': return <HODLeaveRequests {...commonProps} />;
+    case 'complaints': return <HODComplaints {...commonProps} />;
+    case 'timetable': return <HODTimetable {...commonProps} />;
+    case 'exam-moderation': return <HODExamModeration {...commonProps} />;
+    case 'exam-results': return <HODExamResultsApproval 
+      departmentCode={departmentCode} 
+      courses={courses} 
+      fetchHODData={fetchHODData} 
+      setStats={setStats} 
+    />;
+
+    case 'appraisal': return <HODStaffAppraisal {...commonProps} />;
+    case 'curriculum': return <HODCurriculumManagement 
+      departmentCode={departmentCode}
+      departmentName={departmentName}
+      hodEmail={hodEmail}
+      hodName={hodName}
+      profile={profile}
+      showToast={showToast || (() => {})}
+    />;
+        case 'qa': 
+      return <HODQualityAssurance 
+        departmentCode={departmentCode}
+        departmentName={departmentName}
+        hodEmail={hodEmail}
+        hodName={hodName}
+        profile={profile}
+        showToast={showToast}
+      />;
+    case 'disciplinary': 
+  return <HODDisciplinaryCases 
+    departmentCode={departmentCode}
+    departmentName={departmentName}
+    hodEmail={hodEmail}
+    hodName={hodName}
+    profile={profile}
+    showToast={showToast}
+  />;
+    case 'budget': return <HODBudgetRequests {...commonProps} />;
+    case 'attendance': return <HODAttendance {...commonProps} />;
+    case 'reports': 
+  return <ReportViewer 
+    departmentCode={departmentCode}
+    showToast={showToast} 
+      />;
+    case 'module-evaluation': 
+  return <HODModuleEvaluation 
+    departmentCode={departmentCode}
+    departmentName={departmentName}
+    hodEmail={hodEmail}
+    hodName={hodName}
+    profile={profile}
+    courses={courses}
+    students={students}
+    showToast={showToast}
+  />;
+    case 'settings': return <HODSettings {...commonProps} />;
+    default: return <HODOverview {...commonProps} />;
+  }
+};
 
   const tabs = [
     { id: 'overview', label: '📊 Overview' },
@@ -929,10 +987,16 @@ const HODDashboard = () => {
     { id: 'exam-moderation', label: '📝 Exam Moderation' },
     { id: 'exam-results', label: '📝 Exam Results Approval' },
     { id: 'appraisal', label: '⭐ Staff Appraisal' },
+    { id: 'curriculum', label: '📋 Curriculum' },
+    { id: 'qa', label: '📋 Quality Assurance' },
+    { id: 'disciplinary', label: '⚖️ Disciplinary' },
     { id: 'budget', label: '💰 Budget' },
     { id: 'attendance', label: '✅ Attendance' },
+    { id: 'reports', label: '📄 Reports' },
+      { id: 'module-evaluation', label: '📋 Module Evaluation' },
     { id: 'settings', label: '⚙️ Settings' },
   ];
+  
 
   return (
     <div className="hod-dashboard">

@@ -8,6 +8,7 @@ import './admin/AdminDashboardStyles.css';
 import FinanceDashboard from './FinanceDashboard';
 import LecturerDashboard from './LecturerDashboard';
 
+
 // Import Tab Components
 import DashboardTab from './admin/DashboardTab';
 import StudentsTab from './admin/StudentsTab';
@@ -20,6 +21,8 @@ import ExamsTab from './admin/ExamsTab';
 import TimetablesTab from './admin/TimetablesTab';
 import ProgramsTab from './admin/ProgramsTab';
 import SettingsTab from './admin/SettingsTab';
+import CurriculumImplementationTab from './admin/CurriculumImplementationTab';
+import ReportViewer from './shared/ReportViewer';
 
 // Import Modal Components
 import UserModal from './admin/modals/UserModal';
@@ -2976,6 +2979,8 @@ const fetchLecturers = async () => {
         <button className={`nav-item ${activeTab === "programs" ? "active" : ""}`} onClick={() => setActiveTab("programs")}>🎓 Programs</button>
         <button className={`nav-item ${activeTab === "departments" ? "active" : ""}`} onClick={() => setActiveTab("departments")}>🏢 Departments</button>
         <button className={`nav-item ${activeTab === "faculties" ? "active" : ""}`} onClick={() => setActiveTab("faculties")}>🏛️ Faculties</button>
+        <button className={`nav-item ${activeTab === "curriculum" ? "active" : ""}`} onClick={() => setActiveTab("curriculum")}>📋 Curriculum</button>
+        <button className={`nav-item ${activeTab === "reports" ? "active" : ""}`} onClick={() => setActiveTab("reports")}>📄 Reports</button>
         <button className={`nav-item ${activeTab === "settings" ? "active" : ""}`} onClick={() => setActiveTab("settings")}>⚙ Settings</button>
       </nav>
 
@@ -3168,7 +3173,16 @@ const fetchLecturers = async () => {
                 fetchDashboardStats={fetchDashboardStats} 
                 showToast={showToast} 
               />
-            )}
+              )}
+              {activeTab === "curriculum" && (
+  <CurriculumImplementationTab showToast={showToast} />
+              )} 
+{activeTab === "reports" && (
+  <ReportViewer 
+    showAll={true}
+    showToast={showToast} 
+  />
+)}
 
             {activeTab === "settings" && <SettingsTab />}
           </>

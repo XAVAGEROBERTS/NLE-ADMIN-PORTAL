@@ -1,0 +1,666 @@
+/* ============================================
+   LECTURER APPRAISAL - MODERN CLEAN DESIGN
+   ============================================ */
+
+/* ----- Main Container ----- */
+.lecturer-appraisal-container {
+  padding: 20px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* ----- Header Section ----- */
+.lecturer-appraisal-header-section {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.lecturer-appraisal-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  color: #1a1a2e;
+}
+
+.lecturer-appraisal-title-icon {
+  font-size: 30px;
+}
+
+.lecturer-appraisal-title-count {
+  font-size: 14px;
+  font-weight: 400;
+  color: #888;
+  margin-left: 8px;
+  background: #f0f0f5;
+  padding: 2px 12px;
+  border-radius: 20px;
+}
+
+.lecturer-appraisal-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ----- Filter Controls ----- */
+.lecturer-appraisal-filter-select {
+  padding: 10px 18px;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  background: white;
+  font-size: 14px;
+  color: #333;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s ease;
+  min-width: 180px;
+  font-weight: 500;
+}
+
+.lecturer-appraisal-filter-select:hover {
+  border-color: #b0b0b0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.lecturer-appraisal-filter-select:focus {
+  border-color: #4a6cf7;
+  box-shadow: 0 0 0 3px rgba(74, 108, 247, 0.1);
+}
+
+.lecturer-appraisal-refresh-btn {
+  padding: 10px 18px;
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: #555;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lecturer-appraisal-refresh-btn:hover {
+  background: #eef0f2;
+  border-color: #c0c0c0;
+  transform: translateY(-1px);
+}
+
+.lecturer-appraisal-refresh-btn:active {
+  transform: scale(0.97);
+}
+
+/* ----- Info Banner ----- */
+.lecturer-appraisal-info-banner {
+  background: linear-gradient(135deg, #f0f4ff 0%, #e8edff 100%);
+  padding: 18px 24px;
+  border-radius: 12px;
+  margin-bottom: 28px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 2px 8px rgba(74, 108, 247, 0.06);
+}
+
+.lecturer-appraisal-info-banner .banner-icon {
+  font-size: 28px;
+  flex-shrink: 0;
+}
+
+.lecturer-appraisal-info-banner .banner-content {
+  flex: 1;
+}
+
+.lecturer-appraisal-info-banner .banner-content .banner-title {
+  font-weight: 600;
+  color: #1a1a2e;
+  margin: 0 0 4px 0;
+  font-size: 15px;
+}
+
+.lecturer-appraisal-info-banner .banner-content .banner-sub {
+  font-size: 13px;
+  color: #555;
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* ----- Loading State ----- */
+.lecturer-appraisal-loading {
+  text-align: center;
+  padding: 80px 20px;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+}
+
+.lecturer-appraisal-spinner {
+  width: 48px;
+  height: 48px;
+  border: 3px solid #e8ecf1;
+  border-top: 3px solid #4a6cf7;
+  border-radius: 50%;
+  animation: lecturerAppraisalSpin 0.8s linear infinite;
+  margin: 0 auto 16px;
+}
+
+@keyframes lecturerAppraisalSpin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.lecturer-appraisal-loading p {
+  color: #888;
+  font-size: 15px;
+  margin: 0;
+}
+
+/* ----- Empty State ----- */
+.lecturer-appraisal-empty {
+  text-align: center;
+  padding: 80px 20px;
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+}
+
+.lecturer-appraisal-empty-icon {
+  font-size: 64px;
+  display: block;
+  margin-bottom: 16px;
+}
+
+.lecturer-appraisal-empty h3 {
+  color: #1a1a2e;
+  margin: 0 0 8px 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.lecturer-appraisal-empty p {
+  color: #777;
+  margin: 4px 0;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.lecturer-appraisal-empty .empty-sub {
+  font-size: 13px;
+  color: #aaa;
+  margin-top: 8px;
+}
+
+/* ----- Appraisal Grid ----- */
+.lecturer-appraisal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+  gap: 24px;
+  margin-top: 20px;
+}
+
+/* ----- Appraisal Card - CLEAN DESIGN ----- */
+.lecturer-appraisal-card {
+  background: white;
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid #f0f0f5;
+}
+
+.lecturer-appraisal-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.08);
+}
+
+/* ----- Card Header ----- */
+.lecturer-appraisal-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.lecturer-appraisal-card-header .card-title-group {
+  flex: 1;
+  min-width: 0;
+}
+
+.lecturer-appraisal-card-header .card-period {
+  margin: 0;
+  color: #1a1a2e;
+  font-size: 16px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lecturer-appraisal-card-header .card-period .period-icon {
+  font-size: 18px;
+}
+
+.lecturer-appraisal-card-header .card-sub {
+  margin: 6px 0 0 0;
+  font-size: 13px;
+  color: #888;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lecturer-appraisal-card-header .card-sub .sub-label {
+  color: #aaa;
+}
+
+/* ----- Status Badge - CLEAN ----- */
+.lecturer-appraisal-status-badge {
+  padding: 5px 14px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  letter-spacing: 0.2px;
+}
+
+.lecturer-appraisal-status-badge.status-completed {
+  background: #e8f0fe;
+  color: #1a73e8;
+}
+
+.lecturer-appraisal-status-badge.status-approved_by_dean {
+  background: #e6f4ea;
+  color: #1e7e34;
+}
+
+.lecturer-appraisal-status-badge.status-rejected {
+  background: #fce8e6;
+  color: #d93025;
+}
+
+.lecturer-appraisal-status-badge.status-draft {
+  background: #fef7e0;
+  color: #e37400;
+}
+
+.lecturer-appraisal-status-badge.status-pending_dean {
+  background: #fef7e0;
+  color: #e37400;
+}
+
+/* ----- Card Rating - CLEAN ----- */
+.lecturer-appraisal-rating-display {
+  margin: 12px 0 14px 0;
+  padding: 10px 16px;
+  background: #f8f9fc;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.lecturer-appraisal-rating-display .rating-label {
+  color: #1a1a2e;
+  font-weight: 600;
+  min-width: 56px;
+  font-size: 13px;
+}
+
+.lecturer-appraisal-rating-display .rating-stars {
+  display: flex;
+  gap: 2px;
+  color: #f9a825;
+}
+
+.lecturer-appraisal-rating-display .rating-number {
+  color: #888;
+  margin-left: 4px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* ----- Card Sections - CLEAN ----- */
+.lecturer-appraisal-section {
+  margin: 8px 0;
+  padding: 12px 14px;
+  background: #f8f9fc;
+  border-radius: 10px;
+}
+
+.lecturer-appraisal-section .section-label {
+  display: block;
+  margin-bottom: 4px;
+  color: #1a1a2e;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.lecturer-appraisal-section .section-text {
+  margin: 0;
+  color: #444;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* Section Type Colors - Subtle */
+.lecturer-appraisal-section.type-strengths {
+  background: #f0faf4;
+}
+
+.lecturer-appraisal-section.type-strengths .section-label {
+  color: #1e7e34;
+}
+
+.lecturer-appraisal-section.type-improvements {
+  background: #fef8ee;
+}
+
+.lecturer-appraisal-section.type-improvements .section-label {
+  color: #e37400;
+}
+
+.lecturer-appraisal-section.type-goals {
+  background: #eef3fc;
+}
+
+.lecturer-appraisal-section.type-goals .section-label {
+  color: #1a73e8;
+}
+
+/* ----- Dean's Feedback - CLEAN ----- */
+.lecturer-appraisal-dean-feedback {
+  margin-top: 16px;
+}
+
+.lecturer-appraisal-dean-feedback .feedback-divider {
+  margin: 14px 0;
+  border: none;
+  border-top: 1px solid #e8ecf1;
+}
+
+.lecturer-appraisal-dean-feedback .feedback-title {
+  color: #1a1a2e;
+  margin: 0 0 10px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.lecturer-appraisal-dean-feedback .feedback-content {
+  background: #f8f9fc;
+  padding: 14px 16px;
+  border-radius: 10px;
+}
+
+.lecturer-appraisal-dean-feedback .feedback-content .feedback-text {
+  margin: 0 0 10px 0;
+  color: #333;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.lecturer-appraisal-dean-feedback .feedback-content .promotion-text {
+  margin: 0 0 6px 0;
+  font-size: 13px;
+  color: #333;
+}
+
+.lecturer-appraisal-dean-feedback .feedback-content .promotion-text .promotion-badge {
+  display: inline-block;
+  padding: 3px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.promotion-badge.recommend {
+  background: #e6f4ea;
+  color: #1e7e34;
+}
+
+.promotion-badge.not_recommend {
+  background: #fce8e6;
+  color: #d93025;
+}
+
+.promotion-badge.defer {
+  background: #fef7e0;
+  color: #e37400;
+}
+
+.lecturer-appraisal-dean-feedback .feedback-content .feedback-date {
+  color: #999;
+  font-size: 12px;
+  display: block;
+  margin-top: 6px;
+}
+
+/* Rejected Feedback */
+.lecturer-appraisal-dean-feedback.type-rejected .feedback-content {
+  background: #fdf5f4;
+}
+
+.lecturer-appraisal-dean-feedback.type-rejected .feedback-title {
+  color: #d93025;
+}
+
+/* ----- Card Footer - CLEAN ----- */
+.lecturer-appraisal-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #f0f0f5;
+}
+
+.lecturer-appraisal-card-footer .footer-date {
+  color: #aaa;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lecturer-appraisal-card-footer .footer-date .date-icon {
+  font-size: 14px;
+}
+
+.lecturer-appraisal-card-footer .footer-updated {
+  color: #ccc;
+  font-size: 11px;
+}
+
+/* ----- Status Bar (Optional subtle indicator) ----- */
+.lecturer-appraisal-card .status-indicator {
+  display: none;
+}
+
+/* ============================================
+   RESPONSIVE BREAKPOINTS
+   ============================================ */
+
+/* Tablets */
+@media (max-width: 1024px) {
+  .lecturer-appraisal-grid {
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 20px;
+  }
+}
+
+/* Mobile */
+@media (max-width: 768px) {
+  .lecturer-appraisal-container {
+    padding: 12px;
+  }
+
+  .lecturer-appraisal-header-section {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .lecturer-appraisal-title {
+    font-size: 20px;
+  }
+
+  .lecturer-appraisal-actions {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .lecturer-appraisal-filter-select {
+    width: 100%;
+    min-width: unset;
+  }
+
+  .lecturer-appraisal-refresh-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .lecturer-appraisal-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .lecturer-appraisal-card {
+    padding: 18px;
+  }
+
+  .lecturer-appraisal-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .lecturer-appraisal-card-header .card-period {
+    font-size: 15px;
+  }
+
+  .lecturer-appraisal-info-banner {
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 16px 18px;
+  }
+
+  .lecturer-appraisal-rating-display {
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 10px 14px;
+  }
+
+  .lecturer-appraisal-section {
+    padding: 10px 12px;
+  }
+
+  .lecturer-appraisal-section .section-text {
+    font-size: 13px;
+  }
+
+  .lecturer-appraisal-dean-feedback .feedback-content {
+    padding: 12px 14px;
+  }
+
+  .lecturer-appraisal-card-footer {
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-start;
+  }
+}
+
+/* Small Mobile */
+@media (max-width: 480px) {
+  .lecturer-appraisal-container {
+    padding: 8px;
+  }
+
+  .lecturer-appraisal-title {
+    font-size: 18px;
+  }
+
+  .lecturer-appraisal-empty {
+    padding: 40px 16px;
+  }
+
+  .lecturer-appraisal-empty h3 {
+    font-size: 18px;
+  }
+
+  .lecturer-appraisal-empty-icon {
+    font-size: 48px;
+  }
+
+  .lecturer-appraisal-card {
+    padding: 14px;
+  }
+
+  .lecturer-appraisal-card-header .card-period {
+    font-size: 14px;
+  }
+
+  .lecturer-appraisal-status-badge {
+    font-size: 11px;
+    padding: 4px 10px;
+  }
+
+  .lecturer-appraisal-rating-display {
+    font-size: 13px;
+    padding: 8px 12px;
+  }
+
+  .lecturer-appraisal-section .section-text {
+    font-size: 12px;
+  }
+
+  .lecturer-appraisal-dean-feedback .feedback-content .feedback-text {
+    font-size: 13px;
+  }
+}
+
+/* ============================================
+   UTILITY CLASSES
+   ============================================ */
+
+.lecturer-appraisal-flex { display: flex; }
+.lecturer-appraisal-flex-between { display: flex; justify-content: space-between; align-items: center; }
+.lecturer-appraisal-flex-center { display: flex; justify-content: center; align-items: center; }
+.lecturer-appraisal-flex-wrap { flex-wrap: wrap; }
+.lecturer-appraisal-gap-8 { gap: 8px; }
+.lecturer-appraisal-gap-12 { gap: 12px; }
+.lecturer-appraisal-gap-16 { gap: 16px; }
+.lecturer-appraisal-gap-20 { gap: 20px; }
+
+.lecturer-appraisal-mt-8 { margin-top: 8px; }
+.lecturer-appraisal-mt-12 { margin-top: 12px; }
+.lecturer-appraisal-mt-16 { margin-top: 16px; }
+.lecturer-appraisal-mt-20 { margin-top: 20px; }
+.lecturer-appraisal-mb-8 { margin-bottom: 8px; }
+.lecturer-appraisal-mb-12 { margin-bottom: 12px; }
+.lecturer-appraisal-mb-16 { margin-bottom: 16px; }
+.lecturer-appraisal-mb-20 { margin-bottom: 20px; }
+
+.lecturer-appraisal-text-center { text-align: center; }
+.lecturer-appraisal-text-muted { color: #888; }
+.lecturer-appraisal-text-small { font-size: 13px; }
+.lecturer-appraisal-text-xs { font-size: 12px; }
+.lecturer-appraisal-text-sm { font-size: 14px; }
+.lecturer-appraisal-text-lg { font-size: 18px; }
+
+.lecturer-appraisal-w-full { width: 100%; }
