@@ -154,33 +154,35 @@ const AdminDashboard = () => {
   const [bulkMessageText, setBulkMessageText] = useState('');
 
   // ==================== FORM STATES ====================
-  const [newUser, setNewUser] = useState({
-    full_name: "",
-    email: "",
-    phone: "",
-    role: "student",
-    program_id: "",
-    program: "",
-    department: "",
-    department_code: "",
-    program_code: "",
-    year_of_study: 1,
-    semester: 1,
-    intake: "January",
-    academic_year: "",
-    date_of_birth: "",
-    program_duration_years: 4,
-    specialization: "",
-    google_meet_link: "",
-    faculty_id: "",
-    department_id: "",
-    faculty_name: "",
-    department_name: "",
-    dean_title: "",
-    hod_title: "",
-    profile_picture_url: "",
-  });
-
+// In AdminDashboard.jsx - Update the newUser state
+const [newUser, setNewUser] = useState({
+  full_name: "",
+  email: "",
+  phone: "",
+  role: "student",
+  program_id: "",
+  program: "",
+  program_name: "",
+  department: "",
+  department_code: "",
+  program_code: "",
+  year_of_study: 1,
+  semester: 1,
+  intake: "January",
+  academic_year: "",
+  date_of_birth: "",
+  program_duration_years: 3,
+  total_semesters: 6,
+  specialization: "",
+  google_meet_link: "",
+  faculty_id: "",
+  department_id: "",
+  faculty_name: "",
+  department_name: "",
+  dean_title: "",
+  hod_title: "",
+  profile_picture_url: "",
+});
   const [editUser, setEditUser] = useState({
     id: "",
     full_name: "",
@@ -1195,21 +1197,27 @@ const fetchLecturers = async () => {
       throw error;
     }
   };
-
-  const fetchPrograms = async () => {
-    try {
-      const { data, error } = await supabase
-        .from("programs")
-        .select("id, name, code")
-        .order("name");
-      if (error) throw error;
-      setPrograms(data || []);
-      setProgramsLoading(false);
-    } catch (err) {
-      console.error("Error loading programs:", err);
-      setProgramsLoading(false);
-    }
-  };
+// ==================== FETCH PROGRAMS ====================
+const fetchPrograms = async () => {
+  try {
+    console.log("📚 Fetching programs with all fields...");
+    const { data, error } = await supabase
+      .from("programs")
+      .select("id, name, code, years, total_semesters, department_name, department_code")
+      .order("name");
+    
+    if (error) throw error;
+    
+    console.log("📚 Programs loaded:", data);
+    console.log("📚 Years data:", data.map(p => `${p.code}: ${p.years} years`));
+    
+    setPrograms(data || []);
+    setProgramsLoading(false);
+  } catch (err) {
+    console.error("Error loading programs:", err);
+    setProgramsLoading(false);
+  }
+};
 
   const fetchLecturersList = async () => {
     try {
@@ -1653,163 +1661,217 @@ const fetchLecturers = async () => {
     }
   };
 
-  // ==================== USER MANAGEMENT ====================
-  const handleAddStudent = async () => {
-    try {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(newUser.email.trim())) {
-        showToast("Please enter a valid email address", 'error');
-        return;
-      }
+// In AdminDashboard.jsx - Replace the handleAddStudent function
 
-      if (!newUser.program?.trim()) {
-        showToast("Please enter the Program name.", 'error');
-        return;
-      }
-      if (!newUser.department_code?.trim()) {
-        showToast("Please enter the Department Code (e.g., ENG, SCT)", 'error');
-        return;
-      }
-      if (!newUser.program_code?.trim()) {
-        showToast("Please enter the Program Code (e.g., BSCE, BSCS)", 'error');
-        return;
-      }
+const handleAddStudent = async () => {
+  try {
+    // Validate required fields
+    if (!newUser.full_name?.trim()) {
+      showToast("Please enter student's full name", 'error');
+      return;
+    }
 
-      const password = "Default123!";
-      const departmentCode = newUser.department_code.trim().toUpperCase();
+    if (!newUser.program_id) {
+      showToast("Please select a program", 'error');
+      return;
+    }
 
-      const { data: existingStudents, error: fetchError } = await supabase
-        .from("students")
-        .select("student_id")
-        .ilike("student_id", `${departmentCode}-%`)
-        .order("student_id", { ascending: false });
+    // Get program details for auto-fill
+    const selectedProgram = programs.find(p => p.id === newUser.program_id);
+    if (!selectedProgram) {
+      showToast("Selected program not found", 'error');
+      return;
+    }
 
-      if (fetchError) throw fetchError;
+    // Auto-generate email from name (if not already set or if user wants to regenerate)
+    const fullName = newUser.full_name.trim();
+    const nameParts = fullName.toLowerCase().split(' ');
+    let emailName = '';
+    
+    if (nameParts.length >= 2) {
+      const firstName = nameParts[0];
+      const lastName = nameParts[nameParts.length - 1];
+      emailName = lastName + firstName;
+    } else {
+      emailName = nameParts[0];
+    }
+    emailName = emailName.replace(/[^a-zA-Z]/g, '');
+    const autoEmail = `${emailName}@nle.university.com`;
 
-      let maxSequence = 0;
-      if (existingStudents && existingStudents.length > 0) {
-        existingStudents.forEach((student) => {
-          const studentId = student.student_id;
-          if (studentId && studentId.startsWith(`${departmentCode}-`)) {
-            const parts = studentId.split("-");
-            if (parts.length === 2) {
-              const sequencePart = parts[1];
-              if (/^\d+$/.test(sequencePart)) {
-                const sequenceNum = parseInt(sequencePart, 10);
-                if (!isNaN(sequenceNum) && sequenceNum > maxSequence) {
-                  maxSequence = sequenceNum;
-                }
+    // Use the email from form or auto-generated
+    const email = newUser.email?.trim() || autoEmail;
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      showToast("Please enter a valid email address", 'error');
+      return;
+    }
+
+    // Auto-calculate academic year
+    const currentYear = new Date().getFullYear();
+    const endYear = currentYear + (selectedProgram.years || 3);
+    const academicYear = `${currentYear}/${endYear}`;
+
+    // Auto-determine semester
+    const currentMonth = new Date().getMonth();
+    const semester = (currentMonth >= 1 && currentMonth <= 6) ? 2 : 1;
+    const intake = semester === 1 ? 'August' : 'January';
+
+    // Auto-fill department info
+    const department = selectedProgram.department_name || '';
+    const departmentCode = selectedProgram.department_code || '';
+    const programCode = selectedProgram.code || '';
+    const programName = selectedProgram.name || '';
+
+    // Generate student ID
+    const { data: existingStudents, error: fetchError } = await supabase
+      .from("students")
+      .select("student_id")
+      .ilike("student_id", `${departmentCode}-%`)
+      .order("student_id", { ascending: false });
+
+    if (fetchError) throw fetchError;
+
+    let maxSequence = 0;
+    if (existingStudents && existingStudents.length > 0) {
+      existingStudents.forEach((student) => {
+        const studentId = student.student_id;
+        if (studentId && studentId.startsWith(`${departmentCode}-`)) {
+          const parts = studentId.split("-");
+          if (parts.length === 2) {
+            const sequencePart = parts[1];
+            if (/^\d+$/.test(sequencePart)) {
+              const sequenceNum = parseInt(sequencePart, 10);
+              if (!isNaN(sequenceNum) && sequenceNum > maxSequence) {
+                maxSequence = sequenceNum;
               }
             }
           }
-        });
-      }
-
-      const nextSequenceNumber = maxSequence + 1;
-      const studentId = `${departmentCode}-${nextSequenceNumber}`;
-
-      const profileData = {
-        student_id: studentId,
-        registration_number: studentId,
-        full_name: newUser.full_name.trim(),
-        email: newUser.email.toLowerCase().trim(),
-        password_hash: password,
-        phone: newUser.phone?.trim() || null,
-        date_of_birth: newUser.date_of_birth || null,
-        program: newUser.program,
-        year_of_study: parseInt(newUser.year_of_study),
-        semester: parseInt(newUser.semester),
-        intake: newUser.intake,
-        academic_year: newUser.academic_year.trim(),
-        status: "active",
-        program_id: newUser.program_id,
-        program_code: newUser.program_code.trim().toUpperCase(),
-        department: newUser.department.trim(),
-        department_code: departmentCode,
-        program_duration_years: parseInt(newUser.program_duration_years),
-        program_total_semesters: parseInt(newUser.program_duration_years) * 2,
-        created_at: new Date().toISOString(),
-      };
-
-      const { data: existingProfile, error: checkError } = await supabase
-        .from("students")
-        .select("id, email, student_id")
-        .or(`email.eq.${profileData.email},student_id.eq.${studentId}`)
-        .maybeSingle();
-
-      if (checkError && checkError.code !== "PGRST116") {
-        throw new Error("Error checking for existing records");
-      }
-      if (existingProfile) {
-        if (existingProfile.email === profileData.email) {
-          throw new Error("This email already exists as a student");
         }
-        if (existingProfile.student_id === studentId) {
-          throw new Error("This Student ID already exists");
-        }
-      }
-
-      const { data: tableData, error: tableError } = await supabase
-        .from("students")
-        .insert([profileData])
-        .select()
-        .single();
-
-      if (tableError) {
-        if (tableError.code === "23505") {
-          throw new Error("Email or ID already exists!");
-        }
-        throw new Error(tableError.message);
-      }
-
-      if (tableData?.id) {
-        try {
-          const actualProgramCode = tableData.program_code || newUser.program_code.trim().toUpperCase();
-          const actualDepartmentCode = tableData.department_code || newUser.department_code.trim().toUpperCase();
-
-          const { data: startingCourses, error: courseError } = await supabase
-            .from("courses")
-            .select("id")
-            .eq("department_code", actualDepartmentCode)
-            .eq("program_code", actualProgramCode)
-            .eq("year", newUser.year_of_study || 1)
-            .eq("semester", newUser.semester || 1)
-            .eq("is_active", true);
-
-          if (!courseError && startingCourses && startingCourses.length > 0) {
-            const enrollments = startingCourses.map((course) => ({
-              student_id: tableData.id,
-              course_id: course.id,
-              program_code: actualProgramCode,
-              status: "enrolled",
-              enrollment_date: new Date().toISOString().split("T")[0],
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            }));
-
-            await supabase
-              .from("student_courses")
-              .upsert(enrollments, {
-                onConflict: "student_id,course_id",
-                ignoreDuplicates: true,
-              });
-          }
-        } catch (err) {
-          console.warn("Auto-enroll error:", err);
-        }
-      }
-
-      setShowUserModal(false);
-      resetUserForm();
-      showToast(`✅ Student "${newUser.full_name}" added successfully!`, 'success');
-      await fetchStudents();
-      await fetchDashboardStats();
-      
-    } catch (error) {
-      showToast(`Error: ${error.message || "Something went wrong"}`, 'error');
-      console.error("Add student error:", error);
+      });
     }
-  };
+
+    const nextSequenceNumber = maxSequence + 1;
+    const studentId = `${departmentCode}-${String(nextSequenceNumber).padStart(6, '0')}`;
+
+    // Prepare student data
+    const password = "Default123!";
+    const profileData = {
+      student_id: studentId,
+      registration_number: studentId,
+      full_name: fullName,
+      email: email.toLowerCase().trim(),
+      password_hash: password,
+      phone: newUser.phone?.trim() || null,
+      date_of_birth: newUser.date_of_birth || null,
+      program: programName,
+      program_code: programCode,
+      program_id: selectedProgram.id,
+      department: department,
+      department_code: departmentCode,
+      year_of_study: 1,
+      semester: semester,
+      intake: intake,
+      academic_year: academicYear,
+      program_duration_years: selectedProgram.years || 3,
+      program_total_semesters: (selectedProgram.years || 3) * 2,
+      status: "active",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    // Check for existing student
+    const { data: existingProfile, error: checkError } = await supabase
+      .from("students")
+      .select("id, email, student_id")
+      .or(`email.eq.${profileData.email},student_id.eq.${studentId}`)
+      .maybeSingle();
+
+    if (checkError && checkError.code !== "PGRST116") {
+      throw new Error("Error checking for existing records");
+    }
+    
+    if (existingProfile) {
+      if (existingProfile.email === profileData.email) {
+        throw new Error(`Email "${profileData.email}" already exists as a student`);
+      }
+      if (existingProfile.student_id === studentId) {
+        throw new Error(`Student ID "${studentId}" already exists`);
+      }
+    }
+
+    // Insert student
+    const { data: tableData, error: tableError } = await supabase
+      .from("students")
+      .insert([profileData])
+      .select()
+      .single();
+
+    if (tableError) {
+      if (tableError.code === "23505") {
+        throw new Error("Email or ID already exists!");
+      }
+      throw new Error(tableError.message);
+    }
+
+    // Auto-enroll in courses for the first semester
+    if (tableData?.id) {
+      try {
+        const { data: startingCourses, error: courseError } = await supabase
+          .from("courses")
+          .select("id")
+          .eq("department_code", departmentCode)
+          .eq("program_code", programCode)
+          .eq("year", 1)
+          .eq("semester", semester)
+          .eq("is_active", true);
+
+        if (!courseError && startingCourses && startingCourses.length > 0) {
+          const enrollments = startingCourses.map((course) => ({
+            student_id: tableData.id,
+            course_id: course.id,
+            program_code: programCode,
+            status: "enrolled",
+            enrollment_date: new Date().toISOString().split("T")[0],
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }));
+
+          await supabase
+            .from("student_courses")
+            .upsert(enrollments, {
+              onConflict: "student_id,course_id",
+              ignoreDuplicates: true,
+            });
+        }
+      } catch (err) {
+        console.warn("Auto-enroll warning:", err);
+        // Don't fail the student creation if auto-enroll fails
+      }
+    }
+
+    // Success
+    setShowUserModal(false);
+    resetUserForm();
+    
+    showToast(
+      `✅ Student "${fullName}" added successfully!\n\n` +
+      `Student ID: ${studentId}\n` +
+      `Email: ${email}\n` +
+      `Academic Year: ${academicYear}\n` +
+      `Department: ${department}`,
+      'success'
+    );
+    
+    await fetchStudents();
+    await fetchDashboardStats();
+    
+  } catch (error) {
+    showToast(`Error: ${error.message || "Something went wrong"}`, 'error');
+    console.error("Add student error:", error);
+  }
+};
 
   const handleAddLecturer = async () => {
     try {

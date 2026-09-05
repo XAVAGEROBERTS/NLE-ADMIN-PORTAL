@@ -1,8 +1,8 @@
-// dean/DeanAdmissions.jsx - HARDENED
+// dean/DeanAdmissions.jsx - WITH NOTIFICATION TRIGGER
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../../services/supabase';
 
-const DeanAdmissions = ({ departments }) => {
+const DeanAdmissions = ({ departments, onNotificationUpdate }) => {
   const [admissionsData, setAdmissionsData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedDepartment, setSelectedDepartment] = useState('all');
@@ -11,6 +11,14 @@ const DeanAdmissions = ({ departments }) => {
   const deptCodes = useMemo(() => {
     return departments.map(d => d.department_code).filter(Boolean);
   }, [departments]);
+
+  // Trigger notification update
+  const triggerNotificationUpdate = useCallback(() => {
+    if (onNotificationUpdate) {
+      console.log('🔔 Triggering notification update from Admissions');
+      onNotificationUpdate();
+    }
+  }, [onNotificationUpdate]);
 
   const fetchAdmissionsData = useCallback(async () => {
     if (deptCodes.length === 0) {
@@ -30,6 +38,10 @@ const DeanAdmissions = ({ departments }) => {
         query = query.in('department_code', deptCodes);
       }
 
+      if (selectedYear !== 'all') {
+        query = query.eq('year_of_study', parseInt(selectedYear));
+      }
+
       const { data, error } = await query.order('created_at', { ascending: false });
 
       if (error) throw error;
@@ -39,7 +51,7 @@ const DeanAdmissions = ({ departments }) => {
     } finally {
       setLoading(false);
     }
-  }, [deptCodes, selectedDepartment]);
+  }, [deptCodes, selectedDepartment, selectedYear]);
 
   useEffect(() => {
     fetchAdmissionsData();
@@ -64,7 +76,10 @@ const DeanAdmissions = ({ departments }) => {
 
   return (
     <div className="dean-section">
-      <h2 className="dean-section-title">🎓 Student Admissions & Progression</h2>
+      <div className="dean-section-header">
+        <h2 className="dean-section-title">🎓 Student Admissions & Progression</h2>
+        <span className="dean-badge dean-badge-blue">{admissionsData.length} Students</span>
+      </div>
 
       <div className="dean-filters">
         <select
@@ -79,7 +94,21 @@ const DeanAdmissions = ({ departments }) => {
             </option>
           ))}
         </select>
-        <button className="dean-refresh-btn" onClick={fetchAdmissionsData}>
+        <select
+          value={selectedYear}
+          onChange={(e) => setSelectedYear(e.target.value)}
+          className="dean-filter-select"
+        >
+          <option value="all">All Years</option>
+          <option value="1">Year 1</option>
+          <option value="2">Year 2</option>
+          <option value="3">Year 3</option>
+          <option value="4">Year 4</option>
+        </select>
+        <button className="dean-refresh-btn" onClick={() => {
+          fetchAdmissionsData();
+          triggerNotificationUpdate();
+        }}>
           🔄 Refresh
         </button>
       </div>
@@ -96,6 +125,10 @@ const DeanAdmissions = ({ departments }) => {
         <div className="dean-stat-card dean-stat-orange">
           <h3>{admissionsData.filter(s => s.status === 'active').length}</h3>
           <p>Active Students</p>
+        </div>
+        <div className="dean-stat-card dean-stat-purple">
+          <h3>{admissionsData.filter(s => s.status === 'inactive' || s.status === 'suspended').length}</h3>
+          <p>Inactive/Suspended</p>
         </div>
       </div>
 
@@ -168,6 +201,11 @@ const DeanAdmissions = ({ departments }) => {
               )}
             </tbody>
           </table>
+        )}
+        {admissionsData.length > 50 && (
+          <div style={{ textAlign: 'center', padding: '12px', color: '#666', fontSize: '13px' }}>
+            Showing first 50 of {admissionsData.length} students
+          </div>
         )}
       </div>
     </div>

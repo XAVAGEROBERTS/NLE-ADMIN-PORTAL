@@ -1,8 +1,8 @@
-// dean/DeanDisciplinary.jsx - WITH EDIT HEARING
+// dean/DeanDisciplinary.jsx - COMPLETE WITH NOTIFICATION TRIGGERS
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../../services/supabase';
 
-const DeanDisciplinary = ({ departments, fetchDeanData, setStats }) => {
+const DeanDisciplinary = ({ departments, fetchDeanData, setStats, onNotificationUpdate }) => {
   const [cases, setCases] = useState([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState('all');
@@ -21,6 +21,14 @@ const DeanDisciplinary = ({ departments, fetchDeanData, setStats }) => {
   const deptCodes = useMemo(() => {
     return departments.map(d => d.department_code).filter(Boolean);
   }, [departments]);
+
+  // Trigger notification update
+  const triggerNotificationUpdate = useCallback(() => {
+    if (onNotificationUpdate) {
+      console.log('🔔 Triggering notification update from Disciplinary');
+      onNotificationUpdate();
+    }
+  }, [onNotificationUpdate]);
 
   const fetchCases = useCallback(async () => {
     if (deptCodes.length === 0) {
@@ -90,12 +98,14 @@ const DeanDisciplinary = ({ departments, fetchDeanData, setStats }) => {
       setEditingHearing(false);
       await fetchCases();
       if (fetchDeanData) await fetchDeanData();
+      
+      // Trigger notification update
+      triggerNotificationUpdate();
     } catch (err) {
       alert('Error updating case: ' + err.message);
     }
   };
 
-  // NEW: Edit Hearing function
   const handleEditHearing = async (id) => {
     if (!hearingDate) {
       alert('Please select a hearing date');
@@ -121,6 +131,9 @@ const DeanDisciplinary = ({ departments, fetchDeanData, setStats }) => {
       setEditingHearing(false);
       await fetchCases();
       if (fetchDeanData) await fetchDeanData();
+      
+      // Trigger notification update
+      triggerNotificationUpdate();
     } catch (err) {
       alert('Error updating hearing: ' + err.message);
     }
@@ -152,6 +165,9 @@ const DeanDisciplinary = ({ departments, fetchDeanData, setStats }) => {
       setEditingHearing(false);
       await fetchCases();
       if (fetchDeanData) await fetchDeanData();
+      
+      // Trigger notification update
+      triggerNotificationUpdate();
     } catch (err) {
       alert('Error scheduling hearing: ' + err.message);
     }
@@ -339,7 +355,10 @@ const DeanDisciplinary = ({ departments, fetchDeanData, setStats }) => {
           <option value="resolved">✅ Resolved</option>
           <option value="dismissed">❌ Dismissed</option>
         </select>
-        <button className="dean-refresh-btn" onClick={fetchCases}>
+        <button className="dean-refresh-btn" onClick={() => {
+          fetchCases();
+          triggerNotificationUpdate();
+        }}>
           🔄 Refresh
         </button>
       </div>

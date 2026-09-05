@@ -1,8 +1,9 @@
-// DeanDashboard.jsx - FINAL VERSION WITH WORKING LEAVE NOTIFICATIONS
+// DeanDashboard.jsx - COMPLETE WITH ALL NOTIFICATIONS
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext';
 import { supabase } from '../services/supabase';
+import useNotifications from '../hooks/useNotifications';
 
 // All dean components
 import DeanOverview from './dean/DeanOverview';
@@ -45,6 +46,7 @@ const DeanDashboard = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [profileVersion, setProfileVersion] = useState(0);
   const [profilePicUrl, setProfilePicUrl] = useState(null);
+  const [isMounted, setIsMounted] = useState(true);
 
   const [stats, setStats] = useState({
     totalDepartments: 0,
@@ -58,7 +60,7 @@ const DeanDashboard = () => {
     pendingBudgetRequests: 0,
   });
 
-  // Chat
+  // Chat State
   const [showChat, setShowChat] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
   const [selectedUserType, setSelectedUserType] = useState('');
@@ -67,10 +69,8 @@ const DeanDashboard = () => {
   const [sendingMessage, setSendingMessage] = useState(false);
   const chatEndRef = useRef(null);
 
-  // Notifications
-  const [notifications, setNotifications] = useState([]);
+  // ===== NOTIFICATIONS - USING THE HOOK =====
   const [showNotifications, setShowNotifications] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(0);
   const notificationSubscriptionRef = useRef(null);
   const leaveSubscriptionRef = useRef(null);
 
@@ -80,35 +80,69 @@ const DeanDashboard = () => {
   const deanEmail = profile?.email || '';
   const deanName = profile?.full_name || 'Dean';
 
+  // Use the notifications hook
+  const {
+    notifications,
+    unreadCount,
+    pendingLeaveRequests,
+    fetchAllNotifications,
+    fetchPendingLeaveRequests,
+    markNotificationRead,
+    markAllNotificationsRead,
+    clearAllNotifications,
+    setNotifications,
+    readBudgetIds,
+    readDisciplinaryIds
+  } = useNotifications({
+    userEmail: deanEmail,
+    userId: profile?.id,
+    departments: departments,
+    facultyId: facultyId,
+    isMounted: isMounted
+  });
+
   // ========== FETCH FUNCTIONS ==========
   const fetchAdmins = useCallback(async () => {
+    if (!isMounted) return [];
     try {
       const { data, error } = await supabase
         .from('user_roles')
-        .select('id, email, role, profile_picture_url, table_id, user_id')
+        .select('id, email, role, profile_picture_url, table_id, user_id, created_at')
         .eq('role', 'admin')
         .limit(10);
-      if (error || !data) { setAdmins([]); return []; }
+      if (error || !data) { 
+        if (isMounted) setAdmins([]); 
+        return []; 
+      }
       const list = data.map((a) => {
-        const name = (a.email?.split('@')[0] || 'Admin').replace(/\./g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
-        return { ...a, display_name: name, full_name: name, name };
+        const displayName = a.email?.split('@')[0]
+          ?.replace(/\./g, ' ')
+          ?.replace(/\b\w/g, (l) => l.toUpperCase()) || 'Admin';
+        return { ...a, display_name: displayName, full_name: displayName, name: displayName };
       });
-      setAdmins(list);
+      if (isMounted) setAdmins(list);
       return list;
-    } catch { setAdmins([]); return []; }
-  }, []);
+    } catch { 
+      if (isMounted) setAdmins([]); 
+      return []; 
+    }
+  }, [isMounted]);
 
   const fetchHODs = useCallback(async () => {
-    if (!facultyId) return [];
+    if (!facultyId || !isMounted) return [];
     try {
       const { data, error } = await supabase
         .from('user_roles')
         .select(`id, email, role, department_id, faculty_id, profile_picture_url,
           departments:department_id (id, department_code, department_name, head_of_department, contact_email, contact_phone, is_active)`)
-        .eq('role', 'hod').eq('faculty_id', facultyId);
+        .eq('role', 'hod')
+        .eq('faculty_id', facultyId);
       if (error) throw error;
       const list = (data || []).map((h) => ({
-        id: h.id, email: h.email, role: h.role, department_id: h.department_id,
+        id: h.id, 
+        email: h.email, 
+        role: h.role, 
+        department_id: h.department_id,
         department_code: h.departments?.department_code || '',
         department_name: h.departments?.department_name || '',
         head_name: h.departments?.head_of_department || h.email,
@@ -117,128 +151,146 @@ const DeanDashboard = () => {
         is_active: h.departments?.is_active ?? true,
         profile_picture_url: h.profile_picture_url || null,
       }));
-      setHODs(list);
+      if (isMounted) setHODs(list);
       return list;
-    } catch { return []; }
-  }, [facultyId]);
+    } catch { 
+      if (isMounted) setHODs([]); 
+      return []; 
+    }
+  }, [facultyId, isMounted]);
 
   const fetchDepartments = useCallback(async () => {
-    if (!facultyId) return [];
+    if (!facultyId || !isMounted) return [];
     try {
       const { data, error } = await supabase
-        .from('departments').select('*').eq('faculty_id', facultyId).order('department_code');
+        .from('departments')
+        .select('*')
+        .eq('faculty_id', facultyId)
+        .order('department_code');
       if (error) throw error;
-      setDepartments(data || []);
+      if (isMounted) setDepartments(data || []);
       return data || [];
-    } catch { return []; }
-  }, [facultyId]);
+    } catch { 
+      if (isMounted) setDepartments([]); 
+      return []; 
+    }
+  }, [facultyId, isMounted]);
 
   const fetchPendingCounts = useCallback(async (deptCodes) => {
-    if (!deptCodes?.length) return;
+    if (!deptCodes?.length || !isMounted) return;
     try {
       const [a, l, ap, b] = await Promise.all([
         supabase.from('course_allocations').select('id', { count: 'exact', head: true }).in('department_code', deptCodes).eq('status', 'pending'),
-        // Correct status for Dean
         supabase.from('lecturer_leave_requests').select('id', { count: 'exact', head: true }).in('department_code', deptCodes).eq('status', 'approved_by_hod'),
         supabase.from('student_complaints').select('id', { count: 'exact', head: true }).in('department_code', deptCodes).in('status', ['pending', 'in-progress']),
         supabase.from('budget_requests').select('id', { count: 'exact', head: true }).in('department_code', deptCodes).eq('faculty_status', 'pending_dean'),
       ]);
-      setStats((prev) => ({
-        ...prev,
-        pendingAllocations: a.count || 0,
-        pendingLeaveApprovals: l.count || 0,
-        pendingAppeals: ap.count || 0,
-        pendingBudgetRequests: b.count || 0,
-      }));
+      if (isMounted) {
+        setStats((prev) => ({
+          ...prev,
+          pendingAllocations: a.count || 0,
+          pendingLeaveApprovals: l.count || 0,
+          pendingAppeals: ap.count || 0,
+          pendingBudgetRequests: b.count || 0,
+        }));
+      }
     } catch {}
+  }, [isMounted]);
+
+  // ===== SETUP SUBSCRIPTIONS =====
+  const setupSubscriptions = useCallback(() => {
+    if (notificationSubscriptionRef.current) {
+      try {
+        notificationSubscriptionRef.current.unsubscribe();
+      } catch (err) {
+        console.warn('Error cleaning up notification subscription:', err);
+      }
+      notificationSubscriptionRef.current = null;
+    }
+
+    if (leaveSubscriptionRef.current) {
+      try {
+        leaveSubscriptionRef.current.unsubscribe();
+      } catch (err) {
+        console.warn('Error cleaning up leave subscription:', err);
+      }
+      leaveSubscriptionRef.current = null;
+    }
+
+    if (!deanEmail || !facultyId || !isMounted) return;
+
+    // Subscribe to chat messages
+    try {
+      notificationSubscriptionRef.current = supabase
+        .channel('dean-notifications')
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'chat_messages',
+            filter: `receiver_email=eq.${deanEmail}`,
+          },
+          (payload) => {
+            console.log('💬 New chat notification:', payload);
+            if (isMounted) {
+              fetchAllNotifications();
+            }
+          }
+        )
+        .subscribe();
+    } catch (err) {
+      console.warn('Error setting up notification subscription:', err);
+    }
+
+    // Subscribe to new leave requests
+    try {
+      leaveSubscriptionRef.current = supabase
+        .channel('dean-leave-notifications')
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'lecturer_leave_requests',
+          },
+          (payload) => {
+            console.log('📋 New leave request:', payload);
+            if (isMounted) {
+              fetchPendingLeaveRequests();
+            }
+          }
+        )
+        .subscribe();
+    } catch (err) {
+      console.warn('Error setting up leave subscription:', err);
+    }
+  }, [deanEmail, facultyId, isMounted, fetchAllNotifications, fetchPendingLeaveRequests]);
+
+  // ===== CLEANUP =====
+  const cleanupSubscriptions = useCallback(() => {
+    if (notificationSubscriptionRef.current) {
+      try {
+        notificationSubscriptionRef.current.unsubscribe();
+      } catch (err) {
+        console.warn('Error cleaning up notification subscription:', err);
+      }
+      notificationSubscriptionRef.current = null;
+    }
+
+    if (leaveSubscriptionRef.current) {
+      try {
+        leaveSubscriptionRef.current.unsubscribe();
+      } catch (err) {
+        console.warn('Error cleaning up leave subscription:', err);
+      }
+      leaveSubscriptionRef.current = null;
+    }
   }, []);
 
-  // ========== PENDING LEAVE REQUESTS (NOTIFICATIONS) ==========
-  const fetchPendingLeaveRequests = useCallback(async () => {
-    if (!facultyId) return;
-
-    try {
-      // Get department codes belonging to this faculty
-      const { data: depts } = await supabase
-        .from('departments')
-        .select('department_code')
-        .eq('faculty_id', facultyId);
-
-      const deptCodes = (depts || []).map((d) => d.department_code).filter(Boolean);
-      if (deptCodes.length === 0) return;
-
-      // Only requests that HOD has already approved → waiting for Dean
-      const { data, error } = await supabase
-        .from('lecturer_leave_requests')
-        .select(`
-          id,
-          lecturer_id,
-          lecturer_name,
-          lecturer_email,
-          department_code,
-          leave_type,
-          start_date,
-          end_date,
-          days,
-          reason,
-          status,
-          created_at
-        `)
-        .in('department_code', deptCodes)
-        .eq('status', 'approved_by_hod')          // ← THE CORRECT STATUS
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        console.error('Leave fetch error:', error);
-        return;
-      }
-
-      // Convert to notification objects
-      const leaveNotifications = (data || []).map((request) => ({
-        id: `leave-${request.id}`,
-        type: 'leave_pending',
-        title: `📋 Leave Request Awaiting Approval`,
-        message: `${request.lecturer_name || 'A lecturer'} requested ${request.days} day(s) of ${request.leave_type} leave`,
-        is_read: false,
-        created_at: request.created_at,
-        sender_email: request.lecturer_email,
-        sender_name: request.lecturer_name,
-        sender_role: 'lecturer',
-        metadata: {
-          leave_id: request.id,
-          department_code: request.department_code,
-          days: request.days,
-          leave_type: request.leave_type,
-          status: request.status,
-        },
-      }));
-
-      // Merge with chat notifications (preserve already-read leave notifications)
-      setNotifications((prev) => {
-        const chatNotifs = prev.filter((n) => !n.id?.startsWith('leave-'));
-        const existingLeaveMap = {};
-        prev
-          .filter((n) => n.id?.startsWith('leave-'))
-          .forEach((n) => {
-            existingLeaveMap[n.id] = n.is_read;
-          });
-
-        const mergedLeave = leaveNotifications.map((n) => ({
-          ...n,
-          is_read: existingLeaveMap[n.id] !== undefined ? existingLeaveMap[n.id] : false,
-        }));
-
-        return [...chatNotifs, ...mergedLeave].sort(
-          (a, b) => new Date(b.created_at) - new Date(a.created_at)
-        );
-      });
-    } catch (err) {
-      console.error('Error fetching pending leave requests:', err);
-    }
-  }, [facultyId]);
-
+  // ========== MAIN DATA FETCH ==========
   const fetchDeanData = useCallback(async (isInitial = false) => {
-    if (!facultyId) return;
+    if (!facultyId || !isMounted) return;
     if (isInitial) setLoading(true);
     try {
       const depts = await fetchDepartments();
@@ -260,7 +312,7 @@ const DeanDashboard = () => {
 
         if (lecturerIds.length) {
           const { data: lects } = await supabase.from('lecturers').select('*').in('id', lecturerIds).order('full_name');
-          setLecturers(lects || []);
+          if (isMounted) setLecturers(lects || []);
         }
 
         const courseIds = coursesData.map((c) => c.id);
@@ -277,162 +329,86 @@ const DeanDashboard = () => {
         await fetchPendingCounts(deptCodes);
       }
 
-      setCourses(coursesData);
-      setStudents(studentsData);
-      setRecentAttendance(attendance);
-      setStats((prev) => ({
-        ...prev,
-        totalDepartments: depts?.length || 0,
-        totalCourses: coursesData.length,
-        totalStudents: studentsData.length,
-        totalLecturers: lecturerIds.length,
-        totalHODs: hodList.length,
-      }));
+      if (isMounted) {
+        setCourses(coursesData);
+        setStudents(studentsData);
+        setRecentAttendance(attendance);
+        setStats((prev) => ({
+          ...prev,
+          totalDepartments: depts?.length || 0,
+          totalCourses: coursesData.length,
+          totalStudents: studentsData.length,
+          totalLecturers: lecturerIds.length,
+          totalHODs: hodList.length,
+        }));
 
-      await fetchAdmins();
-      await fetchPendingLeaveRequests();
+        await fetchAdmins();
+        await fetchPendingLeaveRequests();
+        await fetchAllNotifications();
 
-      if (deanEmail) {
-        const { data: role } = await supabase
-          .from('user_roles').select('profile_picture_url').eq('email', deanEmail).eq('role', 'dean').maybeSingle();
-        if (role?.profile_picture_url) {
-          setProfilePicUrl(role.profile_picture_url);
-          setProfileVersion(Date.now());
+        if (deanEmail) {
+          const { data: role } = await supabase
+            .from('user_roles')
+            .select('profile_picture_url')
+            .eq('email', deanEmail)
+            .eq('role', 'dean')
+            .maybeSingle();
+          if (role?.profile_picture_url) {
+            setProfilePicUrl(role.profile_picture_url);
+            setProfileVersion(Date.now());
+          }
         }
       }
     } catch (err) {
       console.error(err);
     } finally {
-      if (isInitial) setLoading(false);
+      if (isInitial && isMounted) setLoading(false);
     }
-  }, [facultyId, deanEmail, fetchDepartments, fetchHODs, fetchAdmins, fetchPendingCounts, fetchPendingLeaveRequests]);
-
-  // ========== CHAT NOTIFICATIONS ==========
-  const fetchNotifications = useCallback(async () => {
-    if (!deanEmail) return;
-    try {
-      const { data } = await supabase
-        .from('chat_messages')
-        .select('*')
-        .eq('receiver_email', deanEmail)
-        .order('created_at', { ascending: false })
-        .limit(50);
-
-      const chatNotifications = (data || []).map((msg) => ({
-        id: `chat-${msg.id}`,
-        type: 'message',
-        title: `💬 Message from ${msg.sender_name || msg.sender_role || 'Someone'}`,
-        message: msg.message,
-        is_read: msg.is_read || false,
-        created_at: msg.created_at,
-        sender_email: msg.sender_email,
-        sender_name: msg.sender_name,
-        sender_role: msg.sender_role,
-        metadata: { chat_id: msg.id },
-      }));
-
-      setNotifications((prev) => {
-        const leaveNotifs = prev.filter((n) => n.id?.startsWith('leave-'));
-        return [...leaveNotifs, ...chatNotifications].sort(
-          (a, b) => new Date(b.created_at) - new Date(a.created_at)
-        );
-      });
-    } catch (err) {
-      console.error(err);
-    }
-  }, [deanEmail]);
-
-  // Calculate unread count
-  useEffect(() => {
-    const unread = notifications.filter((n) => n.is_read === false).length;
-    setUnreadCount(unread);
-  }, [notifications]);
-
-  // Mark single as read
-  const markNotificationRead = useCallback(async (id) => {
-    try {
-      if (id?.startsWith('chat-')) {
-        const chatId = id.replace('chat-', '');
-        await supabase.from('chat_messages').update({ is_read: true }).eq('id', chatId);
-      }
-      setNotifications((prev) =>
-        prev.map((n) => (n.id === id ? { ...n, is_read: true } : n))
-      );
-    } catch (err) {
-      console.error(err);
-    }
-  }, []);
-
-  // Mark all as read
-  const markAllNotificationsRead = useCallback(async () => {
-    try {
-      await supabase
-        .from('chat_messages')
-        .update({ is_read: true })
-        .eq('receiver_email', deanEmail)
-        .eq('is_read', false);
-
-      setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
-    } catch (err) {
-      console.error(err);
-    }
-  }, [deanEmail]);
-
-  // ========== SUBSCRIPTIONS ==========
-  const setupNotificationSubscription = useCallback(() => {
-    if (notificationSubscriptionRef.current) {
-      notificationSubscriptionRef.current.unsubscribe();
-    }
-    if (leaveSubscriptionRef.current) {
-      leaveSubscriptionRef.current.unsubscribe();
-    }
-
-    if (!deanEmail || !facultyId) return;
-
-    // Chat
-    notificationSubscriptionRef.current = supabase
-      .channel('dean-notifications')
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'chat_messages',
-          filter: `receiver_email=eq.${deanEmail}`,
-        },
-        () => fetchNotifications()
-      )
-      .subscribe();
-
-    // Leave requests
-    leaveSubscriptionRef.current = supabase
-      .channel('dean-leave-notifications')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'lecturer_leave_requests',
-        },
-        () => fetchPendingLeaveRequests()
-      )
-      .subscribe();
-  }, [deanEmail, facultyId, fetchNotifications, fetchPendingLeaveRequests]);
+  }, [facultyId, deanEmail, isMounted, fetchDepartments, fetchHODs, fetchAdmins, fetchPendingCounts, fetchPendingLeaveRequests, fetchAllNotifications]);
 
   // ========== CHAT ==========
   const fetchChatMessages = useCallback(async (userEmail) => {
-    if (!deanEmail || !userEmail) return;
+    if (!deanEmail || !userEmail || !isMounted) return;
     try {
-      const { data } = await supabase
-        .from('chat_messages').select('*')
-        .or(`and(sender_email.eq.${deanEmail},receiver_email.eq.${userEmail}),and(sender_email.eq.${userEmail},receiver_email.eq.${deanEmail})`)
-        .order('created_at', { ascending: true }).limit(200);
-      setChatMessages(data || []);
-    } catch {}
-  }, [deanEmail]);
+      const { data, error } = await supabase
+        .from('chat_messages')
+        .select('*')
+        .or(
+          `and(sender_email.eq.${deanEmail},receiver_email.eq.${userEmail}),` +
+          `and(sender_email.eq.${userEmail},receiver_email.eq.${deanEmail})`
+        )
+        .order('created_at', { ascending: true })
+        .limit(200);
+
+      if (error) throw error;
+      if (isMounted) setChatMessages(data || []);
+
+      const unread = (data || []).filter(
+        (m) => m.receiver_email === deanEmail && !m.is_read
+      );
+      for (const msg of unread) {
+        await supabase.from('chat_messages').update({ is_read: true }).eq('id', msg.id);
+      }
+      if (isMounted) {
+        fetchAllNotifications();
+        setNotifications(prev => 
+          prev.map(n => {
+            if (n.id?.startsWith('chat-') && unread.some(m => n.id === `chat-${m.id}`)) {
+              return { ...n, is_read: true };
+            }
+            return n;
+          })
+        );
+      }
+
+      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 80);
+    } catch (err) {
+      console.error('Error fetching chat:', err);
+    }
+  }, [deanEmail, isMounted, fetchAllNotifications, setNotifications]);
 
   const openChatWithUser = useCallback((user, type) => {
-    if (!user?.email) return;
+    if (!user?.email || !isMounted) return;
     setSelectedUser({
       email: user.email,
       role: type,
@@ -445,21 +421,21 @@ const DeanDashboard = () => {
     setShowChat(true);
     setChatMessages([]);
     fetchChatMessages(user.email);
-  }, [fetchChatMessages]);
+  }, [fetchChatMessages, isMounted]);
 
   const openAdminChat = useCallback(async () => {
     let list = admins;
     if (!list.length) list = await fetchAdmins();
-    if (list.length) openChatWithUser(list[0], 'admin');
-    else alert('No administrators available');
-  }, [admins, fetchAdmins, openChatWithUser]);
+    if (list.length && isMounted) openChatWithUser(list[0], 'admin');
+    else if (isMounted) alert('No administrators available');
+  }, [admins, fetchAdmins, openChatWithUser, isMounted]);
 
   const sendMessage = useCallback(async () => {
-    if (!newMessage.trim() || !selectedUser) return;
+    if (!newMessage.trim() || !selectedUser || !isMounted) return;
     const text = newMessage.trim();
     const tempId = `temp-${Date.now()}`;
 
-    setChatMessages((prev) => [...prev, {
+    const optimisticMsg = {
       id: tempId,
       sender_email: deanEmail,
       sender_role: 'dean',
@@ -469,58 +445,65 @@ const DeanDashboard = () => {
       message: text,
       is_read: false,
       created_at: new Date().toISOString(),
-    }]);
+    };
+
+    setChatMessages((prev) => [...prev, optimisticMsg]);
     setNewMessage('');
     setSendingMessage(true);
+    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 30);
 
     try {
-      const { data, error } = await supabase.from('chat_messages').insert([{
-        sender_id: profile?.id || facultyId,
-        sender_email: deanEmail,
-        sender_role: 'dean',
-        sender_name: deanName,
-        receiver_email: selectedUser.email,
-        receiver_role: selectedUserType,
-        message: text,
-        faculty_id: facultyId,
-        department_id: selectedUser.department_id || null,
-        is_read: false,
-      }]).select().single();
+      const { data, error } = await supabase
+        .from('chat_messages')
+        .insert([{
+          sender_id: profile?.id || facultyId,
+          sender_email: deanEmail,
+          sender_role: 'dean',
+          sender_name: deanName,
+          receiver_email: selectedUser.email,
+          receiver_role: selectedUserType,
+          message: text,
+          faculty_id: facultyId,
+          department_id: selectedUser.department_id || null,
+          is_read: false,
+        }])
+        .select()
+        .single();
+
       if (error) throw error;
-      setChatMessages((prev) => prev.map((m) => (m.id === tempId ? data : m)));
+      if (isMounted) {
+        setChatMessages((prev) => prev.map((m) => (m.id === tempId ? data : m)));
+      }
     } catch (err) {
-      setChatMessages((prev) => prev.filter((m) => m.id !== tempId));
-      alert(err.message);
+      console.error('Send error:', err);
+      if (isMounted) {
+        setChatMessages((prev) => prev.filter((m) => m.id !== tempId));
+        alert('Failed to send message: ' + err.message);
+      }
     } finally {
-      setSendingMessage(false);
+      if (isMounted) setSendingMessage(false);
     }
-  }, [newMessage, selectedUser, selectedUserType, deanEmail, deanName, facultyId, profile]);
+  }, [newMessage, selectedUser, selectedUserType, deanEmail, deanName, facultyId, profile, isMounted]);
 
   // ========== EFFECTS ==========
   useEffect(() => {
-    if (!facultyId) return;
-
+    setIsMounted(true);
+    
     fetchDeanData(true);
-    fetchNotifications();
-    fetchPendingLeaveRequests();
-    setupNotificationSubscription();
+    setupSubscriptions();
 
     return () => {
-      if (notificationSubscriptionRef.current) notificationSubscriptionRef.current.unsubscribe();
-      if (leaveSubscriptionRef.current) leaveSubscriptionRef.current.unsubscribe();
+      setIsMounted(false);
+      cleanupSubscriptions();
     };
-  }, [facultyId, fetchDeanData, fetchNotifications, fetchPendingLeaveRequests, setupNotificationSubscription]);
+  }, []);
 
-  // Soft refresh every 3 minutes
   useEffect(() => {
-    if (!facultyId) return;
-    const id = setInterval(() => {
-      fetchDeanData(false);
-      fetchNotifications();
-      fetchPendingLeaveRequests();
-    }, 180000);
-    return () => clearInterval(id);
-  }, [facultyId, fetchDeanData, fetchNotifications, fetchPendingLeaveRequests]);
+    if (departments.length > 0 && isMounted) {
+      // Refresh notifications when departments change
+      fetchAllNotifications();
+    }
+  }, [departments, isMounted, fetchAllNotifications]);
 
   // ========== MEMOIZED PROPS ==========
   const commonProps = useMemo(() => ({
@@ -543,28 +526,41 @@ const DeanDashboard = () => {
       case 'allocations': return <DeanCourseAllocations {...commonProps} />;
       case 'workload': return <DeanWorkload {...commonProps} />;
       case 'leave-approvals': return <DeanLeaveApprovals {...commonProps} />;
-      case 'appeals': return <DeanAppeals {...commonProps}facultyId={facultyId}  />;
+      case 'appeals': return <DeanAppeals {...commonProps} facultyId={facultyId} />;
       case 'timetable': return <DeanTimetable {...commonProps} />;
-      case 'exam-results': return <DeanExamResults {...commonProps} facultyId={facultyId}/>;
+      case 'exam-results': return <DeanExamResults {...commonProps} facultyId={facultyId} />;
       case 'appraisals': return <DeanAppraisals {...commonProps} />;
-      case 'budget': return <DeanBudget {...commonProps} />;
+      case 'budget': return <DeanBudget 
+        departments={departments} 
+        fetchDeanData={fetchDeanData} 
+        setStats={setStats}
+        deanEmail={deanEmail}
+        deanName={deanName}
+        onNotificationUpdate={() => {
+          console.log('💰 Budget update triggered, fetching notifications...');
+          fetchAllNotifications();
+        }}
+      />;
       case 'curriculum': return <DeanCurriculum {...commonProps} />;
-   case 'qa': 
-  return <DeanQualityAssurance 
-    departments={departments} 
-    fetchDeanData={fetchDeanData} 
-    setStats={setStats} 
-  />;
-
-      case 'admissions': return <DeanAdmissions {...commonProps} />;
-      case 'disciplinary': return <DeanDisciplinary {...commonProps} />;
+      case 'qa': return <DeanQualityAssurance departments={departments} fetchDeanData={fetchDeanData} setStats={setStats} />;
+case 'admissions': return <DeanAdmissions 
+  departments={departments}
+  onNotificationUpdate={() => {
+    console.log('🎓 Admissions update triggered, fetching notifications...');
+    fetchAllNotifications();
+  }}
+/>;
+      case 'disciplinary': return <DeanDisciplinary 
+        departments={departments} 
+        fetchDeanData={fetchDeanData} 
+        setStats={setStats}
+        onNotificationUpdate={() => {
+          console.log('⚖️ Disciplinary update triggered, fetching notifications...');
+          fetchAllNotifications();
+        }}
+      />;
       case 'postgraduate': return <DeanPostgraduate {...commonProps} />;
-   case 'reports': 
-  return <DeanFacultyBoardReports 
-    profile={profile} 
-    fetchDeanData={fetchDeanData} 
-    setStats={setStats} 
-  />;
+      case 'reports': return <DeanFacultyBoardReports profile={profile} fetchDeanData={fetchDeanData} setStats={setStats} />;
       case 'hods': return <DeanHODs {...commonProps} />;
       case 'departments': return <DeanDepartments {...commonProps} />;
       case 'settings': return <DeanSettings {...commonProps} />;
@@ -595,11 +591,13 @@ const DeanDashboard = () => {
 
   return (
     <div className="dean-dashboard">
+      {/* HEADER */}
       <header className="dean-header">
         <div className="dean-header-left">
           <h1>🎓 Dean Dashboard</h1>
           <p>{facultyName}</p>
         </div>
+
         <div className="dean-header-right">
           <button className="dean-admin-chat-btn" onClick={openAdminChat} title="Chat with Admin">
             👤
@@ -607,10 +605,17 @@ const DeanDashboard = () => {
           </button>
 
           {/* ===== NOTIFICATIONS ===== */}
-          <div className="dean-notification-wrapper" style={{ position: 'relative' }}>
+          <div className="dean-notification-wrapper">
             <button
               className="dean-notification-btn"
-              onClick={() => setShowNotifications((v) => !v)}
+              onClick={() => {
+                // Toggle notifications
+                setShowNotifications(!showNotifications);
+                
+                // Always fetch when clicking the bell
+                console.log('🔔 Fetching notifications on bell click...');
+                fetchAllNotifications();
+              }}
             >
               🔔
               {unreadCount > 0 && (
@@ -619,32 +624,97 @@ const DeanDashboard = () => {
                 </span>
               )}
             </button>
-
             {showNotifications && (
               <DeanNotifications
                 notifications={notifications}
                 unreadCount={unreadCount}
                 onMarkRead={markNotificationRead}
                 onMarkAllRead={markAllNotificationsRead}
-                onNotificationClick={(notif) => {
-                  setShowNotifications(false);
-                  markNotificationRead(notif.id);
+                onClearAll={clearAllNotifications}
+// In DeanDashboard.jsx - Complete onNotificationClick handler
 
-                  if (notif.id?.startsWith('leave-') || notif.type === 'leave_pending') {
-                    setActiveTab('leave-approvals');
-                    return;
-                  }
+onNotificationClick={(notif) => {
+  setShowNotifications(false);
+  
+  markNotificationRead(notif.id);
 
-                  const user = {
-                    email: notif.sender_email,
-                    role: notif.sender_role || 'user',
-                    name: notif.sender_name || notif.sender_email,
-                    display_name: notif.sender_name || notif.sender_email,
-                    department_id: notif.department_id || null,
-                    id: notif.sender_id || null,
-                  };
-                  openChatWithUser(user, notif.sender_role || 'user');
-                }}
+  // 1. Leave Requests (from lecturer_leave_requests)
+  if (notif.id?.startsWith('leave-') || notif.type === 'leave_pending') {
+    setActiveTab('leave-approvals');
+    return;
+  }
+
+  // 2. Budget Requests
+  if (notif.id?.startsWith('budget-') || notif.type === 'budget_request') {
+    setActiveTab('budget');
+    return;
+  }
+
+  // 3. Disciplinary Cases
+  if (notif.id?.startsWith('disciplinary-') || notif.type === 'disciplinary_case') {
+    setActiveTab('disciplinary');
+    return;
+  }
+
+  // 4. Admissions
+  if (notif.id?.startsWith('admission-') || notif.type === 'admission') {
+    setActiveTab('admissions');
+    return;
+  }
+
+  // 5. QA / Accreditation
+  if (notif.id?.startsWith('qa-') || notif.type === 'qa') {
+    setActiveTab('qa');
+    return;
+  }
+
+  // 6. Curriculum
+  if (notif.id?.startsWith('curriculum-') || notif.type === 'curriculum') {
+    setActiveTab('curriculum');
+    return;
+  }
+
+  // 7. Appraisals
+  if (notif.id?.startsWith('appraisal-') || notif.type === 'appraisal') {
+    setActiveTab('appraisals');
+    return;
+  }
+
+  // 8. Exam Results
+  if (notif.id?.startsWith('examresult-') || notif.type === 'exam_result') {
+    setActiveTab('exam-results');
+    return;
+  }
+
+  // 9. Appeals
+  if (notif.id?.startsWith('appeal-') || notif.type === 'appeal') {
+    setActiveTab('appeals');
+    return;
+  }
+
+  // 10. Course Allocations
+  if (notif.id?.startsWith('allocation-') || notif.type === 'course_allocation') {
+    setActiveTab('allocations');
+    return;
+  }
+
+  // 11. Leave Approvals (Dean level)
+  if (notif.id?.startsWith('leaveapproval-') || notif.type === 'leave_approval') {
+    setActiveTab('leave-approvals');
+    return;
+  }
+
+  // 12. Chat Messages (Default)
+  // Open chat for normal messages
+  openChatWithUser(
+    {
+      email: notif.sender_email,
+      name: notif.sender_name,
+      display_name: notif.sender_name,
+    },
+    notif.sender_role || 'user'
+  );
+}}
                 onClose={() => setShowNotifications(false)}
               />
             )}
@@ -667,12 +737,14 @@ const DeanDashboard = () => {
               <span className="dean-user-role">Dean</span>
             </div>
           </div>
+
           <button className="dean-logout-btn" onClick={() => { signOut(); navigate('/login'); }}>
             Sign Out
           </button>
         </div>
       </header>
 
+      {/* NAV */}
       <nav className="dean-nav">
         {tabs.map((t) => (
           <button
@@ -685,6 +757,7 @@ const DeanDashboard = () => {
         ))}
       </nav>
 
+      {/* CONTENT */}
       <main className="dean-content">
         <div style={{ opacity: loading ? 0.6 : 1, transition: 'opacity 0.15s' }}>
           {renderContent()}
@@ -697,6 +770,7 @@ const DeanDashboard = () => {
         )}
       </main>
 
+      {/* CHAT MODAL */}
       {showChat && selectedUser && (
         <DeanChat
           selectedUser={selectedUser}
@@ -708,8 +782,52 @@ const DeanDashboard = () => {
           sendingMessage={sendingMessage}
           onClose={() => setShowChat(false)}
           chatEndRef={chatEndRef}
+          deanEmail={deanEmail}
+          deanName={deanName}
+          profile={profile}
         />
       )}
+
+      {/* CSS for notifications */}
+      <style>{`
+        @keyframes slideIn {
+          from { transform: translateX(100%); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+        .dean-notification-wrapper {
+          position: relative;
+          display: inline-block;
+        }
+        .dean-notification-btn {
+          background: transparent;
+          border: none;
+          font-size: 22px;
+          cursor: pointer;
+          position: relative;
+          padding: 8px;
+          border-radius: 50%;
+          transition: background 0.2s;
+        }
+        .dean-notification-btn:hover {
+          background: rgba(0,0,0,0.05);
+        }
+        .dean-notification-badge {
+          position: absolute;
+          top: 2px;
+          right: 2px;
+          background: #ff1744;
+          color: white;
+          font-size: 10px;
+          font-weight: 700;
+          padding: 2px 5px;
+          border-radius: 10px;
+          min-width: 18px;
+          height: 18px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+      `}</style>
     </div>
   );
 };

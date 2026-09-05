@@ -1,8 +1,8 @@
-// dean/DeanBudget.jsx - FIXED
+// dean/DeanBudget.jsx - WITH CHAT NOTIFICATION BACK TO HOD
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../../services/supabase';
 
-const DeanBudget = ({ departments, fetchDeanData, setStats }) => {
+const DeanBudget = ({ departments, fetchDeanData, setStats, deanEmail, deanName }) => {
   const [budgetRequests, setBudgetRequests] = useState([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState('all');
@@ -42,15 +42,10 @@ const DeanBudget = ({ departments, fetchDeanData, setStats }) => {
   }, [deptCodes]);
 
   const calculateBudgetTotals = useCallback(() => {
-    // Calculate from the current budgetRequests state
     const total = budgetRequests.reduce((sum, r) => sum + (r.amount || 0), 0);
-    
-    // Only count approved_by_dean as approved
     const approved = budgetRequests
       .filter(r => r.faculty_status === 'approved_by_dean' || r.status === 'funded')
       .reduce((sum, r) => sum + (r.amount || 0), 0);
-    
-    // Only count pending_dean as pending
     const pending = budgetRequests
       .filter(r => r.faculty_status === 'pending_dean' || r.status === 'pending')
       .reduce((sum, r) => sum + (r.amount || 0), 0);
@@ -60,7 +55,6 @@ const DeanBudget = ({ departments, fetchDeanData, setStats }) => {
     setPendingBudget(pending);
   }, [budgetRequests]);
 
-  // Recalculate when budgetRequests changes
   useEffect(() => {
     calculateBudgetTotals();
   }, [calculateBudgetTotals]);
@@ -69,8 +63,84 @@ const DeanBudget = ({ departments, fetchDeanData, setStats }) => {
     fetchBudgetRequests();
   }, [fetchBudgetRequests]);
 
+  // ===== SEND CHAT TO HOD =====
+  const sendChatToHOD = async (request, action, notes = '') => {
+    try {
+      // Get HOD for this department
+      const { data: hodData } = await supabase
+        .from('user_roles')
+        .select('email, id, full_name')
+        .eq('role', 'hod')
+        .eq('department_id', request.department_code)
+        .maybeSingle();
+
+      if (!hodData?.email) {
+        // Try to get HOD from departments table
+        const { data: deptData } = await supabase
+          .from('departments')
+          .select('head_of_department, contact_email')
+          .eq('department_code', request.department_code)
+          .single();
+
+        if (deptData?.contact_email) {
+          hodData.email = deptData.contact_email;
+          hodData.full_name = deptData.head_of_department || 'HOD';
+        } else {
+          console.log('No HOD found for department:', request.department_code);
+          return;
+        }
+      }
+
+      const actionEmoji = action === 'approved' ? '✅' : '❌';
+      const actionText = action === 'approved' ? 'APPROVED' : 'REJECTED';
+
+      const message = `${actionEmoji} BUDGET REQUEST ${actionText}: "${request.title}"\n` +
+        `📂 Category: ${request.category}\n` +
+        `💵 Amount: $${request.amount.toLocaleString()}\n` +
+        `🏢 Department: ${request.department_code}\n` +
+        `${notes ? `📝 Dean's Notes: ${notes}\n` : ''}` +
+        `\nPlease check the budget section for details.`;
+
+      const { error: chatError } = await supabase
+        .from('chat_messages')
+        .insert([{
+          sender_id: 'system',
+          sender_email: deanEmail,
+          sender_role: 'dean',
+          sender_name: deanName || 'Dean',
+          receiver_email: hodData.email,
+          receiver_role: 'hod',
+          receiver_name: hodData.full_name || 'HOD',
+          message: message,
+          is_read: false,
+          created_at: new Date().toISOString(),
+          department_id: request.department_code,
+          metadata: {
+            type: 'budget_decision',
+            request_id: request.id,
+            action: action,
+            title: request.title,
+            amount: request.amount,
+            notes: notes
+          }
+        }]);
+
+      if (chatError) {
+        console.error('Error sending chat to HOD:', chatError);
+      } else {
+        console.log(`✅ Chat message sent to HOD (${action})`);
+      }
+
+    } catch (err) {
+      console.error('Error notifying HOD:', err);
+    }
+  };
+
+  // ===== HANDLE APPROVE =====
   const handleApprove = async (id) => {
     try {
+      const request = budgetRequests.find(r => r.id === id);
+      
       const { error } = await supabase
         .from('budget_requests')
         .update({
@@ -78,11 +148,16 @@ const DeanBudget = ({ departments, fetchDeanData, setStats }) => {
           dean_approved_at: new Date().toISOString(),
           dean_approved_by: 'dean',
           dean_notes: deanNotes || null,
-          status: 'approved', // Also update the main status
+          status: 'approved',
         })
         .eq('id', id);
 
       if (error) throw error;
+
+      // Send chat to HOD
+      if (request) {
+        await sendChatToHOD(request, 'approved', deanNotes);
+      }
 
       alert('✅ Budget request approved!');
       setShowModal(false);
@@ -94,6 +169,7 @@ const DeanBudget = ({ departments, fetchDeanData, setStats }) => {
     }
   };
 
+  // ===== HANDLE REJECT =====
   const handleReject = async (id) => {
     if (!deanNotes.trim()) {
       alert('Please provide a reason for rejection');
@@ -101,17 +177,25 @@ const DeanBudget = ({ departments, fetchDeanData, setStats }) => {
     }
 
     try {
+      const request = budgetRequests.find(r => r.id === id);
+      
       const { error } = await supabase
         .from('budget_requests')
         .update({
           faculty_status: 'rejected_by_dean',
           rejected_at: new Date().toISOString(),
           rejection_reason: deanNotes,
-          status: 'rejected', // Also update the main status
+          status: 'rejected',
+          dean_notes: deanNotes || null,
         })
         .eq('id', id);
 
       if (error) throw error;
+
+      // Send chat to HOD
+      if (request) {
+        await sendChatToHOD(request, 'rejected', deanNotes);
+      }
 
       alert('❌ Budget request rejected');
       setShowModal(false);

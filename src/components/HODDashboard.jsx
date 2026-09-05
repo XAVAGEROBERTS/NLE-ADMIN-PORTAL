@@ -1,4 +1,4 @@
-// HODDashboard.jsx - COMPLETE WITH EXAM RESULTS TAB
+// HODDashboard.jsx - COMPLETE WITH INSTANT NOTIFICATIONS
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '../context/AdminAuthContext';
@@ -27,7 +27,6 @@ import HODDisciplinaryCases from './HOD/HODDisciplinaryCases';
 import ReportViewer from './shared/ReportViewer';
 import HODModuleEvaluation from './HOD/HODModuleEvaluation';
 import './HOD/HODDashboard.css';
-
 
 const HODDashboard = () => {
   const { profile, signOut } = useAdminAuth();
@@ -65,7 +64,7 @@ const HODDashboard = () => {
   const [sendingMessage, setSendingMessage] = useState(false);
   const chatEndRef = useRef(null);
 
-  // ===== NOTIFICATIONS - FIXED COUNTER =====
+  // ===== NOTIFICATIONS - INSTANT UPDATES =====
   const [notifications, setNotifications] = useState([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -108,20 +107,18 @@ const HODDashboard = () => {
   }, []);
 
   const clearAllNotifications = useCallback(async () => {
-  try {
-    // Mark all chat messages as read
-    await supabase
-      .from('chat_messages')
-      .update({ is_read: true })
-      .eq('receiver_email', hodEmail)
-      .eq('is_read', false);
+    try {
+      await supabase
+        .from('chat_messages')
+        .update({ is_read: true })
+        .eq('receiver_email', hodEmail)
+        .eq('is_read', false);
 
-    // Clear local state
-    setNotifications([]);
-  } catch (err) {
-    console.error('Error clearing notifications:', err);
-  }
-}, [hodEmail]);
+      setNotifications([]);
+    } catch (err) {
+      console.error('Error clearing notifications:', err);
+    }
+  }, [hodEmail]);
 
   // ==================== DATA FETCHING ====================
   const fetchAdmins = useCallback(async () => {
@@ -223,7 +220,7 @@ const HODDashboard = () => {
     }
   }, [profile?.faculty_id, departmentId, departmentInfo, isMounted]);
 
-  // ===== FETCH PENDING LEAVE REQUESTS =====
+  // ===== FETCH PENDING LEAVE REQUESTS - INSTANT =====
   const fetchPendingLeaveRequests = useCallback(async () => {
     if (!departmentCode || !isMounted) return;
 
@@ -254,13 +251,12 @@ const HODDashboard = () => {
       if (!isMounted) return;
       setPendingLeaveRequests(data || []);
       
-      // Create notification objects from pending leave requests (marked as unread)
       const leaveNotifications = (data || []).map(request => ({
         id: `leave-${request.id}`,
         type: 'leave_pending',
         title: `📋 New Leave Request`,
         message: `${request.lecturer_name || request.lecturer?.full_name || 'A lecturer'} has requested ${request.days} days of ${request.leave_type} leave`,
-        is_read: false, // Always false for new leave requests
+        is_read: false,
         created_at: request.created_at,
         sender_email: request.lecturer_email,
         sender_name: request.lecturer_name || request.lecturer?.full_name,
@@ -273,19 +269,14 @@ const HODDashboard = () => {
         }
       }));
 
-      // Get existing read state for leave notifications from localStorage or state
       setNotifications(prev => {
-        // Keep chat notifications and update leave notifications
         const chatNotifs = prev.filter(n => n.id?.startsWith('chat-'));
-        
-        // For leave notifications, preserve read state if they already exist
         const existingLeaveNotifs = prev.filter(n => n.id?.startsWith('leave-'));
         const existingLeaveMap = {};
         existingLeaveNotifs.forEach(n => {
           existingLeaveMap[n.id] = n.is_read;
         });
         
-        // Merge: use existing read state if available, otherwise false
         const mergedLeaveNotifs = leaveNotifications.map(n => ({
           ...n,
           is_read: existingLeaveMap[n.id] !== undefined ? existingLeaveMap[n.id] : false
@@ -300,6 +291,267 @@ const HODDashboard = () => {
     }
   }, [departmentCode, isMounted]);
 
+  // ===== FETCH CHAT NOTIFICATIONS - INSTANT =====
+  const fetchNotifications = useCallback(async () => {
+    if (!hodEmail || !isMounted) return;
+    try {
+      const { data: chatData, error: chatError } = await supabase
+        .from('chat_messages')
+        .select('*')
+        .eq('receiver_email', hodEmail)
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (chatError) throw chatError;
+
+      const chatNotifications = (chatData || []).map(msg => ({
+        id: `chat-${msg.id}`,
+        type: 'message',
+        title: `💬 Message from ${msg.sender_name || msg.sender_role || 'Someone'}`,
+        message: msg.message,
+        is_read: msg.is_read || false,
+        created_at: msg.created_at,
+        sender_email: msg.sender_email,
+        sender_name: msg.sender_name,
+        sender_role: msg.sender_role,
+        metadata: {
+          chat_id: msg.id
+        }
+      }));
+
+      if (isMounted) {
+        setNotifications(prev => {
+          const leaveNotifs = prev.filter(n => n.id?.startsWith('leave-'));
+          const all = [...leaveNotifs, ...chatNotifications];
+          return all.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        });
+      }
+
+    } catch (err) {
+      console.error('Error fetching notifications:', err);
+    }
+  }, [hodEmail, isMounted]);
+
+  // ===== CALCULATE UNREAD COUNT =====
+  const calculateUnreadCount = useCallback(() => {
+    if (!isMounted) return;
+    const unread = notifications.filter(n => n.is_read === false).length;
+    setUnreadCount(unread);
+  }, [notifications, isMounted]);
+
+  useEffect(() => {
+    calculateUnreadCount();
+  }, [notifications, calculateUnreadCount]);
+
+  // ===== MARK NOTIFICATION AS READ =====
+  const markNotificationRead = useCallback(async (id) => {
+    try {
+      if (id?.startsWith('chat-')) {
+        const chatId = id.replace('chat-', '');
+        await supabase.from('chat_messages').update({ is_read: true }).eq('id', chatId);
+      }
+      
+      setNotifications(prev => 
+        prev.map(n => n.id === id ? { ...n, is_read: true } : n)
+      );
+      
+      if (id?.startsWith('leave-')) {
+        const leaveId = id.replace('leave-', '');
+        setPendingLeaveRequests(prev => 
+          prev.map(r => r.id === leaveId ? { ...r, is_read: true } : r)
+        );
+      }
+      
+    } catch (err) {
+      console.error('Error marking notification as read:', err);
+    }
+  }, []);
+
+  // ===== MARK ALL AS READ =====
+  const markAllNotificationsRead = useCallback(async () => {
+    try {
+      await supabase
+        .from('chat_messages')
+        .update({ is_read: true })
+        .eq('receiver_email', hodEmail)
+        .eq('is_read', false);
+      
+      setNotifications(prev => 
+        prev.map(n => ({ ...n, is_read: true }))
+      );
+      
+      setPendingLeaveRequests(prev => 
+        prev.map(r => ({ ...r, is_read: true }))
+      );
+      
+    } catch (err) {
+      console.error('Error marking all as read:', err);
+    }
+  }, [hodEmail]);
+
+  // ===== SETUP SUBSCRIPTIONS - INSTANT =====
+  const setupNotificationSubscriptions = useCallback(() => {
+    cleanupSubscriptions();
+
+    if (!hodEmail || !departmentCode || !isMounted) return;
+
+    // Subscribe to chat messages
+    try {
+      notificationSubscriptionRef.current = supabase
+        .channel('hod-notifications')
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'chat_messages',
+            filter: `receiver_email=eq.${hodEmail}`,
+          },
+          (payload) => {
+            console.log('💬 New chat notification (INSTANT):', payload);
+            if (isMounted) {
+              const msg = payload.new;
+              const newNotif = {
+                id: `chat-${msg.id}`,
+                type: 'message',
+                title: `💬 Message from ${msg.sender_name || msg.sender_role || 'Someone'}`,
+                message: msg.message,
+                is_read: false,
+                created_at: msg.created_at,
+                sender_email: msg.sender_email,
+                sender_name: msg.sender_name,
+                sender_role: msg.sender_role,
+                metadata: { chat_id: msg.id }
+              };
+              
+              setNotifications(prev => {
+                const exists = prev.some(n => n.id === newNotif.id);
+                if (exists) return prev;
+                const updated = [newNotif, ...prev];
+                return updated.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+              });
+              
+              fetchNotifications();
+            }
+          }
+        )
+        .subscribe();
+    } catch (err) {
+      console.warn('Error setting up notification subscription:', err);
+    }
+
+    // Subscribe to new leave requests
+    try {
+      leaveSubscriptionRef.current = supabase
+        .channel('hod-leave-notifications')
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'lecturer_leave_requests',
+            filter: `department_code=eq.${departmentCode}`,
+          },
+          (payload) => {
+            console.log('📋 New leave request (INSTANT):', payload);
+            if (isMounted && payload.new?.status === 'pending') {
+              fetchPendingLeaveRequests();
+            }
+          }
+        )
+        .subscribe();
+    } catch (err) {
+      console.warn('Error setting up leave subscription:', err);
+    }
+  }, [hodEmail, departmentCode, isMounted, cleanupSubscriptions, fetchNotifications, fetchPendingLeaveRequests]);
+
+  // ===== SHOW TOAST =====
+// HODDashboard.jsx - Replace showLeaveNotificationToast
+const showLeaveNotificationToast = (data, type = 'info') => {
+  if (!data || !isMounted) return;
+  
+  // Check if data is a string (message) or object (leave data)
+  if (typeof data === 'string') {
+    // This is a simple message - show generic toast
+    const toast = document.createElement('div');
+    toast.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: ${type === 'success' ? '#4caf50' : type === 'error' ? '#f44336' : '#1976d2'};
+      color: white;
+      padding: 16px 24px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      z-index: 9999;
+      cursor: pointer;
+      max-width: 400px;
+      animation: slideIn 0.3s ease;
+    `;
+    toast.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <div>
+          <span style="font-size: 14px;">${data}</span>
+        </div>
+        <button style="background: transparent; border: none; color: white; font-size: 18px; cursor: pointer;">✕</button>
+      </div>
+    `;
+    
+    toast.querySelector('button').onclick = () => toast.remove();
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+      if (toast.parentNode) toast.remove();
+    }, 5000);
+    return;
+  }
+  
+  // Original leave request notification logic
+  if (data && typeof data === 'object' && 'days' in data) {
+    const message = `📋 ${data.lecturer_name || 'A lecturer'} has submitted a leave request (${data.days} days)`;
+    
+    const toast = document.createElement('div');
+    toast.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #1976d2;
+      color: white;
+      padding: 16px 24px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      z-index: 9999;
+      cursor: pointer;
+      max-width: 400px;
+      animation: slideIn 0.3s ease;
+    `;
+    toast.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <span style="font-size: 24px;">📋</span>
+        <div>
+          <strong style="display: block;">New Leave Request</strong>
+          <span style="font-size: 14px;">${message}</span>
+        </div>
+        <button style="background: transparent; border: none; color: white; font-size: 18px; cursor: pointer;">✕</button>
+      </div>
+    `;
+    
+    toast.onclick = (e) => {
+      if (e.target.tagName !== 'BUTTON' && isMounted) {
+        setActiveTab('leave');
+        setShowNotifications(true);
+        toast.remove();
+      }
+    };
+    
+    toast.querySelector('button').onclick = () => toast.remove();
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+      if (toast.parentNode) toast.remove();
+    }, 8000);
+  }
+};
   const fetchHODData = useCallback(async () => {
     if (!departmentId || !isMounted) return;
 
@@ -319,7 +571,6 @@ const HODDashboard = () => {
       if (isMounted) setDepartmentInfo(dept);
       const deptCode = dept.department_code;
 
-      // Courses
       const { data: coursesData } = await supabase
         .from('courses')
         .select('*')
@@ -327,7 +578,6 @@ const HODDashboard = () => {
         .order('course_code');
       if (isMounted) setCourses(coursesData || []);
 
-      // Students
       const { data: studentsData } = await supabase
         .from('students')
         .select('*')
@@ -352,7 +602,6 @@ const HODDashboard = () => {
       );
       if (isMounted) setStudents(enrichedStudents);
 
-      // Lecturers
       const { data: lecturerDepts } = await supabase
         .from('lecturer_departments')
         .select('lecturer_id')
@@ -388,7 +637,6 @@ const HODDashboard = () => {
       }
       if (isMounted) setLecturers(lectList);
 
-      // Attendance
       const courseIds = (coursesData || []).map((c) => c.id);
       if (courseIds.length > 0) {
         const { data: attendance } = await supabase
@@ -478,253 +726,6 @@ const HODDashboard = () => {
     }
   };
 
-  // ==================== NOTIFICATIONS ====================
-  const fetchNotifications = useCallback(async () => {
-    if (!hodEmail || !isMounted) return;
-    try {
-      // Fetch chat messages
-      const { data: chatData, error: chatError } = await supabase
-        .from('chat_messages')
-        .select('*')
-        .eq('receiver_email', hodEmail)
-        .order('created_at', { ascending: false })
-        .limit(50);
-
-      if (chatError) throw chatError;
-
-      const chatNotifications = (chatData || []).map(msg => ({
-        id: `chat-${msg.id}`,
-        type: 'message',
-        title: `💬 Message from ${msg.sender_name || msg.sender_role || 'Someone'}`,
-        message: msg.message,
-        is_read: msg.is_read || false,
-        created_at: msg.created_at,
-        sender_email: msg.sender_email,
-        sender_name: msg.sender_name,
-        sender_role: msg.sender_role,
-        metadata: {
-          chat_id: msg.id
-        }
-      }));
-
-      if (isMounted) {
-        setNotifications(prev => {
-          // Keep leave notifications, update chat notifications
-          const leaveNotifs = prev.filter(n => n.id?.startsWith('leave-'));
-          const all = [...leaveNotifs, ...chatNotifications];
-          return all.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        });
-      }
-
-    } catch (err) {
-      console.error('Error fetching notifications:', err);
-    }
-  }, [hodEmail, isMounted]);
-
-  // ===== CALCULATE UNREAD COUNT - FIXED =====
-  const calculateUnreadCount = useCallback(() => {
-    if (!isMounted) return;
-    
-    // Only count notifications that are explicitly marked as unread
-    const unread = notifications.filter(n => n.is_read === false).length;
-    setUnreadCount(unread);
-    console.log('📊 Unread count calculated:', unread);
-  }, [notifications, isMounted]);
-
-  // Update unread count whenever notifications change
-  useEffect(() => {
-    calculateUnreadCount();
-  }, [notifications, calculateUnreadCount]);
-
-  // ===== MARK NOTIFICATION AS READ =====
-  const markNotificationRead = useCallback(async (id) => {
-    try {
-      if (id?.startsWith('chat-')) {
-        const chatId = id.replace('chat-', '');
-        await supabase.from('chat_messages').update({ is_read: true }).eq('id', chatId);
-      }
-      
-      // Update local state - mark as read
-      setNotifications(prev => 
-        prev.map(n => n.id === id ? { ...n, is_read: true } : n)
-      );
-      
-      // Also update leave requests in pendingLeaveRequests if applicable
-      if (id?.startsWith('leave-')) {
-        const leaveId = id.replace('leave-', '');
-        setPendingLeaveRequests(prev => 
-          prev.map(r => r.id === leaveId ? { ...r, is_read: true } : r)
-        );
-      }
-      
-    } catch (err) {
-      console.error('Error marking notification as read:', err);
-    }
-  }, []);
-
-  const markAllNotificationsRead = useCallback(async () => {
-    try {
-      // Mark chat messages as read
-      await supabase
-        .from('chat_messages')
-        .update({ is_read: true })
-        .eq('receiver_email', hodEmail)
-        .eq('is_read', false);
-      
-      // Mark all notifications as read in state
-      setNotifications(prev => 
-        prev.map(n => ({ ...n, is_read: true }))
-      );
-      
-      // Update pending leave requests
-      setPendingLeaveRequests(prev => 
-        prev.map(r => ({ ...r, is_read: true }))
-      );
-      
-    } catch (err) {
-      console.error('Error marking all as read:', err);
-    }
-  }, [hodEmail]);
-
-  // ===== SETUP SUBSCRIPTIONS =====
-  const setupNotificationSubscriptions = useCallback(() => {
-    cleanupSubscriptions();
-
-    if (!hodEmail || !departmentCode || !isMounted) return;
-
-    // Subscribe to chat messages
-    try {
-      notificationSubscriptionRef.current = supabase
-        .channel('hod-notifications')
-        .on(
-          'postgres_changes',
-          {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'chat_messages',
-            filter: `receiver_email=eq.${hodEmail}`,
-          },
-          () => {
-            if (isMounted) {
-              fetchNotifications();
-            }
-          }
-        )
-        .subscribe();
-    } catch (err) {
-      console.warn('Error setting up notification subscription:', err);
-    }
-
-    // Subscribe to new leave requests
-    try {
-      leaveSubscriptionRef.current = supabase
-        .channel('hod-leave-notifications')
-        .on(
-          'postgres_changes',
-          {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'lecturer_leave_requests',
-            filter: `department_code=eq.${departmentCode}`,
-          },
-          (payload) => {
-            if (isMounted && payload.new?.status === 'pending') {
-              // Add new notification as unread
-              const newNotification = {
-                id: `leave-${payload.new.id}`,
-                type: 'leave_pending',
-                title: `📋 New Leave Request`,
-                message: `${payload.new.lecturer_name || 'A lecturer'} has requested ${payload.new.days} days of ${payload.new.leave_type} leave`,
-                is_read: false,
-                created_at: payload.new.created_at,
-                sender_email: payload.new.lecturer_email,
-                sender_name: payload.new.lecturer_name,
-                sender_role: 'lecturer',
-                metadata: {
-                  leave_id: payload.new.id,
-                  department_code: payload.new.department_code,
-                  days: payload.new.days,
-                  leave_type: payload.new.leave_type
-                }
-              };
-              
-              setNotifications(prev => {
-                // Check if already exists
-                const exists = prev.some(n => n.id === newNotification.id);
-                if (exists) return prev;
-                
-                const updated = [newNotification, ...prev];
-                return updated.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-              });
-              
-              showLeaveNotificationToast(payload.new);
-            }
-          }
-        )
-        .subscribe();
-    } catch (err) {
-      console.warn('Error setting up leave subscription:', err);
-    }
-  }, [hodEmail, departmentCode, isMounted, cleanupSubscriptions, fetchNotifications]);
-
-  // ===== TOAST =====
-const showToast = (message, type = 'success') => {
-  // You can implement a toast notification here
-  // For now, just use alert or console.log
-  if (type === 'error') {
-    console.error(message);
-  } else {
-    console.log(message);
-  }
-};
-  // ===== SHOW TOAST =====
-  const showLeaveNotificationToast = (leaveData) => {
-    if (!leaveData || !isMounted) return;
-    
-    const message = `📋 ${leaveData.lecturer_name || 'A lecturer'} has submitted a leave request (${leaveData.days} days)`;
-    
-    const toast = document.createElement('div');
-    toast.style.cssText = `
-      position: fixed;
-      bottom: 20px;
-      right: 20px;
-      background: #1976d2;
-      color: white;
-      padding: 16px 24px;
-      border-radius: 8px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-      z-index: 9999;
-      cursor: pointer;
-      max-width: 400px;
-      animation: slideIn 0.3s ease;
-    `;
-    toast.innerHTML = `
-      <div style="display: flex; align-items: center; gap: 12px;">
-        <span style="font-size: 24px;">📋</span>
-        <div>
-          <strong style="display: block;">New Leave Request</strong>
-          <span style="font-size: 14px;">${message}</span>
-        </div>
-        <button style="background: transparent; border: none; color: white; font-size: 18px; cursor: pointer;">✕</button>
-      </div>
-    `;
-    
-    toast.onclick = (e) => {
-      if (e.target.tagName !== 'BUTTON' && isMounted) {
-        setActiveTab('leave');
-        setShowNotifications(true);
-        toast.remove();
-      }
-    };
-    
-    toast.querySelector('button').onclick = () => toast.remove();
-    document.body.appendChild(toast);
-    
-    setTimeout(() => {
-      if (toast.parentNode) toast.remove();
-    }, 8000);
-  };
-
   // ==================== CHAT ====================
   const fetchChatMessages = useCallback(async (userEmail) => {
     if (!hodEmail || !userEmail || !isMounted) return;
@@ -750,7 +751,6 @@ const showToast = (message, type = 'success') => {
       }
       if (isMounted) {
         fetchNotifications();
-        // Also update chat notifications to read
         setNotifications(prev => 
           prev.map(n => {
             if (n.id?.startsWith('chat-') && unread.some(m => n.id === `chat-${m.id}`)) {
@@ -864,13 +864,13 @@ const showToast = (message, type = 'success') => {
     fetchNotifications();
     setupNotificationSubscriptions();
 
-    // Refresh every 30 seconds
+    // REFRESH EVERY 5 SECONDS - INSTANT UPDATES
     intervalRef.current = setInterval(() => {
       if (isMounted) {
         fetchPendingLeaveRequests();
         fetchNotifications();
       }
-    }, 30000);
+    }, 5000);
 
     return () => {
       setIsMounted(false);
@@ -885,96 +885,91 @@ const showToast = (message, type = 'success') => {
   }, [departmentInfo, fetchDeanInfo, isMounted]);
 
   // ==================== RENDER ====================
-const renderContent = () => {
-  const commonProps = {
-    departmentId,
-    departmentCode,
-    departmentName,
-    hodEmail,
-    hodName,
-    courses,
-    students,
-    lecturers,
-    recentAttendance,
-    stats,
-    deanInfo,
-    admins,
-    openChatWithUser,
-    openAdminChat,
-    profile,
-    profileVersion,
-    loading,
-    searchTerm,
-    setSearchTerm,
-    fetchHODData,
-    setStats,
-  };
+  const renderContent = () => {
+    const commonProps = {
+      departmentId,
+      departmentCode,
+      departmentName,
+      hodEmail,
+      hodName,
+      courses,
+      students,
+      lecturers,
+      recentAttendance,
+      stats,
+      deanInfo,
+      admins,
+      openChatWithUser,
+      openAdminChat,
+      profile,
+      profileVersion,
+      loading,
+      searchTerm,
+      setSearchTerm,
+      fetchHODData,
+      setStats,
+    };
 
-  switch (activeTab) {
-    case 'overview': return <HODOverview {...commonProps} />;
-    case 'students': return <HODStudents {...commonProps} />;
-    case 'allocations': return <HODCourseAllocations {...commonProps} />;
-    case 'workload': return <HODWorkload {...commonProps} />;
-    case 'leave': return <HODLeaveRequests {...commonProps} />;
-    case 'complaints': return <HODComplaints {...commonProps} />;
-    case 'timetable': return <HODTimetable {...commonProps} />;
-    case 'exam-moderation': return <HODExamModeration {...commonProps} />;
-    case 'exam-results': return <HODExamResultsApproval 
-      departmentCode={departmentCode} 
-      courses={courses} 
-      fetchHODData={fetchHODData} 
-      setStats={setStats} 
-    />;
-
-    case 'appraisal': return <HODStaffAppraisal {...commonProps} />;
-    case 'curriculum': return <HODCurriculumManagement 
-      departmentCode={departmentCode}
-      departmentName={departmentName}
-      hodEmail={hodEmail}
-      hodName={hodName}
-      profile={profile}
-      showToast={showToast || (() => {})}
-    />;
-        case 'qa': 
-      return <HODQualityAssurance 
+    switch (activeTab) {
+      case 'overview': return <HODOverview {...commonProps} />;
+      case 'students': return <HODStudents {...commonProps} />;
+      case 'allocations': return <HODCourseAllocations {...commonProps} />;
+      case 'workload': return <HODWorkload {...commonProps} />;
+      case 'leave': return <HODLeaveRequests {...commonProps} />;
+      case 'complaints': return <HODComplaints {...commonProps} />;
+      case 'timetable': return <HODTimetable {...commonProps} />;
+      case 'exam-moderation': return <HODExamModeration {...commonProps} />;
+      case 'exam-results': return <HODExamResultsApproval 
+        departmentCode={departmentCode} 
+        courses={courses} 
+        fetchHODData={fetchHODData} 
+        setStats={setStats} 
+      />;
+      case 'appraisal': return <HODStaffAppraisal {...commonProps} />;
+      case 'curriculum': return <HODCurriculumManagement 
         departmentCode={departmentCode}
         departmentName={departmentName}
         hodEmail={hodEmail}
         hodName={hodName}
         profile={profile}
-        showToast={showToast}
+        showToast={showLeaveNotificationToast}
       />;
-    case 'disciplinary': 
-  return <HODDisciplinaryCases 
-    departmentCode={departmentCode}
-    departmentName={departmentName}
-    hodEmail={hodEmail}
-    hodName={hodName}
-    profile={profile}
-    showToast={showToast}
-  />;
-    case 'budget': return <HODBudgetRequests {...commonProps} />;
-    case 'attendance': return <HODAttendance {...commonProps} />;
-    case 'reports': 
-  return <ReportViewer 
-    departmentCode={departmentCode}
-    showToast={showToast} 
+      case 'qa': return <HODQualityAssurance 
+        departmentCode={departmentCode}
+        departmentName={departmentName}
+        hodEmail={hodEmail}
+        hodName={hodName}
+        profile={profile}
+        showToast={showLeaveNotificationToast}
       />;
-    case 'module-evaluation': 
-  return <HODModuleEvaluation 
-    departmentCode={departmentCode}
-    departmentName={departmentName}
-    hodEmail={hodEmail}
-    hodName={hodName}
-    profile={profile}
-    courses={courses}
-    students={students}
-    showToast={showToast}
-  />;
-    case 'settings': return <HODSettings {...commonProps} />;
-    default: return <HODOverview {...commonProps} />;
-  }
-};
+      case 'disciplinary': return <HODDisciplinaryCases 
+        departmentCode={departmentCode}
+        departmentName={departmentName}
+        hodEmail={hodEmail}
+        hodName={hodName}
+        profile={profile}
+        showToast={showLeaveNotificationToast}
+      />;
+      case 'budget': return <HODBudgetRequests {...commonProps} />;
+      case 'attendance': return <HODAttendance {...commonProps} />;
+      case 'reports': return <ReportViewer 
+        departmentCode={departmentCode}
+        showToast={showLeaveNotificationToast} 
+      />;
+      case 'module-evaluation': return <HODModuleEvaluation 
+        departmentCode={departmentCode}
+        departmentName={departmentName}
+        hodEmail={hodEmail}
+        hodName={hodName}
+        profile={profile}
+        courses={courses}
+        students={students}
+        showToast={showLeaveNotificationToast}
+      />;
+      case 'settings': return <HODSettings {...commonProps} />;
+      default: return <HODOverview {...commonProps} />;
+    }
+  };
 
   const tabs = [
     { id: 'overview', label: '📊 Overview' },
@@ -993,10 +988,9 @@ const renderContent = () => {
     { id: 'budget', label: '💰 Budget' },
     { id: 'attendance', label: '✅ Attendance' },
     { id: 'reports', label: '📄 Reports' },
-      { id: 'module-evaluation', label: '📋 Module Evaluation' },
+    { id: 'module-evaluation', label: '📋 Module Evaluation' },
     { id: 'settings', label: '⚙️ Settings' },
   ];
-  
 
   return (
     <div className="hod-dashboard">
@@ -1013,7 +1007,7 @@ const renderContent = () => {
             <span className="hod-admin-badge">A</span>
           </button>
 
-          {/* ===== NOTIFICATIONS - FIXED COUNTER ===== */}
+          {/* ===== NOTIFICATIONS - INSTANT ===== */}
           <div className="hod-notification-wrapper">
             <button
               className="hod-notification-btn"
@@ -1042,7 +1036,6 @@ const renderContent = () => {
                     return;
                   }
 
-                  // Open chat for normal messages
                   openChatWithUser(
                     {
                       email: notif.sender_email,
@@ -1116,116 +1109,6 @@ const renderContent = () => {
           profile={profile}
         />
       )}
-
-      {/* CSS for notifications */}
-      <style>{`
-        @keyframes slideIn {
-          from { transform: translateX(100%); opacity: 0; }
-          to { transform: translateX(0); opacity: 1; }
-        }
-        .hod-notification-wrapper {
-          position: relative;
-          display: inline-block;
-        }
-        .hod-notification-btn {
-          background: transparent;
-          border: none;
-          font-size: 22px;
-          cursor: pointer;
-          position: relative;
-          padding: 8px;
-          border-radius: 50%;
-          transition: background 0.2s;
-        }
-        .hod-notification-btn:hover {
-          background: rgba(0,0,0,0.05);
-        }
-        .hod-notification-badge {
-          position: absolute;
-          top: 2px;
-          right: 2px;
-          background: #ff1744;
-          color: white;
-          font-size: 10px;
-          font-weight: 700;
-          padding: 2px 5px;
-          border-radius: 10px;
-          min-width: 18px;
-          height: 18px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-        .hod-notification-dropdown {
-          position: absolute;
-          top: 45px;
-          right: 0;
-          width: 380px;
-          max-height: 500px;
-          background: white;
-          border-radius: 12px;
-          box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-          z-index: 1000;
-          overflow: hidden;
-          display: flex;
-          flex-direction: column;
-        }
-        .hod-notification-header {
-          padding: 12px 16px;
-          border-bottom: 1px solid #e0e0e0;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          background: #f8f9fa;
-        }
-        .hod-notification-header h4 {
-          margin: 0;
-          font-size: 14px;
-          color: #1a237e;
-        }
-        .hod-notification-mark-all {
-          background: transparent;
-          border: none;
-          color: #1976d2;
-          font-size: 12px;
-          cursor: pointer;
-          font-weight: 600;
-        }
-        .hod-notification-list {
-          overflow-y: auto;
-          max-height: 400px;
-          padding: 4px 0;
-        }
-        .hod-notification-item {
-          padding: 10px 16px;
-          display: flex;
-          gap: 12px;
-          align-items: flex-start;
-          cursor: pointer;
-          border-bottom: 1px solid #f5f5f5;
-          transition: background 0.2s;
-        }
-        .hod-notification-item:hover {
-          background: #f5f7fa;
-        }
-        .hod-notification-item.unread {
-          background: #e3f2fd;
-        }
-        .hod-notification-empty {
-          text-align: center;
-          padding: 30px;
-          color: #999;
-        }
-        .hod-notification-empty span {
-          font-size: 36px;
-          display: block;
-          margin-bottom: 8px;
-        }
-        .hod-notification-empty p {
-          margin: 0;
-          font-size: 14px;
-        }
-      `}</style>
     </div>
   );
 };
