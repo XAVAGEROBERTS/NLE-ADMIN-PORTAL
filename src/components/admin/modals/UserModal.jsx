@@ -18,8 +18,16 @@ const UserModal = ({
 }) => {
   // Auto-generate email when name changes
   useEffect(() => {
-    if (newUser.role === 'student' && newUser.full_name && newUser.full_name.trim()) {
-      generateEmail();
+    if (newUser.role === 'student') {
+      if (newUser.full_name && newUser.full_name.trim()) {
+        generateEmail();
+      } else {
+        // Clear email when name is empty
+        setNewUser(prev => ({
+          ...prev,
+          email: ''
+        }));
+      }
     }
   }, [newUser.full_name]);
 
@@ -65,7 +73,13 @@ const UserModal = ({
 
   const generateEmail = () => {
     const fullName = newUser.full_name?.trim();
-    if (!fullName) return;
+    if (!fullName) {
+      setNewUser(prev => ({
+        ...prev,
+        email: ''
+      }));
+      return;
+    }
 
     const nameParts = fullName.toLowerCase().split(' ');
     let emailName = '';
@@ -126,10 +140,13 @@ const UserModal = ({
                 placeholder="Enter full name (e.g., Kenyi Robert)"
                 className="form-input"
               />
-              <small className="form-hint">💡 Email will be auto-generated: lastnamefirstname@nle.university.com</small>
+              {/* Only show hint for students */}
+              {newUser.role === 'student' && (
+                <small className="form-hint">💡 Email will be auto-generated: lastnamefirstname@nle.university.com</small>
+              )}
             </div>
 
-            {/* Email - Auto-filled */}
+            {/* Email - Auto-filled for students, editable for others */}
             <div className="form-group">
               <label className="form-label">Email *</label>
               <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
@@ -137,12 +154,31 @@ const UserModal = ({
                   type="email"
                   value={newUser.email || ''}
                   onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
-                  placeholder="Email auto-generated from name"
+                  placeholder={newUser.role === 'student' ? "Email will be auto-generated" : "Enter email address"}
                   className="form-input"
                   style={{ flex: 1 }}
+                  readOnly={newUser.role === 'student'}
+                  disabled={newUser.role === 'student'}
                 />
-             
+                {newUser.role === 'student' && (
+                  <span style={{ 
+                    fontSize: '12px', 
+                    color: '#6c757d',
+                    background: '#f8f9fa',
+                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    border: '1px solid #e9ecef',
+                    whiteSpace: 'nowrap'
+                  }}>
+                    🔒 Auto
+                  </span>
+                )}
               </div>
+              {newUser.role === 'student' && (
+                <small style={{ color: '#6c757d', fontSize: '12px' }}>
+                  Email is automatically generated from the full name and cannot be edited
+                </small>
+              )}
             </div>
 
             {/* Phone */}
@@ -529,6 +565,12 @@ const UserModal = ({
           border-color: #667eea;
           background: white;
           box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
+        }
+        .form-input:disabled,
+        .form-input:read-only {
+          background: #f0f0f0;
+          cursor: not-allowed;
+          opacity: 0.7;
         }
         .form-hint {
           color: #6c757d;
